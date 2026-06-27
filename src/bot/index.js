@@ -5,6 +5,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const db = require('../db');
 const llm = require('../llm/deepseek');
 const tools = require('../tools');
+const { escapeMd } = tools;
 
 const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
 
@@ -21,6 +22,25 @@ function addToHistory(userId, role, content) {
   history.push({ role, content });
   // Keep last 10 messages to avoid huge prompts
   if (history.length > 10) history.splice(0, history.length - 10);
+}
+
+/**
+ * Safely send a message, falling back to plain text if Markdown parsing fails.
+ * Telegram's Markdown parser rejects text with unescaped special characters.
+ */
+async function safeSendMessage(bot, chatId, text) {
+  try {
+    await bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+  } catch (mdErr) {
+    // If Markdown fails, send as plain text (no parse_mode)
+    try {
+      await bot.sendMessage(chatId, text);
+    } catch (plainErr) {
+      // If plain text also fails (e.g., message too long), send a generic fallback
+      console.error('sendMessage fallback error:', plainErr.message);
+      await bot.sendMessage(chatId, 'Something went wrong displaying the result.');
+    }
+  }
 }
 
 function createBot() {
@@ -59,7 +79,7 @@ function createBot() {
         '• "Remember that I prefer dark mode"\n\n' +
         'I\'m ready when you are.';
 
-      await bot.sendMessage(msg.chat.id, welcome, { parse_mode: 'Markdown' });
+      await safeSendMessage(bot, msg.chat.id, welcome);
     } catch (err) {
       console.error('/start error:', err.message);
       await bot.sendMessage(msg.chat.id, '❌ Error: ' + err.message);
@@ -71,7 +91,7 @@ function createBot() {
     if (!isOwner(msg)) return;
     await db.ensureUser(OWNER_ID, msg.from.first_name || 'Owner');
     const result = await tools.executeTool(OWNER_ID, { name: 'get_today', args: {} });
-    await bot.sendMessage(msg.chat.id, result, { parse_mode: 'Markdown' });
+    await safeSendMessage(bot, msg.chat.id, result);
   });
 
   // ── /notes command shortcut ───────────────────────────────────────────────
@@ -85,9 +105,9 @@ function createBot() {
     let reply = '*Recent Notes* 📝\n\n';
     notes.forEach((n, i) => {
       const date = new Date(n.created_at).toLocaleDateString();
-      reply += (i + 1) + '. ' + n.content + ' _(' + date + ')_\n\n';
+      reply += (i + 1) + '\. ' + escapeMd(n.content) + ' \_(' + date + ')\_\n\n';
     });
-    await bot.sendMessage(msg.chat.id, reply.trim(), { parse_mode: 'Markdown' });
+    await safeSendMessage(bot, msg.chat.id, reply.trim());
   });
 
   // ── /memory command shortcut ──────────────────────────────────────────────
@@ -100,9 +120,9 @@ function createBot() {
     }
     let reply = '*Memory Facts* 🧠\n\n';
     facts.forEach(f => {
-      reply += '• *' + f.key + ':* ' + f.value + '\n';
+      reply += '• *' + escapeMd(f.key) + ':* ' + escapeMd(f.value) + '\n';
     });
-    await bot.sendMessage(msg.chat.id, reply.trim(), { parse_mode: 'Markdown' });
+    await safeSendMessage(bot, msg.chat.id, reply.trim());
   });
 
   // ── /help command ─────────────────────────────────────────────────────────
@@ -122,7 +142,7 @@ function createBot() {
       '• "Note: follow up with client on Friday"\n' +
       '• "Remember I wake up at 6am"\n' +
       '• "What\'s my day looking like?"';
-    await bot.sendMessage(msg.chat.id, help, { parse_mode: 'Markdown' });
+    await safeSendMessage(bot, msg.chat.id, help);
   });
 
   // ── Main message handler ──────────────────────────────────────────────────
@@ -150,16 +170,23 @@ function createBot() {
       if (llmResponse.type === 'message') {
         // Plain response
         addToHistory(userId, 'assistant', llmResponse.content);
-        await bot.sendMessage(chatId, llmResponse.content, { parse_mode: 'Markdown' });
+        await safeSendMessage(bot, chatId, llmResponse.content);
 
       } else if (llmResponse.type === 'tool') {
-        // Execute tool and send result
-        const result = await tools.executeTool(userId, {
-          name: llmResponse.name,
-          args: llmResponse.args,
-        });
+        // Execute tool
+        let result;
+        try {
+          result = await tools.executeTool(userId, {
+            name: llmResponse.name,
+            args: llmResponse.args,
+          });
+        } catch (toolErr) {
+          console.error('Tool execution error:', toolErr.message);
+          result = 'I tried to do that but ran into a problem. Please try again.';
+        }
+
         addToHistory(userId, 'assistant', result);
-        await bot.sendMessage(chatId, result, { parse_mode: 'Markdown' });
+        await safeSendMessage(bot, chatId, result);
 
       } else {
         await bot.sendMessage(chatId, 'Something went wrong. Try again?');
@@ -175,7 +202,7 @@ function createBot() {
       } else {
         errorMsg += 'Please try again.';
       }
-      await bot.sendMessage(chatId, errorMsg);
+      await safeSendMessage(bot, chatId, errorMsg);
     }
   });
 

@@ -4,6 +4,16 @@ const db = require('../db');
 const dayjs = require('dayjs');
 
 /**
+ * Escape special characters for Telegram's Markdown parser.
+ * In legacy Markdown mode the reserved chars are: _ * ` [
+ * Prefixing each with \\ prevents them being interpreted as formatting.
+ */
+function escapeMd(text) {
+  if (typeof text !== 'string') return text;
+  return text.replace(/([_*`\[])/g, '\\$1');
+}
+
+/**
  * Execute a tool call returned by the LLM.
  * @param {string} userId
  * @param {{ name: string, args: object }} toolCall
@@ -25,7 +35,7 @@ async function executeTool(userId, toolCall) {
       }
       const reminder = await db.createReminder(userId, args.text, remindAt);
       const formatted = dayjs(reminder.remind_at).format('ddd, D MMM YYYY [at] h:mm A');
-      return 'Got it. I\'ll remind you to *' + args.text + '* on ' + formatted + '.';
+      return 'Got it. I\'ll remind you to *' + escapeMd(args.text) + '* on ' + formatted + '.';
     }
 
     // ── create_event ─────────────────────────────────────────────────────────
@@ -40,7 +50,7 @@ async function executeTool(userId, toolCall) {
       const duration = args.duration_minutes || 60;
       const event = await db.createEvent(userId, args.title, eventTime, duration);
       const formatted = dayjs(event.event_time).format('ddd, D MMM YYYY [at] h:mm A');
-      return 'Event added: *' + event.title + '* on ' + formatted + ' (' + duration + ' min).';
+      return 'Event added: *' + escapeMd(event.title) + '* on ' + formatted + ' (' + duration + ' min).';
     }
 
     // ── add_note ─────────────────────────────────────────────────────────────
@@ -49,7 +59,7 @@ async function executeTool(userId, toolCall) {
         return 'What did you want me to note down?';
       }
       await db.addNote(userId, args.content);
-      return 'Noted. 📝';
+      return 'Noted. \uD83D\uDCDD';
     }
 
     // ── get_today ─────────────────────────────────────────────────────────────
@@ -59,7 +69,7 @@ async function executeTool(userId, toolCall) {
         db.getTodayReminders(userId),
       ]);
 
-      let reply = '*Today\'s Overview* 📅\n\n';
+      let reply = '*Today\'s Overview* \uD83D\uDCC5\n\n';
 
       if (events.length === 0 && reminders.length === 0) {
         return reply + 'Nothing scheduled for today. Clean slate!';
@@ -69,7 +79,7 @@ async function executeTool(userId, toolCall) {
         reply += '*Events:*\n';
         events.forEach(e => {
           const t = dayjs(e.event_time).format('h:mm A');
-          reply += '• ' + t + ' — ' + e.title + '\n';
+          reply += '\u2022 ' + t + ' \u2014 ' + escapeMd(e.title) + '\n';
         });
         reply += '\n';
       }
@@ -78,7 +88,7 @@ async function executeTool(userId, toolCall) {
         reply += '*Reminders:*\n';
         reminders.forEach(r => {
           const t = dayjs(r.remind_at).format('h:mm A');
-          reply += '• ' + t + ' — ' + r.text + '\n';
+          reply += '\u2022 ' + t + ' \u2014 ' + escapeMd(r.text) + '\n';
         });
       }
 
@@ -91,12 +101,12 @@ async function executeTool(userId, toolCall) {
         return 'I need both a key and value to remember that.';
       }
       await db.setFact(userId, args.key, args.value);
-      return 'Got it, I\'ll remember that ' + args.key + ' is ' + args.value + '.';
+      return 'Got it, I\'ll remember that ' + escapeMd(args.key) + ' is ' + escapeMd(args.value) + '.';
     }
 
     default:
-      return 'I tried to use a tool called "' + name + '" but I don\'t know how to do that yet.';
+      return 'I tried to use a tool called "' + escapeMd(name) + '" but I don\'t know how to do that yet.';
   }
 }
 
-module.exports = { executeTool };
+module.exports = { executeTool, escapeMd };
