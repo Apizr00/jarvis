@@ -34,9 +34,15 @@ async function executeTool(userId, toolCall) {
       if (isNaN(remindAt.getTime())) {
         return 'I couldn\'t parse that time. Can you try again with a clearer time?';
       }
-      const reminder = await db.createReminder(userId, args.text, remindAt);
+      const recurrence = args.recurrence || null;
+      const reminder = await db.createReminder(userId, args.text, remindAt, recurrence);
       const formatted = dayjs(reminder.remind_at).format('ddd, D MMM YYYY [at] h:mm A');
-      return 'Got it. I\'ll remind you to *' + escapeMd(args.text) + '* on ' + formatted + '.';
+      let reply = 'Got it. I\'ll remind you to *' + escapeMd(args.text) + '* on ' + formatted + '.';
+      if (recurrence) {
+        const recurrenceLabels = { daily: 'daily', weekly: 'weekly', weekdays: 'every weekday' };
+        reply += ' 🔁 This repeats ' + (recurrenceLabels[recurrence] || recurrence) + '.';
+      }
+      return reply;
     }
 
     // ── create_event ─────────────────────────────────────────────────────────
@@ -105,6 +111,30 @@ async function executeTool(userId, toolCall) {
       // Invalidate Redis cache so next LLM call picks up the new fact
       redisCache.invalidateFactsCache(userId);
       return 'Got it, I\'ll remember that ' + escapeMd(args.key) + ' is ' + escapeMd(args.value) + '.';
+    }
+
+    // ── list_reminders ───────────────────────────────────────────────────────
+    case 'list_reminders': {
+      const reminders = await db.getUpcomingReminders(userId, 15);
+      if (reminders.length === 0) {
+        return 'You have no upcoming reminders. 🎉';
+      }
+      let reply = '*Upcoming Reminders* ⏰\n\n';
+      reminders.forEach(r => {
+        const t = dayjs(r.remind_at).format('ddd, D MMM [at] h:mm A');
+        const recurring = r.recurrence ? ' 🔁' : '';
+        reply += '• ' + t + ' — ' + escapeMd(r.text) + recurring + ' _(#' + r.id + ')_\n';
+      });
+      return reply.trim();
+    }
+
+    // ── cancel_reminder ──────────────────────────────────────────────────────
+    case 'cancel_reminder': {
+      if (!args.reminder_id) {
+        return 'Which reminder did you want to cancel? I need an ID.';
+      }
+      await db.cancelReminder(args.reminder_id);
+      return 'Reminder #' + args.reminder_id + ' cancelled. ❌';
     }
 
     default:

@@ -27,13 +27,21 @@ async function ensureUser(telegramId, name = 'Owner') {
   );
 }
 
+async function getUserName(telegramId) {
+  const { rows } = await pool.query(
+    `SELECT name FROM users WHERE id = $1`,
+    [String(telegramId)]
+  );
+  return rows.length > 0 ? rows[0].name : null;
+}
+
 // ── Reminders ─────────────────────────────────────────────────────────────────
 
-async function createReminder(userId, text, remindAt) {
+async function createReminder(userId, text, remindAt, recurrence = null) {
   const { rows } = await pool.query(
-    `INSERT INTO reminders (user_id, text, remind_at)
-     VALUES ($1, $2, $3) RETURNING *`,
-    [String(userId), text, remindAt]
+    `INSERT INTO reminders (user_id, text, remind_at, recurrence)
+     VALUES ($1, $2, $3, $4) RETURNING *`,
+    [String(userId), text, remindAt, recurrence]
   );
   return rows[0];
 }
@@ -64,6 +72,80 @@ async function getTodayReminders(userId) {
     [String(userId), process.env.TIMEZONE || 'UTC']
   );
   return rows;
+}
+
+/**
+ * Get all upcoming pending reminders for a user (future + today's unfired).
+ */
+async function getUpcomingReminders(userId, limit = 20) {
+  const { rows } = await pool.query(
+    `SELECT * FROM reminders
+     WHERE user_id = $1
+       AND status = 'pending'
+     ORDER BY remind_at ASC
+     LIMIT $2`,
+    [String(userId), limit]
+  );
+  return rows;
+}
+
+/**
+ * Get reminders that are past due (overdue).
+ */
+async function getOverdueReminders(userId) {
+  const { rows } = await pool.query(
+    `SELECT * FROM reminders
+     WHERE user_id = $1
+       AND remind_at < NOW()
+       AND status = 'pending'
+     ORDER BY remind_at ASC`,
+    [String(userId)]
+  );
+  return rows;
+}
+
+/**
+ * Cancel a reminder by id (sets status to 'cancelled').
+ */
+async function cancelReminder(id) {
+  await pool.query(
+    `UPDATE reminders SET status = 'cancelled' WHERE id = $1`,
+    [id]
+  );
+}
+
+/**
+ * Reschedule a recurring reminder to its next occurrence.
+ */
+async function rescheduleRecurring(id, recurrence, lastRemindAt) {
+  let nextTime;
+  const last = new Date(lastRemindAt);
+
+  switch (recurrence) {
+    case 'daily':
+      nextTime = new Date(last);
+      nextTime.setDate(nextTime.getDate() + 1);
+      break;
+    case 'weekly':
+      nextTime = new Date(last);
+      nextTime.setDate(nextTime.getDate() + 7);
+      break;
+    case 'weekdays':
+      nextTime = new Date(last);
+      // Advance day by day until we hit a weekday
+      do {
+        nextTime.setDate(nextTime.getDate() + 1);
+      } while (nextTime.getDay() === 0 || nextTime.getDay() === 6);
+      break;
+    default:
+      return null; // not recurring
+  }
+
+  await pool.query(
+    `UPDATE reminders SET remind_at = $1 WHERE id = $2`,
+    [nextTime.toISOString(), id]
+  );
+  return nextTime;
 }
 
 // ── Events ────────────────────────────────────────────────────────────────────
@@ -147,10 +229,15 @@ async function getFullMemory(userId) {
 module.exports = {
   pool,
   ensureUser,
+  getUserName,
   createReminder,
   getPendingReminders,
   markReminderSent,
   getTodayReminders,
+  getUpcomingReminders,
+  getOverdueReminders,
+  cancelReminder,
+  rescheduleRecurring,
   createEvent,
   getTodayEvents,
   addNote,

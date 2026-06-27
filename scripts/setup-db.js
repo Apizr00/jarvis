@@ -21,6 +21,7 @@ async function setup() {
       text TEXT NOT NULL,
       remind_at TIMESTAMPTZ NOT NULL,
       status TEXT DEFAULT 'pending',
+      recurrence TEXT DEFAULT NULL,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
 
@@ -49,6 +50,13 @@ async function setup() {
       UNIQUE(user_id, key)
     );
   `);
+
+  // ── Migration: add recurrence column for existing databases ─────────────
+  try {
+    await pool.query(`ALTER TABLE reminders ADD COLUMN IF NOT EXISTS recurrence TEXT DEFAULT NULL`);
+  } catch {
+    // column already exists — safe to ignore
+  }
 
   console.log('✅ All tables created successfully!');
   await pool.end();

@@ -2,6 +2,7 @@
 // Telegram bot - handles all incoming messages
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
+const dayjs = require('dayjs');
 const db = require('../db');
 const llm = require('../llm');
 const tools = require('../tools');
@@ -125,6 +126,81 @@ function createBot() {
     await safeSendMessage(bot, msg.chat.id, reply.trim());
   });
 
+  // ── /reminders command ────────────────────────────────────────────────────
+  bot.onText(/\/reminders/, async (msg) => {
+    if (!isOwner(msg)) return;
+    await db.ensureUser(OWNER_ID, msg.from.first_name || 'Owner');
+    const reminders = await db.getUpcomingReminders(OWNER_ID, 15);
+
+    if (reminders.length === 0) {
+      return bot.sendMessage(msg.chat.id, 'You have no upcoming reminders. 🎉');
+    }
+
+    let reply = '*Upcoming Reminders* ⏰\n\n';
+    const inlineKeyboard = [];
+
+    reminders.forEach(r => {
+      const t = dayjs(r.remind_at).format('ddd, D MMM [at] h:mm A');
+      const recurring = r.recurrence ? ' 🔁' : '';
+      reply += '• ' + t + ' — ' + escapeMd(r.text) + recurring + '\n';
+
+      inlineKeyboard.push([{
+        text: '❌ Cancel: ' + (r.text.length > 20 ? r.text.substring(0, 20) + '…' : r.text),
+        callback_data: 'cancel_reminder:' + r.id,
+      }]);
+    });
+
+    const opts = {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: inlineKeyboard,
+      },
+    };
+
+    try {
+      await bot.sendMessage(msg.chat.id, reply.trim(), opts);
+    } catch (mdErr) {
+      // Fallback to plain text if Markdown fails
+      await bot.sendMessage(msg.chat.id, reply.trim().replace(/[_*`\[]/g, ''), {
+        reply_markup: { inline_keyboard: inlineKeyboard },
+      });
+    }
+  });
+
+  // ── Callback query handler: cancel reminders ──────────────────────────────
+  bot.on('callback_query', async (callbackQuery) => {
+    const data = callbackQuery.data;
+    const chatId = callbackQuery.message.chat.id;
+    const msgId = callbackQuery.message.message_id;
+
+    if (!data.startsWith('cancel_reminder:')) return;
+
+    const reminderId = parseInt(data.split(':')[1], 10);
+    if (isNaN(reminderId)) return;
+
+    try {
+      await db.cancelReminder(reminderId);
+      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Reminder cancelled! ✅' });
+
+      // Edit the original message to remove the cancelled button
+      const currentText = callbackQuery.message.text || callbackQuery.message.caption || '';
+      const currentKeyboard = callbackQuery.message.reply_markup.inline_keyboard;
+
+      // Remove the clicked button
+      const newKeyboard = currentKeyboard
+        .map(row => row.filter(btn => btn.callback_data !== data))
+        .filter(row => row.length > 0);
+
+      await bot.editMessageReplyMarkup(
+        { inline_keyboard: newKeyboard },
+        { chat_id: chatId, message_id: msgId }
+      );
+    } catch (err) {
+      console.error('Cancel reminder error:', err.message);
+      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Failed to cancel. Try again.' });
+    }
+  });
+
   // ── /help command ─────────────────────────────────────────────────────────
   bot.onText(/\/help/, async (msg) => {
     if (!isOwner(msg)) return;
@@ -133,15 +209,18 @@ function createBot() {
       '/start — Wake up Jarvis\n' +
       '/today — See today\'s schedule\n' +
       '/notes — View recent notes\n' +
+      '/reminders — List upcoming reminders\n' +
       '/memory — See stored facts\n' +
       '/help — This message\n\n' +
       '*Or just talk to me naturally!*\n' +
       'Examples:\n' +
       '• "Remind me to take meds at 8pm"\n' +
+      '• "Remind me to drink water every day at 9am"\n' +
       '• "Add standup to calendar at 9am tomorrow"\n' +
       '• "Note: follow up with client on Friday"\n' +
       '• "Remember I wake up at 6am"\n' +
-      '• "What\'s my day looking like?"';
+      '• "What\'s my day looking like?"\n' +
+      '• "Cancel reminder #3"';
     await safeSendMessage(bot, msg.chat.id, help);
   });
 
