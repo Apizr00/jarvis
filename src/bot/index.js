@@ -3,7 +3,7 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const db = require('../db');
-const llm = require('../llm/deepseek');
+const llm = require('../llm');
 const tools = require('../tools');
 const { escapeMd } = tools;
 

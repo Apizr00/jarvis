@@ -1,12 +1,15 @@
-// src/llm/deepseek.js
-// DeepSeek API provider
+// src/llm/mimo.js
+// Xiaomi MiMo API provider — OpenAI-compatible
 require('dotenv').config();
 const axios = require('axios');
 const db = require('../db');
 const redisCache = require('../redis');
 const { buildSystemPrompt } = require('./shared');
 
-const DEEPSEEK_URL = (process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com') + '/v1/chat/completions';
+const MIMO_BASE = (process.env.MIMO_BASE_URL || 'https://api.xiaomimimo.com').replace(/\/+$/, '');
+const MIMO_URL = MIMO_BASE.endsWith('/v1')
+  ? MIMO_BASE + '/chat/completions'
+  : MIMO_BASE + '/v1/chat/completions';
 
 async function chat(userId, userMessage, conversationHistory) {
   if (!conversationHistory) conversationHistory = [];
@@ -15,7 +18,6 @@ async function chat(userId, userMessage, conversationHistory) {
   let facts = await redisCache.getFactsCache(userId);
   if (facts === null) {
     facts = await db.getAllFacts(userId);
-    // Populate cache for next time (fire-and-forget)
     redisCache.setFactsCache(userId, facts);
   }
 
@@ -27,22 +29,30 @@ async function chat(userId, userMessage, conversationHistory) {
     { role: 'user', content: userMessage }
   ]);
 
-  const response = await axios.post(
-    DEEPSEEK_URL,
-    {
-      model: 'deepseek-chat',
-      messages: messages,
-      max_tokens: 500,
-      temperature: 0.3,
-    },
-    {
-      headers: {
-        'Authorization': 'Bearer ' + process.env.DEEPSEEK_API_KEY,
-        'Content-Type': 'application/json',
+  let response;
+  try {
+    response = await axios.post(
+      MIMO_URL,
+      {
+        model: process.env.MIMO_MODEL || 'mimo-v2.5-pro',
+        messages: messages,
+        max_tokens: 500,
+        temperature: 0.3,
       },
-      timeout: 15000,
+      {
+        headers: {
+          'Authorization': 'Bearer ' + process.env.MIMO_API_KEY,
+          'Content-Type': 'application/json',
+        },
+        timeout: 15000,
+      }
+    );
+  } catch (err) {
+    if (err.response) {
+      console.error('MiMo API error:', err.response.status, JSON.stringify(err.response.data).slice(0, 300));
     }
-  );
+    throw err;
+  }
 
   const rawText = response.data.choices[0].message.content.trim();
 
