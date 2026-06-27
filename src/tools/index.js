@@ -137,6 +137,35 @@ async function executeTool(userId, toolCall) {
       return 'Reminder #' + args.reminder_id + ' cancelled. ❌';
     }
 
+    // ── update_reminder ─────────────────────────────────────────────────────
+    case 'update_reminder': {
+      if (!args.reminder_id) {
+        return 'Which reminder did you want to update? I need an ID.';
+      }
+      const updates = {};
+      if (args.text) updates.text = args.text;
+      if (args.time) {
+        const newTime = new Date(args.time);
+        if (isNaN(newTime.getTime())) {
+          return 'I couldn\'t parse that new time. Please try again.';
+        }
+        updates.remind_at = newTime.toISOString();
+      }
+      if (args.recurrence !== undefined) updates.recurrence = args.recurrence;
+
+      const updated = await db.updateReminder(args.reminder_id, updates);
+      if (!updated) {
+        return 'I couldn\'t find reminder #' + args.reminder_id + '. It may have already been cancelled.';
+      }
+
+      const formatted = dayjs(updated.remind_at).format('ddd, D MMM YYYY [at] h:mm A');
+      let reply = 'Updated reminder #' + args.reminder_id + ': *' + escapeMd(updated.text) + '* → ' + formatted;
+      if (updated.recurrence) {
+        reply += ' 🔁 ' + updated.recurrence;
+      }
+      return reply + '.';
+    }
+
     default:
       return 'I tried to use a tool called "' + escapeMd(name) + '" but I don\'t know how to do that yet.';
   }

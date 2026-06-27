@@ -115,6 +115,40 @@ async function cancelReminder(id) {
 }
 
 /**
+ * Update an existing reminder's text, time, and/or recurrence.
+ * @param {number} id
+ * @param {{ text?: string, remind_at?: string, recurrence?: string|null }} updates
+ * @returns {Promise<object>} the updated row
+ */
+async function updateReminder(id, updates) {
+  const setClauses = [];
+  const values = [];
+  let paramIdx = 1;
+
+  if (updates.text !== undefined) {
+    setClauses.push('text = $' + paramIdx++);
+    values.push(updates.text);
+  }
+  if (updates.remind_at !== undefined) {
+    setClauses.push('remind_at = $' + paramIdx++);
+    values.push(updates.remind_at);
+  }
+  if (updates.recurrence !== undefined) {
+    setClauses.push('recurrence = $' + paramIdx++);
+    values.push(updates.recurrence);
+  }
+
+  if (setClauses.length === 0) return null;
+
+  values.push(id);
+  const { rows } = await pool.query(
+    `UPDATE reminders SET ${setClauses.join(', ')} WHERE id = $${paramIdx} RETURNING *`,
+    values
+  );
+  return rows[0] || null;
+}
+
+/**
  * Reschedule a recurring reminder to its next occurrence.
  */
 async function rescheduleRecurring(id, recurrence, lastRemindAt) {
@@ -237,6 +271,7 @@ module.exports = {
   getUpcomingReminders,
   getOverdueReminders,
   cancelReminder,
+  updateReminder,
   rescheduleRecurring,
   createEvent,
   getTodayEvents,

@@ -1,39 +1,63 @@
 // src/llm/shared.js
 // Shared helpers used by all LLM providers
+const dayjs = require('dayjs');
 
-function buildSystemPrompt(facts, timezone) {
+/**
+ * Build the system prompt for the LLM.
+ * @param {Array<{key:string,value:string}>} facts - user memory facts
+ * @param {string} timezone
+ * @param {Array<{id:number,text:string,remind_at:string,recurrence:string|null}>} [reminders] - upcoming reminders
+ */
+function buildSystemPrompt(facts, timezone, reminders) {
   const factLines = facts.length
     ? facts.map(f => '- ' + f.key + ': ' + f.value).join('\n')
     : '(none yet)';
 
+  let reminderLines = '';
+  if (reminders && reminders.length > 0) {
+    reminderLines = '\nCURRENT UPCOMING REMINDERS (use these exact IDs for cancel/update):\n' +
+      reminders.map(r => {
+        const t = dayjs(r.remind_at).format('ddd, D MMM [at] h:mm A');
+        const rec = r.recurrence ? ' [' + r.recurrence + ']' : '';
+        return '- #' + r.id + ': "' + r.text + '" on ' + t + rec;
+      }).join('\n') + '\n';
+  }
+
   const today = new Date().toISOString().split('T')[0];
 
-  return 'You are Jarvis, a sharp and efficient personal AI assistant running on Telegram.\n' +
-    'Current timezone: ' + timezone + '. Today is ' + today + '.\n\n' +
-    'Personal facts about the user:\n' + factLines + '\n\n' +
-    'AVAILABLE TOOLS:\n' +
-    '- create_reminder: set a time-based reminder (supports recurring: daily, weekly, weekdays)\n' +
-    '- create_event: add a calendar event\n' +
-    '- add_note: save a note or idea\n' +
-    '- get_today: fetch today\'s schedule and reminders\n' +
-    '- set_fact: store a personal preference or fact about the user\n' +
-    '- list_reminders: show all upcoming pending reminders\n' +
-    '- cancel_reminder: cancel a reminder by its ID\n\n' +
-    'STRICT OUTPUT FORMAT - respond with ONLY valid JSON, nothing else:\n\n' +
-    '1. Regular reply:\n' +
-    '{"type":"message","content":"your reply here"}\n\n' +
-    '2. Tool call:\n' +
-    '{"type":"tool","name":"tool_name","args":{...}}\n\n' +
-    'For times use ISO-8601: YYYY-MM-DDTHH:mm:ss\n' +
-    'Convert relative times like "at 9pm" or "in 2 hours" to absolute datetime.\n\n' +
-    'TOOL SCHEMAS:\n' +
-    'create_reminder: { "text": string, "time": "ISO-8601", "recurrence": optional "daily"|"weekly"|"weekdays" }\n' +
-    'create_event: { "title": string, "time": "ISO-8601", "duration_minutes": number }\n' +
-    'add_note: { "content": string }\n' +
-    'get_today: {}\n' +
-    'set_fact: { "key": string, "value": string }\n' +
-    'list_reminders: {}\n' +
-    'cancel_reminder: { "reminder_id": number }';
+  // ── JSON-first prompt: the most critical instruction MUST come first ──
+  return '🚨 CRITICAL: You are NOT a chatbot. You are a JSON API endpoint.\n' +
+    'Your ENTIRE response must be a single valid JSON object. Nothing else. No markdown. No explanation.\n' +
+    'If you output anything other than JSON, the system will BREAK and the user will be unhappy.\n\n' +
+    'RESPONSE FORMAT (choose exactly ONE):\n\n' +
+    'A) To perform an action → {\"type\":\"tool\",\"name\":\"TOOL_NAME\",\"args\":{...}}\n' +
+    'B) To just reply → {\"type\":\"message\",\"content\":\"your short reply\"}\n\n' +
+    '⚠️ WARNING: You have NO ability to create, cancel, update, save, or remember anything yourself.\n' +
+    'If a user asks you to DO something, you MUST use format A (tool call). Format B (message) is ONLY for\n' +
+    'pure conversation like greetings, answering factual questions, or casual chat.\n' +
+    'NEVER use format B to say \"Done!\", \"Cancelled!\", \"Updated!\", \"Saved!\", or claim any action was taken.\n\n' +
+    '─────────────── CONTEXT ───────────────\n' +
+    'You are Jarvis, a personal AI assistant on Telegram.\n' +
+    'Timezone: ' + timezone + ' | Today: ' + today + '\n\n' +
+    'User facts:\n' + factLines +
+    reminderLines + '\n' +
+    '─────────────── TOOLS ───────────────\n' +
+    'create_reminder   → args: { text, time(ISO-8601), recurrence? }\n' +
+    'update_reminder   → args: { reminder_id, text?, time?, recurrence? }\n' +
+    'cancel_reminder   → args: { reminder_id }\n' +
+    'list_reminders    → args: {}\n' +
+    'create_event      → args: { title, time(ISO-8601), duration_minutes? }\n' +
+    'add_note          → args: { content }\n' +
+    'get_today         → args: {}\n' +
+    'set_fact          → args: { key, value }\n\n' +
+    '─────────────── RULES ───────────────\n' +
+    '• For times: use ISO-8601 YYYY-MM-DDTHH:mm:ss. Convert \"at 9pm\" → \"' + today + 'T21:00:00\"\n' +
+    '• For cancel/update: match user description to CURRENT UPCOMING REMINDERS above and use the exact #ID\n' +
+    '• If user says \"change X to Y\", use update_reminder (NOT create_reminder)\n' +
+    '• If user asks what reminders exist, use list_reminders\n' +
+    '• Recurrence values: \"daily\", \"weekly\", \"weekdays\", or null to remove recurrence';
 }
+
+module.exports = { buildSystemPrompt };
 
 module.exports = { buildSystemPrompt };

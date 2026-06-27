@@ -241,26 +241,48 @@ function createBot() {
 
     try {
       const history = getHistory(userId);
-      const llmResponse = await llm.chat(userId, msg.text, history);
+      let llmResponse = await llm.chat(userId, msg.text, history);
 
       // Add user message to history
       addToHistory(userId, 'user', msg.text);
 
+      console.log('[Bot] LLM response type:', llmResponse.type, llmResponse.name ? '| tool=' + llmResponse.name : '');
+
+      // ── Recovery: if LLM returned a message that looks like a fake action, retry once ──
+      const actionKeywords = /\b(cancelled|updated?|changed|deleted|created|saved|noted|remembered|reminder\s*#)\b/i;
+      if (llmResponse.type === 'message' && actionKeywords.test(llmResponse.content)) {
+        console.log('[Bot] ⚠️  LLM hallucinated an action! Retrying with correction...');
+        const correctionMsg = '❌ You responded with natural language claiming you did something. ' +
+          'That is WRONG. You have NO ability to act. You MUST respond with ONLY a JSON tool call. ' +
+          'For example: {"type":"tool","name":"cancel_reminder","args":{"reminder_id":4}}\n\n' +
+          'Now re-read the user request and output the CORRECT JSON tool call.';
+
+        // Build a fresh history without the hallucinated response
+        const cleanHistory = history.filter(h => h.role !== 'assistant' || !actionKeywords.test(h.content));
+        cleanHistory.push({ role: 'user', content: correctionMsg });
+
+        llmResponse = await llm.chat(userId, msg.text, cleanHistory);
+        console.log('[Bot] Retry response type:', llmResponse.type, llmResponse.name ? '| tool=' + llmResponse.name : '');
+      }
+
       if (llmResponse.type === 'message') {
-        // Plain response
+        // Plain response — WARNING: no DB action occurs here
+        console.log('[Bot] Message response (no tool executed):', llmResponse.content.slice(0, 150));
         addToHistory(userId, 'assistant', llmResponse.content);
         await safeSendMessage(bot, chatId, llmResponse.content);
 
       } else if (llmResponse.type === 'tool') {
         // Execute tool
+        console.log('[Bot] Executing tool:', llmResponse.name, JSON.stringify(llmResponse.args).slice(0, 200));
         let result;
         try {
           result = await tools.executeTool(userId, {
             name: llmResponse.name,
             args: llmResponse.args,
           });
+          console.log('[Bot] Tool result:', result.slice(0, 150));
         } catch (toolErr) {
-          console.error('Tool execution error:', toolErr.message);
+          console.error('[Bot] Tool execution error:', toolErr.message);
           result = 'I tried to do that but ran into a problem. Please try again.';
         }
 
@@ -268,6 +290,7 @@ function createBot() {
         await safeSendMessage(bot, chatId, result);
 
       } else {
+        console.log('[Bot] Unknown LLM response type:', llmResponse.type);
         await bot.sendMessage(chatId, 'Something went wrong. Try again?');
       }
 

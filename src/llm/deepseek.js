@@ -19,7 +19,10 @@ async function chat(userId, userMessage, conversationHistory) {
     redisCache.setFactsCache(userId, facts);
   }
 
-  const systemPrompt = buildSystemPrompt(facts, process.env.TIMEZONE || 'UTC');
+  // Fetch upcoming reminders so the LLM can reference them by ID for update/cancel
+  const upcomingReminders = await db.getUpcomingReminders(userId, 15);
+
+  const systemPrompt = buildSystemPrompt(facts, process.env.TIMEZONE || 'UTC', upcomingReminders);
 
   const messages = [
     { role: 'system', content: systemPrompt }
@@ -32,7 +35,7 @@ async function chat(userId, userMessage, conversationHistory) {
     {
       model: 'deepseek-chat',
       messages: messages,
-      max_tokens: 500,
+      max_tokens: 800,
       temperature: 0.3,
     },
     {
@@ -45,24 +48,35 @@ async function chat(userId, userMessage, conversationHistory) {
   );
 
   const rawText = response.data.choices[0].message.content.trim();
+  console.log('[DeepSeek] Raw response:', rawText.slice(0, 300));
 
+  // ── Try 1: strip markdown fences then parse ───────────────────────────
   try {
     const cleaned = rawText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
     const parsed = JSON.parse(cleaned);
     if (parsed.type === 'message' || parsed.type === 'tool') {
+      console.log('[DeepSeek] Parsed OK (type=' + parsed.type + ')');
       return parsed;
     }
+    // Valid JSON but wrong type — fall through to rawText
+    console.log('[DeepSeek] Valid JSON but unexpected type=' + parsed.type + ', falling back to rawText');
     return { type: 'message', content: rawText };
   } catch (e) {
-    // JSON.parse failed on full text — try to extract just the JSON object
+    // ── Try 2: extract JSON object with regex ───────────────────────────
     const jsonMatch = rawText.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
         const extracted = JSON.parse(jsonMatch[0]);
         if (extracted.type === 'message' || extracted.type === 'tool') {
+          console.log('[DeepSeek] Regex-extracted JSON OK (type=' + extracted.type + ')');
           return extracted;
         }
-      } catch (_) { /* still couldn't parse, fall through */ }
+        console.log('[DeepSeek] Regex-extracted JSON but unexpected type=' + extracted.type);
+      } catch (_) {
+        console.log('[DeepSeek] Regex extraction found but JSON.parse failed');
+      }
+    } else {
+      console.log('[DeepSeek] No JSON object found in response, treating as plain message');
     }
     return { type: 'message', content: rawText };
   }
