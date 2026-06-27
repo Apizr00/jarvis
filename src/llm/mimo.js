@@ -64,6 +64,16 @@ async function chat(userId, userMessage, conversationHistory) {
     }
     return { type: 'message', content: rawText };
   } catch (e) {
+    // JSON.parse failed on full text — try to extract just the JSON object
+    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        const extracted = JSON.parse(jsonMatch[0]);
+        if (extracted.type === 'message' || extracted.type === 'tool') {
+          return extracted;
+        }
+      } catch (_) { /* still couldn't parse, fall through */ }
+    }
     return { type: 'message', content: rawText };
   }
 }
