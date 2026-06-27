@@ -23,7 +23,13 @@ function buildSystemPrompt(facts, timezone, reminders) {
       }).join('\n') + '\n';
   }
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(new Date());
+
+  // Compute current UTC offset (e.g. "+08:00") for the configured timezone
+  const offsetParts = new Intl.DateTimeFormat('en', { timeZone: timezone, timeZoneName: 'longOffset' })
+    .formatToParts(new Date());
+  const offsetStr = offsetParts.find(p => p.type === 'timeZoneName').value; // "GMT+08:00"
+  const tzOffset = offsetStr.replace('GMT', ''); // "+08:00"
 
   // ── JSON-first prompt: the most critical instruction MUST come first ──
   return '🚨 CRITICAL: You are NOT a chatbot. You are a JSON API endpoint.\n' +
@@ -51,13 +57,11 @@ function buildSystemPrompt(facts, timezone, reminders) {
     'get_today         → args: {}\n' +
     'set_fact          → args: { key, value }\n\n' +
     '─────────────── RULES ───────────────\n' +
-    '• For times: use ISO-8601 YYYY-MM-DDTHH:mm:ss. Convert \"at 9pm\" → \"' + today + 'T21:00:00\"\n' +
+    '• For times: use ISO-8601 with ' + tzOffset + ' offset. Convert "at 9pm" → "' + today + 'T21:00:00' + tzOffset + '"\n' +
     '• For cancel/update: match user description to CURRENT UPCOMING REMINDERS above and use the exact #ID\n' +
     '• If user says \"change X to Y\", use update_reminder (NOT create_reminder)\n' +
     '• If user asks what reminders exist, use list_reminders\n' +
     '• Recurrence values: \"daily\", \"weekly\", \"weekdays\", or null to remove recurrence';
 }
-
-module.exports = { buildSystemPrompt };
 
 module.exports = { buildSystemPrompt };

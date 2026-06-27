@@ -3,7 +3,7 @@
 const cron = require('node-cron');
 const db = require('../db');
 const dayjs = require('dayjs');
-const { escapeMd } = require('../tools');
+const { escapeMd, safeSendMessage } = require('../tools');
 const { getWeatherSummary } = require('../tools/weather');
 const { getQuote } = require('../tools/quote');
 
@@ -51,19 +51,25 @@ async function fireReminder(reminder) {
   if (!botInstance) return;
 
   try {
-    const message = '⏰ *Reminder:* ' + reminder.text;
-    await botInstance.sendMessage(reminder.user_id, message, { parse_mode: 'Markdown' });
+    const timeFormatted = dayjs(reminder.remind_at).format('h:mm A');
+    const dateFormatted = dayjs(reminder.remind_at).format('dddd, D MMM YYYY');
+    const recurrenceLabel = { daily: '🔁 Daily', weekly: '🔁 Weekly', weekdays: '🔁 Weekdays' };
+
+    const message =
+      '⏰ *Reminder*\n\n' +
+      escapeMd(reminder.text) + '\n\n' +
+      '📅 ' + dateFormatted + '\n' +
+      '🕐 ' + timeFormatted +
+      (reminder.recurrence ? '\n' + (recurrenceLabel[reminder.recurrence] || '🔁 ' + reminder.recurrence) : '');
+
+    await safeSendMessage(botInstance, reminder.user_id, message);
 
     if (reminder.recurrence) {
       // Recurring: reschedule to next occurrence
       const nextTime = await db.rescheduleRecurring(reminder.id, reminder.recurrence, reminder.remind_at);
       if (nextTime) {
         const nextFormatted = dayjs(nextTime).format('ddd, D MMM [at] h:mm A');
-        await botInstance.sendMessage(
-          reminder.user_id,
-          '🔁 Next occurrence: ' + nextFormatted,
-          { parse_mode: 'Markdown' }
-        );
+        await safeSendMessage(botInstance, reminder.user_id, '🔁 Next occurrence: ' + nextFormatted);
       }
       console.log('Fired recurring reminder #' + reminder.id + ' (' + reminder.recurrence + ') → next: ' + (nextTime || 'N/A'));
     } else {
@@ -143,7 +149,7 @@ async function sendMorningBriefing() {
     const quote = await getQuote();
     message += '\n' + quote;
 
-    await botInstance.sendMessage(userId, message, { parse_mode: 'Markdown' });
+    await safeSendMessage(botInstance, userId, message);
     console.log('🌅 Morning briefing sent');
   } catch (err) {
     console.error('Morning briefing failed:', err.message);

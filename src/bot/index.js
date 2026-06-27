@@ -6,7 +6,7 @@ const dayjs = require('dayjs');
 const db = require('../db');
 const llm = require('../llm');
 const tools = require('../tools');
-const { escapeMd } = tools;
+const { escapeMd, safeSendMessage } = tools;
 
 const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
 
@@ -23,25 +23,6 @@ function addToHistory(userId, role, content) {
   history.push({ role, content });
   // Keep last 10 messages to avoid huge prompts
   if (history.length > 10) history.splice(0, history.length - 10);
-}
-
-/**
- * Safely send a message, falling back to plain text if Markdown parsing fails.
- * Telegram's Markdown parser rejects text with unescaped special characters.
- */
-async function safeSendMessage(bot, chatId, text) {
-  try {
-    await bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
-  } catch (mdErr) {
-    // If Markdown fails, send as plain text (no parse_mode)
-    try {
-      await bot.sendMessage(chatId, text);
-    } catch (plainErr) {
-      // If plain text also fails (e.g., message too long), send a generic fallback
-      console.error('sendMessage fallback error:', plainErr.message);
-      await bot.sendMessage(chatId, 'Something went wrong displaying the result.');
-    }
-  }
 }
 
 function createBot() {

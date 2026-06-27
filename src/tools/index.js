@@ -15,6 +15,48 @@ function escapeMd(text) {
 }
 
 /**
+ * Safely send a message, falling back to plain text if Markdown parsing fails.
+ * Telegram's Markdown parser rejects text with unescaped special characters.
+ * @param {object} bot - node-telegram-bot-api instance
+ * @param {number|string} chatId
+ * @param {string} text
+ */
+async function safeSendMessage(bot, chatId, text) {
+  try {
+    await bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+  } catch (mdErr) {
+    // If Markdown fails, send as plain text (no parse_mode)
+    try {
+      await bot.sendMessage(chatId, text);
+    } catch (plainErr) {
+      console.error('sendMessage fallback error:', plainErr.message);
+      await bot.sendMessage(chatId, 'Something went wrong displaying the result.');
+    }
+  }
+}
+
+/**
+ * Parse an ISO-8601 time string in the configured timezone.
+ * If the string lacks a timezone offset, it's interpreted as local time (e.g. Asia/Kuala_Lumpur).
+ * @param {string} isoString - e.g. "2026-06-27T07:52:00" or "2026-06-27T07:52:00+08:00"
+ * @returns {Date}
+ */
+function parseLocalTime(isoString) {
+  // If already has timezone info (+HH:MM, -HH:MM, or Z), parse directly
+  if (isoString.match(/[+-]\d{2}:\d{2}$/) || isoString.endsWith('Z')) {
+    return new Date(isoString);
+  }
+  // No timezone — interpret in the configured timezone
+  const tz = process.env.TIMEZONE || 'UTC';
+  const now = new Date();
+  const offsetParts = new Intl.DateTimeFormat('en', { timeZone: tz, timeZoneName: 'longOffset' })
+    .formatToParts(now);
+  const offsetStr = offsetParts.find(p => p.type === 'timeZoneName').value; // "GMT+08:00"
+  const offset = offsetStr.replace('GMT', ''); // "+08:00"
+  return new Date(isoString + offset);
+}
+
+/**
  * Execute a tool call returned by the LLM.
  * @param {string} userId
  * @param {{ name: string, args: object }} toolCall
@@ -30,17 +72,23 @@ async function executeTool(userId, toolCall) {
       if (!args.text || !args.time) {
         return 'I need both a reminder text and a time to set that up.';
       }
-      const remindAt = new Date(args.time);
+      const remindAt = parseLocalTime(args.time);
       if (isNaN(remindAt.getTime())) {
         return 'I couldn\'t parse that time. Can you try again with a clearer time?';
       }
       const recurrence = args.recurrence || null;
       const reminder = await db.createReminder(userId, args.text, remindAt, recurrence);
-      const formatted = dayjs(reminder.remind_at).format('ddd, D MMM YYYY [at] h:mm A');
-      let reply = 'Got it. I\'ll remind you to *' + escapeMd(args.text) + '* on ' + formatted + '.';
+      const dateFormatted = dayjs(reminder.remind_at).format('dddd, D MMM YYYY');
+      const timeFormatted = dayjs(reminder.remind_at).format('h:mm A');
+      const recurrenceLabel = { daily: '🔁 Repeats daily', weekly: '🔁 Repeats weekly', weekdays: '🔁 Repeats every weekday' };
+
+      let reply =
+        '✅ *Reminder set!*\n\n' +
+        escapeMd(args.text) + '\n\n' +
+        '📅 ' + dateFormatted + '\n' +
+        '🕐 ' + timeFormatted;
       if (recurrence) {
-        const recurrenceLabels = { daily: 'daily', weekly: 'weekly', weekdays: 'every weekday' };
-        reply += ' 🔁 This repeats ' + (recurrenceLabels[recurrence] || recurrence) + '.';
+        reply += '\n' + (recurrenceLabel[recurrence] || '🔁 ' + recurrence);
       }
       return reply;
     }
@@ -50,14 +98,22 @@ async function executeTool(userId, toolCall) {
       if (!args.title || !args.time) {
         return 'I need a title and time to create an event.';
       }
-      const eventTime = new Date(args.time);
+      const eventTime = parseLocalTime(args.time);
       if (isNaN(eventTime.getTime())) {
         return 'That time didn\'t parse correctly. Please try again.';
       }
       const duration = args.duration_minutes || 60;
       const event = await db.createEvent(userId, args.title, eventTime, duration);
-      const formatted = dayjs(event.event_time).format('ddd, D MMM YYYY [at] h:mm A');
-      return 'Event added: *' + escapeMd(event.title) + '* on ' + formatted + ' (' + duration + ' min).';
+      const dateFormatted = dayjs(event.event_time).format('dddd, D MMM YYYY');
+      const timeFormatted = dayjs(event.event_time).format('h:mm A');
+
+      return (
+        '📅 *Event added!*\n\n' +
+        escapeMd(event.title) + '\n\n' +
+        '📅 ' + dateFormatted + '\n' +
+        '🕐 ' + timeFormatted + '\n' +
+        '⏳ ' + duration + ' min'
+      );
     }
 
     // ── add_note ─────────────────────────────────────────────────────────────
@@ -66,7 +122,8 @@ async function executeTool(userId, toolCall) {
         return 'What did you want me to note down?';
       }
       await db.addNote(userId, args.content);
-      return 'Noted. \uD83D\uDCDD';
+      const now = dayjs().format('ddd, D MMM [at] h:mm A');
+      return '📝 *Note saved!*\n\n' + escapeMd(args.content) + '\n\n_' + now + '_';
     }
 
     // ── get_today ─────────────────────────────────────────────────────────────
@@ -76,26 +133,26 @@ async function executeTool(userId, toolCall) {
         db.getTodayReminders(userId),
       ]);
 
-      let reply = '*Today\'s Overview* \uD83D\uDCC5\n\n';
+      let reply = '*📅 Today\'s Overview*\n\n';
 
       if (events.length === 0 && reminders.length === 0) {
-        return reply + 'Nothing scheduled for today. Clean slate!';
+        return reply + '✨ Nothing scheduled — enjoy your day!';
       }
 
       if (events.length > 0) {
-        reply += '*Events:*\n';
+        reply += '*📅 Events*\n';
         events.forEach(e => {
           const t = dayjs(e.event_time).format('h:mm A');
-          reply += '\u2022 ' + t + ' \u2014 ' + escapeMd(e.title) + '\n';
+          reply += '• ' + t + ' — ' + escapeMd(e.title) + '\n';
         });
         reply += '\n';
       }
 
       if (reminders.length > 0) {
-        reply += '*Reminders:*\n';
+        reply += '*⏰ Reminders*\n';
         reminders.forEach(r => {
           const t = dayjs(r.remind_at).format('h:mm A');
-          reply += '\u2022 ' + t + ' \u2014 ' + escapeMd(r.text) + '\n';
+          reply += '• ' + t + ' — ' + escapeMd(r.text) + '\n';
         });
       }
 
@@ -108,18 +165,17 @@ async function executeTool(userId, toolCall) {
         return 'I need both a key and value to remember that.';
       }
       await db.setFact(userId, args.key, args.value);
-      // Invalidate Redis cache so next LLM call picks up the new fact
       redisCache.invalidateFactsCache(userId);
-      return 'Got it, I\'ll remember that ' + escapeMd(args.key) + ' is ' + escapeMd(args.value) + '.';
+      return '🧠 *Remembered!*\n\n' + escapeMd(args.key) + ' → ' + escapeMd(args.value);
     }
 
     // ── list_reminders ───────────────────────────────────────────────────────
     case 'list_reminders': {
       const reminders = await db.getUpcomingReminders(userId, 15);
       if (reminders.length === 0) {
-        return 'You have no upcoming reminders. 🎉';
+        return '✨ You have no upcoming reminders.';
       }
-      let reply = '*Upcoming Reminders* ⏰\n\n';
+      let reply = '*⏰ Upcoming Reminders*\n\n';
       reminders.forEach(r => {
         const t = dayjs(r.remind_at).format('ddd, D MMM [at] h:mm A');
         const recurring = r.recurrence ? ' 🔁' : '';
@@ -134,7 +190,7 @@ async function executeTool(userId, toolCall) {
         return 'Which reminder did you want to cancel? I need an ID.';
       }
       await db.cancelReminder(args.reminder_id);
-      return 'Reminder #' + args.reminder_id + ' cancelled. ❌';
+      return '❌ *Cancelled* — reminder #' + args.reminder_id + ' has been removed.';
     }
 
     // ── update_reminder ─────────────────────────────────────────────────────
@@ -145,7 +201,7 @@ async function executeTool(userId, toolCall) {
       const updates = {};
       if (args.text) updates.text = args.text;
       if (args.time) {
-        const newTime = new Date(args.time);
+        const newTime = parseLocalTime(args.time);
         if (isNaN(newTime.getTime())) {
           return 'I couldn\'t parse that new time. Please try again.';
         }
@@ -158,12 +214,17 @@ async function executeTool(userId, toolCall) {
         return 'I couldn\'t find reminder #' + args.reminder_id + '. It may have already been cancelled.';
       }
 
-      const formatted = dayjs(updated.remind_at).format('ddd, D MMM YYYY [at] h:mm A');
-      let reply = 'Updated reminder #' + args.reminder_id + ': *' + escapeMd(updated.text) + '* → ' + formatted;
-      if (updated.recurrence) {
-        reply += ' 🔁 ' + updated.recurrence;
-      }
-      return reply + '.';
+      const dateFormatted = dayjs(updated.remind_at).format('dddd, D MMM YYYY');
+      const timeFormatted = dayjs(updated.remind_at).format('h:mm A');
+      const recLabel = updated.recurrence ? '\n🔁 ' + updated.recurrence : '';
+
+      let reply =
+        '✏️ *Reminder updated!*\n\n' +
+        escapeMd(updated.text) + '\n\n' +
+        '📅 ' + dateFormatted + '\n' +
+        '🕐 ' + timeFormatted +
+        recLabel;
+      return reply;
     }
 
     default:
@@ -171,4 +232,4 @@ async function executeTool(userId, toolCall) {
   }
 }
 
-module.exports = { executeTool, escapeMd };
+module.exports = { executeTool, escapeMd, safeSendMessage };
