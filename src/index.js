@@ -1,7 +1,8 @@
 // src/index.js
-// Entry point - boots bot, API server, and scheduler
+// Entry point - boots bot, API server, scheduler, and Redis
 require('dotenv').config();
 
+const redis = require('./redis');
 const { createBot } = require('./bot');
 const { createApiServer } = require('./api');
 const { startScheduler } = require('./scheduler');
@@ -27,6 +28,9 @@ async function main() {
   console.log('');
   console.log('  🤖  J A R V I S  —  Personal AI Assistant v1.0  🤖');
   console.log('');
+
+  // Connect Redis (non-blocking — bot works without it)
+  redis.connect();
 
   // Start Telegram bot
   const bot = createBot();

@@ -3,6 +3,7 @@
 require('dotenv').config();
 const axios = require('axios');
 const db = require('../db');
+const redisCache = require('../redis');
 
 const DEEPSEEK_URL = (process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com') + '/v1/chat/completions';
 
@@ -40,7 +41,14 @@ function buildSystemPrompt(facts, timezone) {
 async function chat(userId, userMessage, conversationHistory) {
   if (!conversationHistory) conversationHistory = [];
 
-  const facts = await db.getAllFacts(userId);
+  // Try Redis cache first, fall back to DB
+  let facts = await redisCache.getFactsCache(userId);
+  if (facts === null) {
+    facts = await db.getAllFacts(userId);
+    // Populate cache for next time (fire-and-forget)
+    redisCache.setFactsCache(userId, facts);
+  }
+
   const systemPrompt = buildSystemPrompt(facts, process.env.TIMEZONE || 'UTC');
 
   const messages = [

@@ -2,6 +2,7 @@
 // Tool executor - maps LLM tool calls to actual DB operations
 const db = require('../db');
 const dayjs = require('dayjs');
+const redisCache = require('../redis');
 
 /**
  * Escape special characters for Telegram's Markdown parser.
@@ -101,6 +102,8 @@ async function executeTool(userId, toolCall) {
         return 'I need both a key and value to remember that.';
       }
       await db.setFact(userId, args.key, args.value);
+      // Invalidate Redis cache so next LLM call picks up the new fact
+      redisCache.invalidateFactsCache(userId);
       return 'Got it, I\'ll remember that ' + escapeMd(args.key) + ' is ' + escapeMd(args.value) + '.';
     }
 
