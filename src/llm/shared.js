@@ -55,6 +55,8 @@ function buildSystemPrompt(facts, timezone, reminders) {
     'create_event      → args: { title, time(ISO-8601), duration_minutes? }\n' +
     'add_note          → args: { content }\n' +
     'get_today         → args: {}\n' +
+    'get_briefing      → args: {}\n' +
+    'get_quote         → args: {}\n' +
     'set_fact          → args: { key, value }\n\n' +
     '─────────────── RULES ───────────────\n' +
     '• For times: use ISO-8601 with ' + tzOffset + ' offset. Convert "at 9pm" → "' + today + 'T21:00:00' + tzOffset + '"\n' +

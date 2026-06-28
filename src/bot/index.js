@@ -7,6 +7,8 @@ const db = require('../db');
 const llm = require('../llm');
 const tools = require('../tools');
 const { escapeMd, safeSendMessage } = tools;
+const { buildBriefingMessage } = require('../scheduler');
+const { getQuote } = require('../tools/quote');
 
 const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
 
@@ -182,6 +184,32 @@ function createBot() {
     }
   });
 
+  // ── /briefing command ─────────────────────────────────────────────────────
+  bot.onText(/\/briefing/, async (msg) => {
+    if (!isOwner(msg)) return;
+    await bot.sendChatAction(msg.chat.id, 'typing');
+    try {
+      const message = await buildBriefingMessage();
+      await safeSendMessage(bot, msg.chat.id, message);
+    } catch (err) {
+      console.error('/briefing error:', err.message);
+      await bot.sendMessage(msg.chat.id, '❌ Could not generate briefing.');
+    }
+  });
+
+  // ── /quote command ────────────────────────────────────────────────────────
+  bot.onText(/\/quote/, async (msg) => {
+    if (!isOwner(msg)) return;
+    await bot.sendChatAction(msg.chat.id, 'typing');
+    try {
+      const quote = await getQuote();
+      await safeSendMessage(bot, msg.chat.id, quote);
+    } catch (err) {
+      console.error('/quote error:', err.message);
+      await bot.sendMessage(msg.chat.id, '❌ Could not fetch a quote.');
+    }
+  });
+
   // ── /help command ─────────────────────────────────────────────────────────
   bot.onText(/\/help/, async (msg) => {
     if (!isOwner(msg)) return;
@@ -189,6 +217,8 @@ function createBot() {
       '*Jarvis Commands* 🤖\n\n' +
       '/start — Wake up Jarvis\n' +
       '/today — See today\'s schedule\n' +
+      '/briefing — Morning briefing (events, reminders, weather, quote)\n' +
+      '/quote — Get a motivational quote\n' +
       '/notes — View recent notes\n' +
       '/reminders — List upcoming reminders\n' +
       '/memory — See stored facts\n' +

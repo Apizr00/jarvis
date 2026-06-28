@@ -83,77 +83,88 @@ async function fireReminder(reminder) {
 }
 
 /**
- * Send the morning briefing to the owner.
+ * Build the morning briefing message (pure function, no side effects).
+ * @returns {Promise<string>}
+ */
+async function buildBriefingMessage() {
+  const userId = String(process.env.TELEGRAM_OWNER_ID);
+  if (!userId) return '';
+
+  const tz = process.env.TIMEZONE || 'UTC';
+  const today = dayjs().format('dddd, D MMMM YYYY');
+
+  const [events, reminders, overdue, userName] = await Promise.all([
+    db.getTodayEvents(userId),
+    db.getTodayReminders(userId),
+    db.getOverdueReminders(userId),
+    db.getUserName(userId),
+  ]);
+
+  const name = userName || 'Boss';
+  let message = '🌅 *Good Morning, ' + escapeMd(name) + '!* Here\'s your briefing for ' + today + ':\n\n';
+
+  // ── Today's events ───────────────────────────────────────────────────
+  if (events.length > 0) {
+    message += '*📅 Today\'s Events:*\n';
+    events.forEach(e => {
+      const t = dayjs(e.event_time).format('h:mm A');
+      message += '• ' + t + ' — ' + escapeMd(e.title) + '\n';
+    });
+    message += '\n';
+  } else {
+    message += '*📅 Events:* None scheduled\n\n';
+  }
+
+  // ── Today's reminders ────────────────────────────────────────────────
+  if (reminders.length > 0) {
+    message += '*⏰ Today\'s Reminders:*\n';
+    reminders.forEach(r => {
+      const t = dayjs(r.remind_at).format('h:mm A');
+      const recurring = r.recurrence ? ' 🔁' : '';
+      message += '• ' + t + ' — ' + escapeMd(r.text) + recurring + '\n';
+    });
+    message += '\n';
+  } else {
+    message += '*⏰ Reminders:* None for today\n\n';
+  }
+
+  // ── Overdue tasks ────────────────────────────────────────────────────
+  if (overdue.length > 0) {
+    message += '*⚠️ Overdue:*\n';
+    overdue.forEach(r => {
+      const t = dayjs(r.remind_at).format('MMM D, h:mm A');
+      message += '• ' + escapeMd(r.text) + ' _(was due ' + t + ')_\n';
+    });
+    message += '\n';
+  }
+
+  // ── Weather ──────────────────────────────────────────────────────────
+  const weather = await getWeatherSummary();
+  if (weather) {
+    message += '\n' + weather;
+  }
+
+  // ── Motivational quote ───────────────────────────────────────────────
+  const quote = await getQuote();
+  message += '\n' + quote;
+
+  return message;
+}
+
+/**
+ * Send the morning briefing to the owner (cron-triggered, has botInstance).
  */
 async function sendMorningBriefing() {
   if (!botInstance) return;
-  const userId = String(process.env.TELEGRAM_OWNER_ID);
-  if (!userId) return;
 
   try {
-    const tz = process.env.TIMEZONE || 'UTC';
-    const today = dayjs().format('dddd, D MMMM YYYY');
-
-    const [events, reminders, overdue, userName] = await Promise.all([
-      db.getTodayEvents(userId),
-      db.getTodayReminders(userId),
-      db.getOverdueReminders(userId),
-      db.getUserName(userId),
-    ]);
-
-    const name = userName || 'Boss';
-    let message = '🌅 *Good Morning, ' + escapeMd(name) + '!* Here\'s your briefing for ' + today + ':\n\n';
-
-    // ── Today's events ───────────────────────────────────────────────────
-    if (events.length > 0) {
-      message += '*📅 Today\'s Events:*\n';
-      events.forEach(e => {
-        const t = dayjs(e.event_time).format('h:mm A');
-        message += '• ' + t + ' — ' + escapeMd(e.title) + '\n';
-      });
-      message += '\n';
-    } else {
-      message += '*📅 Events:* None scheduled\n\n';
-    }
-
-    // ── Today's reminders ────────────────────────────────────────────────
-    if (reminders.length > 0) {
-      message += '*⏰ Today\'s Reminders:*\n';
-      reminders.forEach(r => {
-        const t = dayjs(r.remind_at).format('h:mm A');
-        const recurring = r.recurrence ? ' 🔁' : '';
-        message += '• ' + t + ' — ' + escapeMd(r.text) + recurring + '\n';
-      });
-      message += '\n';
-    } else {
-      message += '*⏰ Reminders:* None for today\n\n';
-    }
-
-    // ── Overdue tasks ────────────────────────────────────────────────────
-    if (overdue.length > 0) {
-      message += '*⚠️ Overdue:*\n';
-      overdue.forEach(r => {
-        const t = dayjs(r.remind_at).format('MMM D, h:mm A');
-        message += '• ' + escapeMd(r.text) + ' _(was due ' + t + ')_\n';
-      });
-      message += '\n';
-    }
-
-    // ── Weather ──────────────────────────────────────────────────────────
-    const weather = await getWeatherSummary();
-    if (weather) {
-      message += '\n' + weather;
-    }
-
-    // ── Motivational quote ───────────────────────────────────────────────
-    const quote = await getQuote();
-    message += '\n' + quote;
-
-    await safeSendMessage(botInstance, userId, message);
+    const message = await buildBriefingMessage();
+    if (!message) return;
+    await safeSendMessage(botInstance, String(process.env.TELEGRAM_OWNER_ID), message);
     console.log('🌅 Morning briefing sent');
   } catch (err) {
     console.error('Morning briefing failed:', err.message);
   }
 }
 
-module.exports = { startScheduler };
+module.exports = { startScheduler, buildBriefingMessage };

@@ -227,6 +227,18 @@ async function executeTool(userId, toolCall) {
       return reply;
     }
 
+    // ── get_quote ────────────────────────────────────────────────────────────
+    case 'get_quote': {
+      const { getQuote } = require('./quote');
+      return await getQuote();
+    }
+
+    // ── get_briefing ─────────────────────────────────────────────────────────
+    case 'get_briefing': {
+      const { buildBriefingMessage } = require('../scheduler');
+      return await buildBriefingMessage();
+    }
+
     default:
       return 'I tried to use a tool called "' + escapeMd(name) + '" but I don\'t know how to do that yet.';
   }
