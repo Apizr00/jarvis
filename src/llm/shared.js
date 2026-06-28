@@ -10,6 +10,8 @@ const KNOWN_TOOLS = [
   'add_note', 'get_today', 'get_briefing', 'get_quote', 'set_fact',
   'web_search', 'get_weekly_review', 'set_config', 'revert_config',
   'get_current_time',
+  'create_task', 'update_task', 'start_task', 'complete_task', 'cancel_task', 'list_tasks',
+  'create_goal', 'update_goal', 'complete_goal', 'abandon_goal', 'list_goals',
 ];
 
 // Common LLM typos → correct tool name
@@ -42,6 +44,17 @@ const TOOL_ALIASES = {
   'whattime': 'get_current_time',
   'timenow': 'get_current_time',
   'now': 'get_current_time',
+  'createtask': 'create_task', 'addtask': 'create_task', 'newtask': 'create_task',
+  'updatetask': 'update_task', 'edittask': 'update_task',
+  'starttask': 'start_task', 'begintask': 'start_task',
+  'completetask': 'complete_task', 'finishtask': 'complete_task', 'donetask': 'complete_task', 'markdone': 'complete_task',
+  'canceltask': 'cancel_task', 'deletetask': 'cancel_task',
+  'listtasks': 'list_tasks', 'showtasks': 'list_tasks', 'tasks': 'list_tasks',
+  'creategoal': 'create_goal', 'addgoal': 'create_goal', 'newgoal': 'create_goal',
+  'updategoal': 'update_goal', 'editgoal': 'update_goal',
+  'completegoal': 'complete_goal', 'finishgoal': 'complete_goal', 'achievegoal': 'complete_goal',
+  'abandongoal': 'abandon_goal', 'dropgoal': 'abandon_goal',
+  'listgoals': 'list_goals', 'showgoals': 'list_goals', 'goals': 'list_goals',
 };
 
 /**
@@ -193,7 +206,22 @@ async function buildSystemPrompt(userId, facts, timezone, reminders) {
     '• Recurrence values: "daily", "weekly", "weekdays", or null to remove recurrence\n' +
     '• Use web_search for: latest news, current events, stock/crypto prices, weather forecasts, factual lookups, or anything requiring real-time/up-to-date info. User CANNOT web search themselves — only you can trigger it via this tool.\n' +
     '• set_config keys: "bot_name", "bot_personality", "morning_briefing_time" (24h HH:MM), "weekly_review_time" (24h HH:MM), "weather_location". Use this when user wants to change a bot setting.\n' +
-    '• revert_config keys: same as set_config. Use when user wants to undo/restore a previous setting (e.g. "tukar balik nama", "undo personality", "revert location").';
+    '• revert_config keys: same as set_config. Use when user wants to undo/restore a previous setting (e.g. "tukar balik nama", "undo personality", "revert location").\n\n' +
+    '─────────────── TASKS & GOALS ───────────────\n' +
+    'Task status flow: pending → start_task → in_progress → complete_task → done\n' +
+    'create_task   → args: { title, description?, priority?("high"|"medium"|"low"), due_date?(YYYY-MM-DD), goal_id? }\n' +
+    'update_task   → args: { task_id, title?, description?, priority?, due_date?, goal_id? }\n' +
+    'start_task    → args: { task_id }\n' +
+    'complete_task → args: { task_id }\n' +
+    'cancel_task   → args: { task_id }\n' +
+    'list_tasks    → args: { status? }\n' +
+    'create_goal   → args: { title, description?, target_date?(YYYY-MM-DD) }\n' +
+    'update_goal   → args: { goal_id, title?, description?, progress?(0-100), target_date? }\n' +
+    'complete_goal → args: { goal_id }\n' +
+    'abandon_goal  → args: { goal_id }\n' +
+    'list_goals    → args: {}\n\n' +
+    'TASK vs REMINDER: Reminder = time-based ping ("remind me at 6pm"). Task = work item ("I need to finish report"). Goal = long-term target ("learn Rust").\n' +
+    'If user says "I want to..." or "I need to..." without a specific time → use create_task, NOT create_reminder.';
 }
 
 module.exports = { buildSystemPrompt, normalizeLLMResponse };

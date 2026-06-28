@@ -541,6 +541,111 @@ async function executeTool(userId, toolCall) {
       return '↩️ *Reverted!*\n\n*' + label + '* → ' + escapeMd(prevVal);
     }
 
+    // ── create_task ──────────────────────────────────────────────────────────
+    case 'create_task': {
+      if (!args.title) return 'What task would you like to create? I need a title.';
+      const dueDate = args.due_date || null;
+      const task = await db.createTask(userId, args.title, args.description || '', args.priority || 'medium', dueDate, args.goal_id || null);
+      const priorityIcon = { high: '🔴', medium: '🟡', low: '🟢' };
+      let reply = '✅ *Task created!*\n\n' + escapeMd(task.title) + '\n📌 ' + (priorityIcon[task.priority] || '') + ' ' + task.priority;
+      if (task.due_date) reply += '\n📅 Due: ' + task.due_date;
+      return { type: 'result', tool: 'create_task', message: reply, id: task.id, meta: { title: task.title, priority: task.priority, due_date: task.due_date } };
+    }
+    case 'start_task': {
+      if (!args.task_id) return 'Which task? I need a task ID.';
+      const task = await db.startTask(args.task_id);
+      if (!task) return 'Task #' + args.task_id + ' not found.';
+      return '🚀 *Started!* — ' + escapeMd(task.title) + ' is now *In Progress*';
+    }
+    case 'complete_task': {
+      if (!args.task_id) return 'Which task? I need a task ID.';
+      const task = await db.completeTask(args.task_id);
+      if (!task) return 'Task #' + args.task_id + ' not found.';
+      return { type: 'result', tool: 'complete_task', message: '🎉 *Done!* — ' + escapeMd(task.title) + ' completed. Great job! 💪', id: task.id };
+    }
+    case 'cancel_task': {
+      if (!args.task_id) return 'Which task? I need a task ID.';
+      const task = await db.cancelTask(args.task_id);
+      if (!task) return 'Task #' + args.task_id + ' not found.';
+      return '❌ *Cancelled* — ' + escapeMd(task.title);
+    }
+    case 'list_tasks': {
+      const status = args.status || null;
+      let tasks;
+      if (status && ['pending', 'in_progress', 'done', 'cancelled'].includes(status)) {
+        tasks = await db.getTasksByStatus(userId, status);
+      } else {
+        tasks = await db.getActiveTasks(userId);
+      }
+      if (tasks.length === 0) return '✨ No ' + (status || 'active') + ' tasks. You\'re all clear!';
+      let reply = '*📋 ' + (status ? status.replace('_', ' ').toUpperCase() : 'Active') + ' Tasks*\n\n';
+      const statusIcon = { pending: '⬜', in_progress: '🔄', done: '✅', cancelled: '❌' };
+      const priorityOrder = { high: 1, medium: 2, low: 3 };
+      tasks.sort((a, b) => (priorityOrder[a.priority] || 2) - (priorityOrder[b.priority] || 2));
+      tasks.forEach(t => {
+        reply += (statusIcon[t.status] || '•') + ' *' + escapeMd(t.title) + '* [' + t.priority + ']';
+        if (t.due_date) reply += ' — 📅 ' + t.due_date;
+        reply += ' _(#' + t.id + ')_\n';
+      });
+      return reply.trim();
+    }
+    case 'create_goal': {
+      if (!args.title) return 'What goal would you like to set? I need a title.';
+      const goal = await db.createGoal(userId, args.title, args.description || '', args.target_date || null);
+      let reply = '🎯 *Goal set!*\n\n' + escapeMd(goal.title) + '\n📊 Progress: 0%';
+      if (goal.target_date) reply += '\n📅 Target: ' + goal.target_date;
+      return { type: 'result', tool: 'create_goal', message: reply, id: goal.id, meta: { title: goal.title, target_date: goal.target_date } };
+    }
+    case 'complete_goal': {
+      if (!args.goal_id) return 'Which goal? I need a goal ID.';
+      const goal = await db.completeGoal(args.goal_id);
+      if (!goal) return 'Goal #' + args.goal_id + ' not found.';
+      return '🏆 *Goal achieved!* — ' + escapeMd(goal.title) + ' 100% complete. Congratulations! 🎉';
+    }
+    case 'abandon_goal': {
+      if (!args.goal_id) return 'Which goal? I need a goal ID.';
+      const goal = await db.abandonGoal(args.goal_id);
+      if (!goal) return 'Goal #' + args.goal_id + ' not found.';
+      return '🗑️ *Goal abandoned* — ' + escapeMd(goal.title);
+    }
+    case 'list_goals': {
+      const goals = await db.getAllGoals(userId);
+      if (goals.length === 0) return '🎯 No goals set yet. What would you like to achieve?\nTry: "I want to learn Rust" or "My goal is to lose 5kg"';
+      let reply = '*🎯 Goals*\n\n';
+      goals.forEach(g => {
+        const bar = '█'.repeat(Math.round(g.progress / 10)) + '░'.repeat(10 - Math.round(g.progress / 10));
+        reply += (g.status === 'completed' ? '✅ ' : g.status === 'abandoned' ? '❌ ' : '🎯 ') + '*' + escapeMd(g.title) + '*\n';
+        reply += '  ' + bar + ' ' + g.progress + '%\n';
+        if (g.target_date) reply += '  📅 Target: ' + g.target_date + '\n';
+        reply += '\n';
+      });
+      return reply.trim();
+    }
+    case 'update_task': {
+      if (!args.task_id) return 'Which task? I need a task ID.';
+      const updates = {};
+      if (args.title) updates.title = args.title;
+      if (args.description !== undefined) updates.description = args.description;
+      if (args.priority) updates.priority = args.priority;
+      if (args.due_date !== undefined) updates.due_date = args.due_date;
+      if (args.goal_id !== undefined) updates.goal_id = args.goal_id;
+      const task = await db.updateTask(args.task_id, updates);
+      if (!task) return 'Task #' + args.task_id + ' not found.';
+      return '✏️ *Task updated!* — ' + escapeMd(task.title);
+    }
+    case 'update_goal': {
+      if (!args.goal_id) return 'Which goal? I need a goal ID.';
+      const updates = {};
+      if (args.title) updates.title = args.title;
+      if (args.description !== undefined) updates.description = args.description;
+      if (args.progress !== undefined) updates.progress = args.progress;
+      if (args.target_date !== undefined) updates.target_date = args.target_date;
+      if (args.status) updates.status = args.status;
+      const goal = await db.updateGoal(args.goal_id, updates);
+      if (!goal) return 'Goal #' + args.goal_id + ' not found.';
+      return '✏️ *Goal updated!* — ' + escapeMd(goal.title) + (goal.progress ? ' (' + goal.progress + '%)' : '');
+    }
+
     default:
       return 'I tried to use a tool called "' + escapeMd(name) + '" but I don\'t know how to do that yet.';
   }

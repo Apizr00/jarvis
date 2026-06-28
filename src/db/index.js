@@ -676,6 +676,94 @@ async function getTodayReflection(userId) {
   return rows.length > 0 ? rows[0] : null;
 }
 
+// ── Tasks & Goals ────────────────────────────────────────────────────────────
+
+async function createGoal(userId, title, description = '', targetDate = null) {
+  const { rows } = await pool.query(
+    `INSERT INTO goals (user_id, title, description, target_date)
+     VALUES ($1, $2, $3, $4) RETURNING *`,
+    [String(userId), title, description, targetDate]
+  );
+  return rows[0];
+}
+async function updateGoal(id, updates) {
+  const setClauses = []; const values = []; let p = 1;
+  for (const [col, val] of Object.entries(updates)) {
+    if (val !== undefined) { setClauses.push(col + ' = $' + p++); values.push(val); }
+  }
+  if (setClauses.length === 0) return null;
+  setClauses.push('updated_at = NOW()'); values.push(id);
+  const { rows } = await pool.query(`UPDATE goals SET ${setClauses.join(', ')} WHERE id = $${p} RETURNING *`, values);
+  return rows[0] || null;
+}
+async function completeGoal(id) {
+  const { rows } = await pool.query(`UPDATE goals SET status = 'completed', progress = 100, updated_at = NOW() WHERE id = $1 RETURNING *`, [id]);
+  return rows[0] || null;
+}
+async function abandonGoal(id) {
+  const { rows } = await pool.query(`UPDATE goals SET status = 'abandoned', updated_at = NOW() WHERE id = $1 RETURNING *`, [id]);
+  return rows[0] || null;
+}
+async function getActiveGoals(userId) {
+  const { rows } = await pool.query(`SELECT * FROM goals WHERE user_id = $1 AND status = 'active' ORDER BY created_at DESC`, [String(userId)]);
+  return rows;
+}
+async function getAllGoals(userId) {
+  const { rows } = await pool.query(`SELECT * FROM goals WHERE user_id = $1 ORDER BY status, created_at DESC`, [String(userId)]);
+  return rows;
+}
+
+async function createTask(userId, title, description = '', priority = 'medium', dueDate = null, goalId = null) {
+  const { rows } = await pool.query(
+    `INSERT INTO tasks (user_id, title, description, priority, due_date, goal_id)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+    [String(userId), title, description, priority, dueDate, goalId]
+  );
+  return rows[0];
+}
+async function startTask(id) {
+  const { rows } = await pool.query(`UPDATE tasks SET status = 'in_progress', updated_at = NOW() WHERE id = $1 RETURNING *`, [id]);
+  return rows[0] || null;
+}
+async function completeTask(id) {
+  const { rows } = await pool.query(`UPDATE tasks SET status = 'done', updated_at = NOW() WHERE id = $1 RETURNING *`, [id]);
+  return rows[0] || null;
+}
+async function cancelTask(id) {
+  const { rows } = await pool.query(`UPDATE tasks SET status = 'cancelled', updated_at = NOW() WHERE id = $1 RETURNING *`, [id]);
+  return rows[0] || null;
+}
+async function updateTask(id, updates) {
+  const setClauses = []; const values = []; let p = 1;
+  for (const [col, val] of Object.entries(updates)) {
+    if (val !== undefined) { setClauses.push(col + ' = $' + p++); values.push(val); }
+  }
+  if (setClauses.length === 0) return null;
+  setClauses.push('updated_at = NOW()'); values.push(id);
+  const { rows } = await pool.query(`UPDATE tasks SET ${setClauses.join(', ')} WHERE id = $${p} RETURNING *`, values);
+  return rows[0] || null;
+}
+async function getTasksByStatus(userId, status) {
+  const { rows } = await pool.query(
+    `SELECT * FROM tasks WHERE user_id = $1 AND status = $2 ORDER BY priority DESC, due_date ASC NULLS LAST`, [String(userId), status]);
+  return rows;
+}
+async function getActiveTasks(userId) {
+  const { rows } = await pool.query(
+    `SELECT * FROM tasks WHERE user_id = $1 AND status IN ('pending', 'in_progress')
+     ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 END, due_date ASC NULLS LAST`, [String(userId)]);
+  return rows;
+}
+async function getOverdueTasks(userId) {
+  const { rows } = await pool.query(
+    `SELECT * FROM tasks WHERE user_id = $1 AND status IN ('pending', 'in_progress') AND due_date < CURRENT_DATE ORDER BY due_date ASC`, [String(userId)]);
+  return rows;
+}
+async function getTasksByGoal(userId, goalId) {
+  const { rows } = await pool.query(`SELECT * FROM tasks WHERE user_id = $1 AND goal_id = $2 ORDER BY status, priority`, [String(userId), goalId]);
+  return rows;
+}
+
 module.exports = {
   pool,
   ensureUser,
@@ -724,4 +812,7 @@ module.exports = {
   saveReflection,
   getRecentReflections,
   getTodayReflection,
+  // Tasks & Goals
+  createGoal, updateGoal, completeGoal, abandonGoal, getActiveGoals, getAllGoals,
+  createTask, updateTask, startTask, completeTask, cancelTask, getTasksByStatus, getActiveTasks, getOverdueTasks, getTasksByGoal,
 };

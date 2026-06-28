@@ -70,6 +70,36 @@ async function setup() {
     CREATE INDEX IF NOT EXISTS idx_chat_history_user_time
       ON chat_history (user_id, created_at DESC);
 
+    CREATE TABLE IF NOT EXISTS goals (
+      id SERIAL PRIMARY KEY,
+      user_id TEXT REFERENCES users(id),
+      title TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      status TEXT DEFAULT 'active' CHECK (status IN ('active', 'completed', 'abandoned')),
+      progress INTEGER DEFAULT 0 CHECK (progress >= 0 AND progress <= 100),
+      target_date DATE,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS tasks (
+      id SERIAL PRIMARY KEY,
+      user_id TEXT REFERENCES users(id),
+      title TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'done', 'cancelled')),
+      priority TEXT DEFAULT 'medium' CHECK (priority IN ('high', 'medium', 'low')),
+      goal_id INTEGER REFERENCES goals(id) ON DELETE SET NULL,
+      due_date DATE,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_tasks_user_status
+      ON tasks (user_id, status);
+    CREATE INDEX IF NOT EXISTS idx_goals_user_status
+      ON goals (user_id, status);
+
     CREATE TABLE IF NOT EXISTS reflections (
       id SERIAL PRIMARY KEY,
       user_id TEXT REFERENCES users(id),

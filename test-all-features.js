@@ -68,6 +68,8 @@ async function assertAsync(promise, label) {
 // ── Setup & Teardown ────────────────────────────────────────────────────────
 
 async function cleanupTestData() {
+  await db.pool.query(`DELETE FROM tasks WHERE user_id = $1`, [TEST_USER]);
+  await db.pool.query(`DELETE FROM goals WHERE user_id = $1`, [TEST_USER]);
   await db.pool.query(`DELETE FROM chat_history WHERE user_id = $1`, [TEST_USER]);
   await db.pool.query(`DELETE FROM memory_facts WHERE user_id = $1`, [TEST_USER]);
   await db.pool.query(`DELETE FROM reminders WHERE user_id = $1`, [TEST_USER]);
@@ -326,6 +328,85 @@ async function main() {
     const recent = await memory.getReflections(TEST_USER, 3);
     assert(Array.isArray(recent) && recent.length > 0, 'getReflections returns data');
     ok('getReflections works');
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  await section('🔟  TASK & GOAL MANAGEMENT', async () => {
+    // Create a goal
+    await db.createGoal(TEST_USER, 'Learn Rust', 'Complete Rust basics by end of year', '2026-12-31');
+    await db.createGoal(TEST_USER, 'Lose 5kg', 'Diet and exercise plan', '2026-09-30');
+    ok('Created 2 goals');
+
+    // List goals
+    const goals = await db.getAllGoals(TEST_USER);
+    assert(goals.length >= 2, 'getAllGoals returns goals');
+    assert(goals.some(g => g.title === 'Learn Rust'), 'Goal title preserved');
+    ok('Goals list works');
+
+    // Create tasks
+    await db.createTask(TEST_USER, 'Read Rust book chapter 1', 'Start with ownership', 'high', '2026-07-15', goals[0]?.id);
+    await db.createTask(TEST_USER, 'Morning jog 30 min', '', 'medium', '2026-07-01', goals[1]?.id);
+    await db.createTask(TEST_USER, 'Buy groceries', '', 'low', null, null);
+    ok('Created 3 tasks with different priorities');
+
+    // List active tasks
+    const activeTasks = await db.getActiveTasks(TEST_USER);
+    assert(activeTasks.length >= 3, 'getActiveTasks returns tasks');
+    // Check priority ordering: high before medium before low
+    const priorities = activeTasks.map(t => t.priority);
+    const priorityValues = { high: 1, medium: 2, low: 3 };
+    for (let i = 1; i < priorities.length; i++) {
+      assert(priorityValues[priorities[i - 1]] <= priorityValues[priorities[i]], 'Tasks sorted by priority');
+    }
+    ok('Tasks sorted by priority correctly');
+
+    // Start a task
+    if (activeTasks.length > 0) {
+      const started = await db.startTask(activeTasks[0].id);
+      assert(started.status === 'in_progress', 'Task moved to in_progress');
+      ok('startTask works');
+    }
+
+    // Complete a task
+    const pending = await db.getTasksByStatus(TEST_USER, 'pending');
+    if (pending.length > 0) {
+      const done = await db.completeTask(pending[0].id);
+      assert(done.status === 'done', 'Task moved to done');
+      ok('completeTask works');
+    }
+
+    // Cancel a task
+    const stillPending = await db.getTasksByStatus(TEST_USER, 'pending');
+    if (stillPending.length > 0) {
+      const cancelled = await db.cancelTask(stillPending[0].id);
+      assert(cancelled.status === 'cancelled', 'Task cancelled');
+      ok('cancelTask works');
+    }
+
+    // Get tasks by goal
+    if (goals.length > 0) {
+      const goalTasks = await db.getTasksByGoal(TEST_USER, goals[0].id);
+      assert(Array.isArray(goalTasks), 'getTasksByGoal works');
+      ok('Tasks linked to goals');
+    }
+
+    // Get overdue tasks
+    const overdue = await db.getOverdueTasks(TEST_USER);
+    assert(Array.isArray(overdue), 'getOverdueTasks works');
+    ok('Overdue task detection works');
+
+    // Complete a goal
+    await db.updateGoal(goals[0].id, { progress: 100 });
+    await db.completeGoal(goals[0].id);
+    const completedGoal = (await db.getAllGoals(TEST_USER)).find(g => g.id === goals[0].id);
+    assert(completedGoal.status === 'completed', 'Goal marked completed');
+    ok('completeGoal works');
+
+    // Abandon a goal
+    await db.abandonGoal(goals[1].id);
+    const abandonedGoal = (await db.getAllGoals(TEST_USER)).find(g => g.id === goals[1].id);
+    assert(abandonedGoal.status === 'abandoned', 'Goal marked abandoned');
+    ok('abandonGoal works');
   });
 
   // ──────────────────────────────────────────────────────────────────────────

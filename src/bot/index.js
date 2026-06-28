@@ -278,6 +278,22 @@ async function createBot() {
     }
   });
 
+  // ── /tasks command — list active tasks ──────────────────────────────────
+  bot.onText(/\/tasks/, async (msg) => {
+    if (!isOwner(msg)) return;
+    await db.ensureUser(OWNER_ID, msg.from.first_name || 'Owner');
+    const result = await tools.executeTool(OWNER_ID, { name: 'list_tasks', args: {} });
+    await safeSendMessage(bot, msg.chat.id, typeof result === 'object' ? result.message : result);
+  });
+
+  // ── /goals command — list all goals ─────────────────────────────────────
+  bot.onText(/\/goals/, async (msg) => {
+    if (!isOwner(msg)) return;
+    await db.ensureUser(OWNER_ID, msg.from.first_name || 'Owner');
+    const result = await tools.executeTool(OWNER_ID, { name: 'list_goals', args: {} });
+    await safeSendMessage(bot, msg.chat.id, typeof result === 'object' ? result.message : result);
+  });
+
   // ── /reminders command ────────────────────────────────────────────────────
   bot.onText(/\/reminders/, async (msg) => {
     if (!isOwner(msg)) return;
@@ -520,6 +536,46 @@ async function createBot() {
       return;
     }
 
+    // ── Task actions ─────────────────────────────────────────────────────
+    if (data.startsWith('start_task:') || data.startsWith('complete_task:') || data.startsWith('cancel_task:')) {
+      const [action, idStr] = data.split(':');
+      const taskId = parseInt(idStr, 10);
+      if (isNaN(taskId)) return;
+
+      const toolName = action === 'start_task' ? 'start_task' : action === 'complete_task' ? 'complete_task' : 'cancel_task';
+      try {
+        const result = await tools.executeTool(userId, { name: toolName, args: { task_id: taskId } });
+        await bot.answerCallbackQuery(callbackQuery.id, { text: action === 'start_task' ? '🚀 Started!' : action === 'complete_task' ? '🎉 Done!' : '❌ Cancelled' });
+        await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: msgId });
+        const msg = typeof result === 'object' ? result.message : result;
+        try { await bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' }); } catch { await bot.sendMessage(chatId, msg); }
+      } catch (err) {
+        console.error('Task action error:', err.message);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Failed. Try again.' });
+      }
+      return;
+    }
+
+    // ── Goal actions ─────────────────────────────────────────────────────
+    if (data.startsWith('complete_goal:') || data.startsWith('abandon_goal:')) {
+      const [action, idStr] = data.split(':');
+      const goalId = parseInt(idStr, 10);
+      if (isNaN(goalId)) return;
+
+      const toolName = action === 'complete_goal' ? 'complete_goal' : 'abandon_goal';
+      try {
+        const result = await tools.executeTool(userId, { name: toolName, args: { goal_id: goalId } });
+        await bot.answerCallbackQuery(callbackQuery.id, { text: action === 'complete_goal' ? '🏆 Achieved!' : '🗑️ Abandoned' });
+        await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: msgId });
+        const msg = typeof result === 'object' ? result.message : result;
+        try { await bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' }); } catch { await bot.sendMessage(chatId, msg); }
+      } catch (err) {
+        console.error('Goal action error:', err.message);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Failed. Try again.' });
+      }
+      return;
+    }
+
     // ── Dismiss reminder (mark as done) ──────────────────────────────────
     if (data.startsWith('dismiss_reminder:')) {
       const reminderId = parseInt(data.split(':')[1], 10);
@@ -643,6 +699,8 @@ async function createBot() {
       '/quote — Get a motivational quote\n' +
       '/notes — View recent notes\n' +
       '/reminders — List upcoming reminders\n' +
+      '/tasks — List active tasks\n' +
+      '/goals — View your goals & progress\n' +
       '/memory — See stored facts\n' +
       '/verify — Review & resolve conflicting facts\n' +
       '/reflect — Generate daily reflection & insights\n' +
@@ -1067,6 +1125,19 @@ async function createBot() {
             case 'set_fact':
               inlineKeyboard = [[
                 { text: '❌ Forget', callback_data: 'forget_fact:' + encodeURIComponent(result.meta.key) },
+              ]];
+              break;
+            case 'create_task':
+              inlineKeyboard = [[
+                { text: '🚀 Start', callback_data: 'start_task:' + result.id },
+                { text: '✅ Done', callback_data: 'complete_task:' + result.id },
+                { text: '❌ Cancel', callback_data: 'cancel_task:' + result.id },
+              ]];
+              break;
+            case 'create_goal':
+              inlineKeyboard = [[
+                { text: '🏆 Complete', callback_data: 'complete_goal:' + result.id },
+                { text: '🗑️ Abandon', callback_data: 'abandon_goal:' + result.id },
               ]];
               break;
           }

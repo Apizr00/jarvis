@@ -1,35 +1,75 @@
 # 🤖 Jarvis — Personal AI Assistant for Telegram
 
-A self-hosted personal AI assistant that lives in your Telegram. Talk to it naturally — set reminders, schedule events, save notes, and let it remember things about you. Wakes you up with a morning briefing complete with weather and a motivational quote. All interactions come with **inline keyboard buttons** for quick actions like edit, cancel, delete, snooze, and dismiss.
+A self-hosted personal AI assistant that lives in your Telegram. Talk to it naturally — set reminders, schedule events, save notes, manage tasks & goals, and let it remember things about you. Wakes you up with a morning briefing complete with weather and a motivational quote. All interactions come with **inline keyboard buttons** for quick actions.
 
 **Stack:** Node.js · PostgreSQL · Redis (optional) · DeepSeek + Xiaomi MiMo · Telegram Bot API
 
 ---
 
+## 🏗️ Architecture
+
+```
+User
+  │
+  ▼ Conversation
+  │
+  ▼ Reasoning (LLM — DeepSeek / MiMo)
+  │
+  ├── Short-term Memory (10 recent msgs — RAM + DB persistent)
+  ├── Long-term Memory (memory_facts with confidence scoring)
+  ├── Episodic Memory (chat_history searchable)
+  ├── Knowledge Base (notes + semantic memory search RAG)
+  ├── User Profile (settings, personality, timezone, language)
+  ├── Goals & Tasks (status tracking, progress bars)
+  │
+  ▼ Memory Retrieval (semantic search — only relevant facts sent to LLM)
+  │
+  ▼ Tool Calling (create_reminder, add_note, create_task, etc.)
+  │
+  ▼ Scheduler / Actions (cron: reminders, briefing, reflection, cleanup)
+  │
+  ▼ Reflection & Learning (daily reflection, pattern recognition, memory cleanup)
+```
+
+---
+
 ## ✅ What it can do
 
-| You say...                         | Jarvis does...                                                     |
-| ---------------------------------- | ------------------------------------------------------------------ |
-| "Remind me to call mum at 6pm"     | Creates a reminder, pings you with `[✅ Done] [🔁 Snooze]` buttons |
-| "Cancel my call mum reminder"      | Cancels the matching reminder by ID                                |
-| "Move my gym reminder to 8am"      | Updates the reminder time                                          |
-| "Remind me to stretch every day"   | Creates a recurring daily reminder                                 |
-| "Add gym to calendar tomorrow 7am" | Saves an event with `[✏️ Edit] [❌ Cancel]` buttons                |
-| "Note: look into React Native"     | Saves a note with `[❌ Delete]` button                             |
-| "Remember I sleep at 1am"          | Stores a memory fact with `[❌ Forget]` button                     |
-| "What's my day?" / `/today`        | Shows today's events + reminders                                   |
-| "What do you know about me?"       | Shows all stored facts about you                                   |
-| "Motivate me" / "Give me a quote"  | Fetches a motivational quote from ZenQuotes                        |
-| "Search for latest AI news"        | Performs a web search and summarizes results                       |
-| 🎤 Send a voice message            | Transcribes via Whisper AI and responds normally                   |
-| "What's the weather?"              | Shows current weather for your configured location                 |
-| `/briefing`                        | 🌅 Morning briefing — weather, quote, today's schedule             |
-| `/review`                          | 📊 Weekly review — notes, completed tasks, upcoming week           |
-| `/reminders`                       | Lists upcoming reminders with `[❌ Cancel]` buttons                |
-| `/notes`                           | Last 10 notes                                                      |
-| `/memory`                          | All stored facts about you                                         |
-| `/settings`                        | View current bot name, personality, times, location                |
-| `/status`                          | Check API connections (DeepSeek, MiMo, Whisper, Redis, etc.)       |
+| You say...                            | Jarvis does...                                                      |
+| ------------------------------------- | ------------------------------------------------------------------- |
+| "Remind me to call mum at 6pm"        | Creates a reminder, pings you with `[✅ Done] [🔁 Snooze]` buttons  |
+| "Cancel my call mum reminder"         | Cancels the matching reminder by ID                                 |
+| "Move my gym reminder to 8am"         | Updates the reminder time                                           |
+| "Remind me to stretch every day"      | Creates a recurring daily reminder                                  |
+| "Add gym to calendar tomorrow 7am"    | Saves an event with `[✏️ Edit] [❌ Cancel]` buttons                 |
+| "Note: look into React Native"        | Saves a note with `[❌ Delete]` button                              |
+| "Remember I sleep at 1am"             | Stores a memory fact with confidence scoring + `[❌ Forget]` button |
+| "I need to finish the report"         | Creates a task with priority & status tracking                      |
+| "Start working on the report"         | Moves task to _In Progress_                                         |
+| "Done with report"                    | Marks task as _Done_ 🎉                                             |
+| "I want to learn Rust"                | Creates a goal with progress tracking                               |
+| "My goal is to lose 5kg by September" | Sets goal with target date + 0-100% progress bar                    |
+| "What tasks do I have?"               | Lists all active tasks sorted by priority                           |
+| "What are my goals?"                  | Shows goals with progress bars                                      |
+| "What's my day?" / `/today`           | Shows today's events + reminders + tasks                            |
+| "What do you know about me?"          | Shows stored facts with confidence scores                           |
+| "What did we talk about last week?"   | Searches past conversations (episodic memory)                       |
+| "Motivate me" / "Give me a quote"     | Fetches a motivational quote from ZenQuotes                         |
+| "Search for latest AI news"           | Performs a web search and summarizes results                        |
+| 🎤 Send a voice message               | Transcribes via Whisper AI and responds normally                    |
+| "What's the weather?"                 | Shows current weather for your configured location                  |
+| `/briefing`                           | 🌅 Morning briefing — weather, quote, today's schedule              |
+| `/review`                             | 📊 Weekly review — notes, completed tasks, upcoming week            |
+| `/reflect`                            | 🧘 Daily reflection — patterns, changes, suggestions                |
+| `/reminders`                          | Lists upcoming reminders with `[❌ Cancel]` buttons                 |
+| `/tasks`                              | 📋 Lists all active tasks sorted by priority                        |
+| `/goals`                              | 🎯 Shows all goals with progress bars                               |
+| `/notes`                              | Last 10 notes                                                       |
+| `/memory`                             | All stored facts about you                                          |
+| `/history <keyword>`                  | 🔍 Search past conversations                                        |
+| `/verify`                             | ⚠️ Review & resolve conflicting facts                               |
+| `/settings`                           | View current bot name, personality, times, location                 |
+| `/status`                             | Check API connections (DeepSeek, MiMo, Whisper, Redis, etc.)        |
 
 ### ⚙️ Settings you can change
 
@@ -300,28 +340,43 @@ jarvis/
 │   │   ├── mimo.js       # Xiaomi MiMo API provider (backup)
 │   │   └── whisper.js    # OpenAI Whisper voice transcription
 │   ├── tools/
-│   │   ├── index.js      # Tool executor (create_reminder, add_note, etc.)
+│   │   ├── index.js      # Tool executor (reminders, events, notes, tasks, goals, etc.)
 │   │   ├── quote.js      # Random motivational quote fetcher (ZenQuotes)
-│   │   ├── search.js     # Web search via LLM
+│   │   ├── search.js     # Web search via Tavily API
 │   │   └── weather.js    # Current weather fetcher (OpenWeatherMap)
+│   ├── memory/
+│   │   └── index.js      # Semantic search (RAG), auto-extract, confidence, reflection
 │   ├── scheduler/
-│   │   └── index.js      # Cron jobs: reminder poller + morning briefing + weekly review
+│   │   └── index.js      # Cron: reminders + morning briefing + weekly review + cleanup + reflection
 │   ├── api/
 │   │   ├── index.js      # REST API server (Express)
 │   │   └── status.js     # API health check for /status command
 │   ├── redis/
 │   │   └── index.js      # Redis cache layer (optional, auto-fallback)
 │   ├── db/
-│   │   └── index.js      # All PostgreSQL database queries
+│   │   └── index.js      # All PostgreSQL database queries (users, reminders, events, notes, facts, chat_history, tasks, goals, reflections, settings)
 │   └── utils/
 │       └── datetime.js   # Date/time formatting helpers (dayjs)
 ├── scripts/
-│   └── setup-db.js       # One-time DB table creation
+│   └── setup-db.js       # One-time DB table creation + migrations
+├── test-all-features.js  # Comprehensive test suite (67 tests, 10 sections)
 ├── test-briefing.js      # Quick test script for morning briefing
 ├── .env.example          # Environment variable template
 ├── package.json
 └── README.md
 ```
+
+---
+
+## 🧪 Testing
+
+Run the comprehensive test suite to verify all features work:
+
+```bash
+node test-all-features.js
+```
+
+Tests cover 10 sections — semantic search, auto-extract, confidence scoring, conflict resolution, importance scoring, chat history, episodic memory, daily reflection, tasks & goals, and memory cleanup — **67+ assertions** with zero API calls needed.
 
 ---
 
@@ -369,24 +424,35 @@ jarvis/
 
 The LLM is instructed to use these tool calls to perform actions:
 
-| Tool                | Arguments                                          | What it does                    |
-| ------------------- | -------------------------------------------------- | ------------------------------- |
-| `create_reminder`   | `text`, `time` (ISO-8601), `recurrence?`           | Creates a new reminder          |
-| `update_reminder`   | `reminder_id`, `text?`, `time?`, `recurrence?`     | Updates an existing reminder    |
-| `cancel_reminder`   | `reminder_id`                                      | Cancels a reminder by ID        |
-| `list_reminders`    | _(none)_                                           | Lists all upcoming reminders    |
-| `create_event`      | `title`, `time` (ISO-8601), `duration_minutes?`    | Schedules a calendar event      |
-| `update_event`      | `event_id`, `title?`, `time?`, `duration_minutes?` | Updates an existing event       |
-| `cancel_event`      | `event_id`                                         | Cancels an event by ID          |
-| `add_note`          | `content`                                          | Saves a new note                |
-| `get_today`         | _(none)_                                           | Shows today's schedule          |
-| `get_briefing`      | _(none)_                                           | Generates morning briefing      |
-| `get_weekly_review` | _(none)_                                           | Generates weekly review summary |
-| `get_quote`         | _(none)_                                           | Fetches a motivational quote    |
-| `set_fact`          | `key`, `value`                                     | Stores a memory fact            |
-| `web_search`        | `query`                                            | Searches the web via LLM        |
-| `set_config`        | `key`, `value`                                     | Changes a bot setting           |
-| `revert_config`     | `key`                                              | Reverts a setting to previous   |
+| Tool                | Arguments                                                     | What it does                          |
+| ------------------- | ------------------------------------------------------------- | ------------------------------------- |
+| `create_reminder`   | `text`, `time` (ISO-8601), `recurrence?`                      | Creates a new reminder                |
+| `update_reminder`   | `reminder_id`, `text?`, `time?`, `recurrence?`                | Updates an existing reminder          |
+| `cancel_reminder`   | `reminder_id`                                                 | Cancels a reminder by ID              |
+| `list_reminders`    | _(none)_                                                      | Lists all upcoming reminders          |
+| `create_event`      | `title`, `time` (ISO-8601), `duration_minutes?`               | Schedules a calendar event            |
+| `update_event`      | `event_id`, `title?`, `time?`, `duration_minutes?`            | Updates an existing event             |
+| `cancel_event`      | `event_id`                                                    | Cancels an event by ID                |
+| `add_note`          | `content`                                                     | Saves a new note                      |
+| `get_today`         | _(none)_                                                      | Shows today's schedule                |
+| `get_briefing`      | _(none)_                                                      | Generates morning briefing            |
+| `get_weekly_review` | _(none)_                                                      | Generates weekly review summary       |
+| `get_quote`         | _(none)_                                                      | Fetches a motivational quote          |
+| `set_fact`          | `key`, `value`                                                | Stores a memory fact                  |
+| `web_search`        | `query`                                                       | Searches the web via Tavily           |
+| `set_config`        | `key`, `value`                                                | Changes a bot setting                 |
+| `revert_config`     | `key`                                                         | Reverts a setting to previous         |
+| `create_task`       | `title`, `description?`, `priority?`, `due_date?`, `goal_id?` | Creates a task with status tracking   |
+| `update_task`       | `task_id`, `title?`, `description?`, `priority?`, `due_date?` | Updates an existing task              |
+| `start_task`        | `task_id`                                                     | Marks task as _In Progress_           |
+| `complete_task`     | `task_id`                                                     | Marks task as _Done_                  |
+| `cancel_task`       | `task_id`                                                     | Cancels a task                        |
+| `list_tasks`        | `status?`                                                     | Lists tasks, optionally by status     |
+| `create_goal`       | `title`, `description?`, `target_date?`                       | Creates a goal with progress tracking |
+| `update_goal`       | `goal_id`, `title?`, `progress?`, `target_date?`              | Updates goal details/progress         |
+| `complete_goal`     | `goal_id`                                                     | Marks goal as _Completed_ (100%)      |
+| `abandon_goal`      | `goal_id`                                                     | Abandons a goal                       |
+| `list_goals`        | _(none)_                                                      | Shows all goals with progress bars    |
 
 ---
 
@@ -394,16 +460,19 @@ The LLM is instructed to use these tool calls to perform actions:
 
 Every actionable response comes with inline keyboard buttons — no need to type commands:
 
-| Context                     | Buttons                         |
-| --------------------------- | ------------------------------- |
-| Reminder created / updated  | `[✏️ Edit]` `[❌ Cancel]`       |
-| Event created / updated     | `[✏️ Edit]` `[❌ Cancel]`       |
-| Note saved                  | `[❌ Delete]`                   |
-| Fact remembered             | `[❌ Forget]`                   |
-| Reminder fires (scheduler)  | `[✅ Done]` `[🔁 Snooze 10m]`   |
-| `/reminders` list           | `[❌ Cancel: ...]` per reminder |
-| Setting change confirmation | `[✅ Ya]` `[❌ Batal]`          |
-| `/revert` options           | `[↩️ Setting → prev value]`     |
+| Context                     | Buttons                                 |
+| --------------------------- | --------------------------------------- |
+| Reminder created / updated  | `[✏️ Edit]` `[❌ Cancel]`               |
+| Event created / updated     | `[✏️ Edit]` `[❌ Cancel]`               |
+| Note saved                  | `[❌ Delete]`                           |
+| Fact remembered             | `[❌ Forget]`                           |
+| Task created                | `[🚀 Start]` `[✅ Done]` `[❌ Cancel]`  |
+| Goal set                    | `[🏆 Complete]` `[🗑️ Abandon]`          |
+| Reminder fires (scheduler)  | `[✅ Done]` `[🔁 Snooze 10m]`           |
+| `/reminders` list           | `[❌ Cancel: ...]` per reminder         |
+| `/verify` conflicts         | `[✅ Keep]` `[↩️ Restore]` per conflict |
+| Setting change confirmation | `[✅ Ya]` `[❌ Batal]`                  |
+| `/revert` options           | `[↩️ Setting → prev value]`             |
 
 Clicking **✏️ Edit** stores the item being edited — just type your change naturally (e.g. "tukar ke 3pm") and Jarvis knows exactly which item to update. No need to mention the ID.
 
@@ -411,20 +480,58 @@ Clicking **🔁 Snooze 10m** pushes the reminder forward by 10 minutes and remov
 
 ---
 
-## 🚀 What's next (v2 ideas)
+## 🧠 Advanced Memory System
 
-- ✅ ~~Inline keyboard buttons for quick actions~~ (done)
-- ✅ ~~Web search via LLM~~ (done)
-- ✅ ~~Settings system (bot name, personality, times, location)~~ (done)
-- ✅ ~~Weekly review summary~~ (done)
-- ✅ ~~Visual /status check for API connections~~ (done)
-- Voice reply — Jarvis responds with synthesized speech (TTS)
-- Natural language calendar queries ("What's my week look like?")
-- Recurring reminders with custom intervals (every 3 days, etc.)
-- Web dashboard for viewing/managing reminders and notes
-- Multi-user support (family/team shared assistant)
-- Habit tracking with streaks
-- Expense tracking ("Spent RM15 on lunch")
+Jarvis has a sophisticated memory architecture:
+
+| System                    | Description                                                                |
+| ------------------------- | -------------------------------------------------------------------------- |
+| **Short-term Memory**     | Last 10 messages in RAM + persistent in `chat_history` table               |
+| **Long-term Memory**      | Facts stored in `memory_facts` with confidence scores (0.0–1.0)            |
+| **Episodic Memory**       | Searchable chat history — ask "what did we talk about last month?"         |
+| **Semantic Search (RAG)** | Only relevant facts sent to LLM, not all — saves tokens, improves accuracy |
+| **Auto-Extract**          | Facts automatically extracted from conversations in background             |
+| **Confidence Scoring**    | Each fact has a confidence score; conflicts are detected & flagged         |
+| **Conflict Resolution**   | `/verify` command to review & resolve conflicting information              |
+| **Memory Cleanup**        | Daily 3AM job: removes low-importance stale facts, prunes chat > 90 days   |
+| **Daily Reflection**      | 10PM: LLM analyzes the day, detects patterns, notes changes, suggests      |
+| **Importance Scoring**    | Facts rated 1-10 based on key category, access frequency, recency          |
+
+---
+
+## 🚀 Roadmap
+
+### ✅ Fasa 1 (MVP) — 100% Complete
+
+- ✅ LLM (DeepSeek + MiMo fallback)
+- ✅ Short-term memory (persistent chat history)
+- ✅ Long-term memory (facts with confidence)
+- ✅ Tool calling (15+ tools)
+- ✅ Reminders (one-shot + recurring + snooze)
+- ✅ Notes
+- ✅ Calendar / Events
+- ✅ Morning briefing + weekly review
+- ✅ Web search + weather + quotes
+- ✅ Voice messages (Whisper transcription)
+
+### ✅ Fasa 2 — 100% Complete
+
+- ✅ Episodic memory (`/history`, chat search)
+- ✅ Knowledge base (semantic memory search RAG)
+- ✅ Daily reflection (`/reflect` + auto 10PM)
+- ✅ Task management (status tracking, priority, inline buttons)
+- ✅ Goal management (progress tracking, target dates)
+
+### ⬜ Fasa 3 — Future
+
+- ⬜ Pattern recognition (dedicated system beyond LLM reflection)
+- ⬜ Relationship memory (dedicated table for people you mention)
+- ⬜ Document input (PDF, images, location)
+- ⬜ Habit tracking with streaks
+- ⬜ Expense tracking
+- ⬜ Voice reply (TTS)
+- ⬜ Multi-user support
+- ⬜ Web dashboard
 
 ---
 
