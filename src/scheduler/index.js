@@ -9,11 +9,17 @@ const { getQuote } = require('../tools/quote');
 
 let botInstance = null;
 
+// Track active cron tasks so we can stop & restart them dynamically
+let briefingTask = null;
+let reviewTask = null;
+
+const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
+
 /**
  * Start the reminder scheduler.
  * @param {object} bot - node-telegram-bot-api instance
  */
-function startScheduler(bot) {
+async function startScheduler(bot) {
   botInstance = bot;
   console.log('⏰ Reminder scheduler started (every 30 seconds)');
 
@@ -29,34 +35,49 @@ function startScheduler(bot) {
     }
   });
 
-  // ── Morning briefing: configurable time (default 8:00 AM) ──────────────
-  const briefingTime = process.env.MORNING_BRIEFING_TIME || '7:00';
+  // ── Initial schedule setup from DB (falls back to .env) ────────────────
+  await refreshSchedules();
+}
+
+/**
+ * Refresh morning briefing & weekly review cron schedules.
+ * Reads times from DB first, falls back to .env.
+ * Can be called after a user changes settings via /setbriefing or /setreview.
+ */
+async function refreshSchedules() {
+  // ── Stop existing tasks ────────────────────────────────────────────────
+  if (briefingTask) { briefingTask.stop(); briefingTask = null; }
+  if (reviewTask) { reviewTask.stop(); reviewTask = null; }
+
+  // ── Morning Briefing ───────────────────────────────────────────────────
+  const briefingTime = await db.getConfig(OWNER_ID, 'morning_briefing_time', 'MORNING_BRIEFING_TIME', '7:00');
   const [hour, minute] = briefingTime.split(':').map(n => parseInt(n, 10));
-  const cronExpr = `${minute} ${hour} * * *`;
-  console.log(`🌅 Morning briefing scheduled for ${briefingTime} daily`);
+  if (!isNaN(hour) && !isNaN(minute)) {
+    const cronExpr = `${minute} ${hour} * * *`;
+    briefingTask = cron.schedule(cronExpr, async () => {
+      try {
+        await sendMorningBriefing();
+      } catch (err) {
+        console.error('Morning briefing error:', err.message);
+      }
+    });
+    console.log(`🌅 Morning briefing scheduled for ${briefingTime} daily`);
+  }
 
-  cron.schedule(cronExpr, async () => {
-    try {
-      await sendMorningBriefing();
-    } catch (err) {
-      console.error('Morning briefing error:', err.message);
-    }
-  });
-
-  // ── Weekly Review: Sunday evening (default 8:00 PM) ───────────────────
-  const reviewTime = process.env.WEEKLY_REVIEW_TIME || '20:00';
+  // ── Weekly Review ──────────────────────────────────────────────────────
+  const reviewTime = await db.getConfig(OWNER_ID, 'weekly_review_time', 'WEEKLY_REVIEW_TIME', '20:00');
   const [revHour, revMinute] = reviewTime.split(':').map(n => parseInt(n, 10));
-  // Sunday = 0 in cron. Run at specified time on Sundays.
-  const reviewCronExpr = `${revMinute} ${revHour} * * 0`;
-  console.log(`📊 Weekly review scheduled for Sunday at ${reviewTime}`);
-
-  cron.schedule(reviewCronExpr, async () => {
-    try {
-      await sendWeeklyReview();
-    } catch (err) {
-      console.error('Weekly review error:', err.message);
-    }
-  });
+  if (!isNaN(revHour) && !isNaN(revMinute)) {
+    const reviewCronExpr = `${revMinute} ${revHour} * * 0`;
+    reviewTask = cron.schedule(reviewCronExpr, async () => {
+      try {
+        await sendWeeklyReview();
+      } catch (err) {
+        console.error('Weekly review error:', err.message);
+      }
+    });
+    console.log(`📊 Weekly review scheduled for Sunday at ${reviewTime}`);
+  }
 }
 
 /**
@@ -296,4 +317,4 @@ async function sendWeeklyReview() {
   }
 }
 
-module.exports = { startScheduler, buildBriefingMessage, buildWeeklyReview };
+module.exports = { startScheduler, buildBriefingMessage, buildWeeklyReview, refreshSchedules };

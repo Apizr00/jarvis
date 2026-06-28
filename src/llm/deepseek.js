@@ -22,7 +22,7 @@ async function chat(userId, userMessage, conversationHistory) {
   // Fetch upcoming reminders so the LLM can reference them by ID for update/cancel
   const upcomingReminders = await db.getUpcomingReminders(userId, 15);
 
-  const systemPrompt = buildSystemPrompt(facts, process.env.TIMEZONE || 'UTC', upcomingReminders);
+  const systemPrompt = await buildSystemPrompt(userId, facts, process.env.TIMEZONE || 'UTC', upcomingReminders);
 
   const messages = [
     { role: 'system', content: systemPrompt }

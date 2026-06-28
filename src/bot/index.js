@@ -7,8 +7,10 @@ const db = require('../db');
 const llm = require('../llm');
 const tools = require('../tools');
 const { escapeMd, safeSendMessage } = tools;
+const { getPendingConfig, confirmPendingConfig, removePendingConfig, setPendingConfig } = tools;
 const { buildBriefingMessage } = require('../scheduler');
 const { getQuote } = require('../tools/quote');
+let { refreshSchedules } = require('../scheduler');
 const { transcribe, downloadVoiceFile } = require('../llm/whisper');
 const { getApiStatus, formatStatusMessage } = require('../api/status');
 
@@ -29,10 +31,15 @@ function addToHistory(userId, role, content) {
   if (history.length > 10) history.splice(0, history.length - 10);
 }
 
-function createBot() {
+function clearHistory(userId) {
+  delete conversationHistory[userId];
+  console.log('[Bot] 🧹 Cleared conversation history for ' + userId);
+}
+
+async function createBot() {
   const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
-  const botName = process.env.BOT_NAME || 'Jarvis';
+  const botName = await db.getConfig(OWNER_ID, 'bot_name', 'BOT_NAME', 'Jarvis');
   console.log('🤖 ' + botName + ' bot is online and polling...');
 
   // ── Guard: only respond to the owner ──────────────────────────────────────
@@ -154,12 +161,85 @@ function createBot() {
     }
   });
 
-  // ── Callback query handler: cancel reminders ──────────────────────────────
+  // ── Callback query handler: cancel reminders + confirm config changes ─────
   bot.on('callback_query', async (callbackQuery) => {
     const data = callbackQuery.data;
     const chatId = callbackQuery.message.chat.id;
     const msgId = callbackQuery.message.message_id;
+    const userId = String(callbackQuery.from.id);
 
+    // ── Confirm config change ────────────────────────────────────────────
+    if (data.startsWith('confirm_config')) {
+      try {
+        const pending = await confirmPendingConfig(userId);
+        if (!pending) {
+          await bot.answerCallbackQuery(callbackQuery.id, { text: '⏰ Expired or no pending change.' });
+          return;
+        }
+
+        // Clear conversation history for name/personality changes so new style takes effect
+        if (pending.key === 'bot_name' || pending.key === 'bot_personality') {
+          clearHistory(userId);
+        }
+
+        // Refresh cron if time setting changed
+        if (pending.envKey === 'MORNING_BRIEFING_TIME' || pending.envKey === 'WEEKLY_REVIEW_TIME') {
+          try {
+            const { refreshSchedules } = require('../scheduler');
+            if (typeof refreshSchedules === 'function') await refreshSchedules();
+          } catch { /* scheduler may not be loaded */ }
+        }
+
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Updated!' });
+        await bot.editMessageText(
+          '✅ *' + pending.label + ' updated!*\n\n' + escapeMd(pending.value),
+          { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }
+        );
+      } catch (err) {
+        console.error('Config confirm error:', err.message);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Failed. Try again.' });
+      }
+      return;
+    }
+
+    // ── Cancel config change ─────────────────────────────────────────────
+    if (data.startsWith('cancel_config')) {
+      removePendingConfig(userId);
+      await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Cancelled.' });
+      try {
+        await bot.editMessageText(
+          '❌ *Change cancelled.*',
+          { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }
+        );
+      } catch {
+        await bot.editMessageText('❌ Change cancelled.', { chat_id: chatId, message_id: msgId });
+      }
+      return;
+    }
+
+    // ── Revert config ────────────────────────────────────────────────────
+    if (data.startsWith('revert_config:')) {
+      const key = data.split(':')[1];
+      try {
+        const result = await tools.executeTool(userId, { name: 'revert_config', args: { key } });
+        // Clear history if name/personality reverted
+        if (key === 'bot_name' || key === 'bot_personality') {
+          clearHistory(userId);
+        }
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '↩️ Reverted!' });
+        try {
+          await bot.editMessageText(result, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' });
+        } catch {
+          await bot.editMessageText(result, { chat_id: chatId, message_id: msgId });
+        }
+      } catch (err) {
+        console.error('Revert config error:', err.message);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Failed to revert.' });
+      }
+      return;
+    }
+
+    // ── Cancel reminder (existing) ───────────────────────────────────────
     if (!data.startsWith('cancel_reminder:')) return;
 
     const reminderId = parseInt(data.split(':')[1], 10);
@@ -242,7 +322,13 @@ function createBot() {
       '/reminders — List upcoming reminders\n' +
       '/memory — See stored facts\n' +
       '/status — Check API connections\n' +
-      '/help — This message\n\n' +
+      '/help — This message\n' +
+      '/settings — View current bot settings\n' +
+      '/setname <name> — Change bot name\n' +
+      '/setpersonality <text> — Change bot personality\n' +
+      '/setlocation <city> — Change weather location\n' +
+      '/setbriefing <HH:MM> — Change morning briefing time\n' +
+      '/setreview <HH:MM> — Change weekly review time\n\n' +
       '*Or just talk to me naturally!*\n' +
       'Examples:\n' +
       '• "Remind me to take meds at 8pm"\n' +
@@ -254,6 +340,180 @@ function createBot() {
       '• "Cancel reminder #3"\n\n' +
       '🎤 *You can also send voice messages!*';
     await safeSendMessage(bot, msg.chat.id, help);
+  });
+
+  // ── /settings command ─────────────────────────────────────────────────────
+  bot.onText(/\/settings/, async (msg) => {
+    if (!isOwner(msg)) return;
+    try {
+      const settings = await db.getAllSettings(OWNER_ID);
+      const botName = settings.bot_name || process.env.BOT_NAME || 'Jarvis';
+      const personality = settings.bot_personality || process.env.BOT_PERSONALITY || '(not set)';
+      const briefingTime = settings.morning_briefing_time || process.env.MORNING_BRIEFING_TIME || '7:00';
+      const reviewTime = settings.weekly_review_time || process.env.WEEKLY_REVIEW_TIME || '20:00';
+      const location = settings.weather_location || process.env.WEATHER_LOCATION || '(not set)';
+
+      // Check for previous (revertable) values
+      const hasPrev = (k) => settings['prev_' + k] && settings['prev_' + k].trim() !== '';
+
+      let reply =
+        '*⚙️ Current Settings*\n\n' +
+        '🤖 *Bot Name:* ' + escapeMd(botName) + (hasPrev('bot_name') ? ' ↩️' : '') + '\n' +
+        '🎭 *Personality:* ' + escapeMd(personality.length > 80 ? personality.slice(0, 80) + '…' : personality) + (hasPrev('bot_personality') ? ' ↩️' : '') + '\n' +
+        '🌅 *Morning Briefing:* ' + escapeMd(briefingTime) + (hasPrev('morning_briefing_time') ? ' ↩️' : '') + '\n' +
+        '📊 *Weekly Review:* ' + escapeMd(reviewTime) + ' (Sunday)' + (hasPrev('weekly_review_time') ? ' ↩️' : '') + '\n' +
+        '🌤️ *Weather Location:* ' + escapeMd(location) + (hasPrev('weather_location') ? ' ↩️' : '') + '\n\n' +
+        '_Use /setname, /setpersonality, /setlocation, /setbriefing, /setreview to change._\n' +
+        '_↩️ = can be reverted with /revert_';
+
+      await safeSendMessage(bot, msg.chat.id, reply);
+    } catch (err) {
+      console.error('/settings error:', err.message);
+      await bot.sendMessage(msg.chat.id, '❌ Could not fetch settings.');
+    }
+  });
+
+  // ── /revert command ───────────────────────────────────────────────────────
+  bot.onText(/\/revert/, async (msg) => {
+    if (!isOwner(msg)) return;
+    try {
+      const settings = await db.getAllSettings(OWNER_ID);
+      const revertable = [];
+
+      const labels = {
+        bot_name: 'Bot Name', bot_personality: 'Bot Personality',
+        morning_briefing_time: 'Morning Briefing Time', weekly_review_time: 'Weekly Review Time',
+        weather_location: 'Weather Location',
+      };
+
+      for (const [key, label] of Object.entries(labels)) {
+        const prevVal = settings['prev_' + key];
+        if (prevVal && prevVal.trim() !== '') {
+          revertable.push({ key, label, prev: prevVal });
+        }
+      }
+
+      if (revertable.length === 0) {
+        return bot.sendMessage(msg.chat.id, 'No previous settings to revert to. Make a change first!');
+      }
+
+      const inlineKeyboard = revertable.map(r => ([{
+        text: '↩️ ' + r.label + ' → ' + (r.prev.length > 25 ? r.prev.slice(0, 25) + '…' : r.prev),
+        callback_data: 'revert_config:' + r.key,
+      }]));
+
+      await bot.sendMessage(msg.chat.id, '*↩️ Revert a setting to its previous value:*', {
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: inlineKeyboard },
+      });
+    } catch (err) {
+      console.error('/revert error:', err.message);
+      await bot.sendMessage(msg.chat.id, '❌ Could not check revert options.');
+    }
+  });
+
+  // ── /setname command ──────────────────────────────────────────────────────
+  bot.onText(/\/setname (.+)/, async (msg, match) => {
+    if (!isOwner(msg)) return;
+    const value = match[1].trim();
+    if (!value) return bot.sendMessage(msg.chat.id, 'Usage: /setname <name>');
+    const currentVal = await db.getConfig(OWNER_ID, 'bot_name', 'BOT_NAME');
+    setPendingConfig(OWNER_ID, 'bot_name', 'BOT_NAME', value, 'Bot Name');
+    const currentStr = currentVal ? '\n_Current: ' + escapeMd(currentVal) + '_' : '';
+    await bot.sendMessage(msg.chat.id,
+      '⚙️ *Confirm Change?*\n\n*Bot Name* → ' + escapeMd(value) + currentStr, {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '✅ Ya', callback_data: 'confirm_config' },
+          { text: '❌ Batal', callback_data: 'cancel_config' },
+        ]],
+      },
+    });
+  });
+
+  // ── /setpersonality command ───────────────────────────────────────────────
+  bot.onText(/\/setpersonality (.+)/, async (msg, match) => {
+    if (!isOwner(msg)) return;
+    const value = match[1].trim();
+    if (!value) return bot.sendMessage(msg.chat.id, 'Usage: /setpersonality <text>');
+    const currentVal = await db.getConfig(OWNER_ID, 'bot_personality', 'BOT_PERSONALITY');
+    setPendingConfig(OWNER_ID, 'bot_personality', 'BOT_PERSONALITY', value, 'Bot Personality');
+    const currentStr = currentVal ? '\n_Current: ' + escapeMd(currentVal.length > 50 ? currentVal.slice(0, 50) + '…' : currentVal) + '_' : '';
+    await bot.sendMessage(msg.chat.id,
+      '⚙️ *Confirm Change?*\n\n*Bot Personality* → ' + escapeMd(value.length > 80 ? value.slice(0, 80) + '…' : value) + currentStr, {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '✅ Ya', callback_data: 'confirm_config' },
+          { text: '❌ Batal', callback_data: 'cancel_config' },
+        ]],
+      },
+    });
+  });
+
+  // ── /setlocation command ──────────────────────────────────────────────────
+  bot.onText(/\/setlocation (.+)/, async (msg, match) => {
+    if (!isOwner(msg)) return;
+    const value = match[1].trim();
+    if (!value) return bot.sendMessage(msg.chat.id, 'Usage: /setlocation <city>');
+    const currentVal = await db.getConfig(OWNER_ID, 'weather_location', 'WEATHER_LOCATION');
+    setPendingConfig(OWNER_ID, 'weather_location', 'WEATHER_LOCATION', value, 'Weather Location');
+    const currentStr = currentVal ? '\n_Current: ' + escapeMd(currentVal) + '_' : '';
+    await bot.sendMessage(msg.chat.id,
+      '⚙️ *Confirm Change?*\n\n*Weather Location* → ' + escapeMd(value) + currentStr, {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '✅ Ya', callback_data: 'confirm_config' },
+          { text: '❌ Batal', callback_data: 'cancel_config' },
+        ]],
+      },
+    });
+  });
+
+  // ── /setbriefing command ──────────────────────────────────────────────────
+  bot.onText(/\/setbriefing (.+)/, async (msg, match) => {
+    if (!isOwner(msg)) return;
+    const value = match[1].trim();
+    if (!/^\d{1,2}:\d{2}$/.test(value)) {
+      return bot.sendMessage(msg.chat.id, '❌ Invalid format. Use 24h time, e.g. `/setbriefing 7:00`');
+    }
+    const currentVal = await db.getConfig(OWNER_ID, 'morning_briefing_time', 'MORNING_BRIEFING_TIME');
+    setPendingConfig(OWNER_ID, 'morning_briefing_time', 'MORNING_BRIEFING_TIME', value, 'Morning Briefing Time');
+    const currentStr = currentVal ? '\n_Current: ' + escapeMd(currentVal) + '_' : '';
+    await bot.sendMessage(msg.chat.id,
+      '⚙️ *Confirm Change?*\n\n*Morning Briefing Time* → ' + escapeMd(value) + ' daily' + currentStr, {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '✅ Ya', callback_data: 'confirm_config' },
+          { text: '❌ Batal', callback_data: 'cancel_config' },
+        ]],
+      },
+    });
+  });
+
+  // ── /setreview command ────────────────────────────────────────────────────
+  bot.onText(/\/setreview (.+)/, async (msg, match) => {
+    if (!isOwner(msg)) return;
+    const value = match[1].trim();
+    if (!/^\d{1,2}:\d{2}$/.test(value)) {
+      return bot.sendMessage(msg.chat.id, '❌ Invalid format. Use 24h time, e.g. `/setreview 20:00`');
+    }
+    const currentVal = await db.getConfig(OWNER_ID, 'weekly_review_time', 'WEEKLY_REVIEW_TIME');
+    setPendingConfig(OWNER_ID, 'weekly_review_time', 'WEEKLY_REVIEW_TIME', value, 'Weekly Review Time');
+    const currentStr = currentVal ? '\n_Current: ' + escapeMd(currentVal) + '_' : '';
+    await bot.sendMessage(msg.chat.id,
+      '⚙️ *Confirm Change?*\n\n*Weekly Review Time* → ' + escapeMd(value) + ' Sunday' + currentStr, {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '✅ Ya', callback_data: 'confirm_config' },
+          { text: '❌ Batal', callback_data: 'cancel_config' },
+        ]],
+      },
+    });
   });
 
   // ── /status command ───────────────────────────────────────────────────────
@@ -316,10 +576,36 @@ function createBot() {
             name: llmResponse.name,
             args: llmResponse.args,
           });
-          console.log('[Bot] Tool result:', result.slice(0, 150));
+          console.log('[Bot] Tool result:', typeof result === 'object' ? (result.type || 'object') : result.slice(0, 150));
         } catch (toolErr) {
           console.error('[Bot] Tool execution error:', toolErr.message);
           result = 'I tried to do that but ran into a problem. Please try again.';
+        }
+
+        // ── Confirmation flow: if tool returned {type:'confirm', message} ──
+        if (result && typeof result === 'object' && result.type === 'confirm') {
+          addToHistory(userId, 'assistant', result.message);
+          try {
+            await bot.sendMessage(chatId, result.message, {
+              parse_mode: 'Markdown',
+              reply_markup: {
+                inline_keyboard: [[
+                  { text: '✅ Ya', callback_data: 'confirm_config' },
+                  { text: '❌ Batal', callback_data: 'cancel_config' },
+                ]],
+              },
+            });
+          } catch {
+            await bot.sendMessage(chatId, result.message, {
+              reply_markup: {
+                inline_keyboard: [[
+                  { text: '✅ Ya', callback_data: 'confirm_config' },
+                  { text: '❌ Batal', callback_data: 'cancel_config' },
+                ]],
+              },
+            });
+          }
+          return; // Done — wait for user to click button or type "ya"
         }
 
         // ── Smart Follow-up: after add_note, check if it implies a reminder ──
@@ -426,6 +712,42 @@ function createBot() {
     const userId = OWNER_ID;
     const chatId = msg.chat.id;
     const userName = msg.from.first_name || 'Owner';
+    const text = msg.text.trim().toLowerCase();
+
+    // ── Check for pending config confirmation (text reply) ─────────────────
+    const confirmWords = /^(ya|yes|y|ok|okay|confirm|setuju|on|yup|👍)$/i;
+    const cancelWords = /^(batal|no|n|tidak|cancel|off|nope|👎)$/i;
+
+    const pending = getPendingConfig(userId);
+    if (pending && (confirmWords.test(text) || cancelWords.test(text))) {
+      if (confirmWords.test(text)) {
+        try {
+          const confirmed = await confirmPendingConfig(userId);
+          if (!confirmed) {
+            await safeSendMessage(bot, chatId, '⏰ No pending change found (may have expired).');
+            return;
+          }
+          // Clear history for name/personality so new style takes effect immediately
+          if (confirmed.key === 'bot_name' || confirmed.key === 'bot_personality') {
+            clearHistory(userId);
+          }
+          // Refresh cron if time setting changed
+          if (confirmed.envKey === 'MORNING_BRIEFING_TIME' || confirmed.envKey === 'WEEKLY_REVIEW_TIME') {
+            try {
+              if (typeof refreshSchedules === 'function') await refreshSchedules();
+            } catch { /* ignore */ }
+          }
+          await safeSendMessage(bot, chatId, '✅ *' + confirmed.label + ' updated!*\n\n' + escapeMd(confirmed.value));
+        } catch (err) {
+          console.error('Text confirm error:', err.message);
+          await safeSendMessage(bot, chatId, '❌ Failed to update setting.');
+        }
+      } else {
+        removePendingConfig(userId);
+        await safeSendMessage(bot, chatId, '❌ Change cancelled.');
+      }
+      return;
+    }
 
     await processUserText(bot, chatId, userId, userName, msg.text);
   });

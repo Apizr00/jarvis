@@ -3,6 +3,7 @@
 require('dotenv').config();
 
 const redis = require('./redis');
+const db = require('./db');
 const { createBot } = require('./bot');
 const { createApiServer } = require('./api');
 const { startScheduler } = require('./scheduler');
@@ -27,7 +28,7 @@ async function main() {
   console.log('  ╚█████╔╝██║  ██║██║  ██║ ╚████╔╝ ██║███████║');
   console.log('   ╚════╝ ╚═╝  ╚═╝╚═╝  ╚═╝  ╚═══╝  ╚═╝╚══════╝');
   console.log('');
-  const botName = (process.env.BOT_NAME || 'JARVIS').toUpperCase();
+  const botName = (await db.getConfig(process.env.TELEGRAM_OWNER_ID, 'bot_name', 'BOT_NAME', 'JARVIS')).toUpperCase();
   console.log('  🤖  ' + botName + '  —  Personal AI Assistant v2.0  🤖');
   console.log('');
 
@@ -35,10 +36,10 @@ async function main() {
   await redis.connect();
 
   // Start Telegram bot
-  const bot = createBot();
+  const bot = await createBot();
 
   // Start reminder scheduler (needs the bot instance to send messages)
-  startScheduler(bot);
+  await startScheduler(bot);
 
   // Start REST API
   const app = createApiServer();

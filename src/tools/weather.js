@@ -1,15 +1,19 @@
 // src/tools/weather.js
 // Fetches current weather from OpenWeatherMap (free tier)
 const axios = require('axios');
+const db = require('../db');
 
 const API_KEY = process.env.WEATHER_API_KEY;
-const LOCATION = process.env.WEATHER_LOCATION; // e.g. "Kuala Lumpur" or "Kuala Lumpur,MY"
 
 /**
  * Fetch current weather summary. Returns null if not configured or on error.
+ * Reads WEATHER_LOCATION from DB first, falls back to .env.
  * @returns {Promise<string|null>} e.g. "☀️ Clear sky, 32°C in Kuala Lumpur"
  */
 async function getWeatherSummary() {
+  const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
+  const LOCATION = await db.getConfig(OWNER_ID, 'weather_location', 'WEATHER_LOCATION');
+
   if (!API_KEY || !LOCATION) return null;
 
   try {

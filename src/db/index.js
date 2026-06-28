@@ -305,6 +305,69 @@ async function getUpcomingRemindersNextWeek(userId, fromDate, toDate) {
   return rows;
 }
 
+// ── Settings ──────────────────────────────────────────────────────────────────
+
+/**
+ * Get a single setting value for a user. Falls back to env if not in DB.
+ * @param {string} userId
+ * @param {string} key - setting key (e.g. 'bot_name', 'bot_personality')
+ * @returns {Promise<string|null>} the value or null
+ */
+async function getSetting(userId, key) {
+  const { rows } = await pool.query(
+    `SELECT value FROM settings WHERE user_id = $1 AND key = $2`,
+    [String(userId), key]
+  );
+  return rows.length > 0 ? rows[0].value : null;
+}
+
+/**
+ * Get all settings for a user as a key-value object.
+ * @param {string} userId
+ * @returns {Promise<Record<string,string>>}
+ */
+async function getAllSettings(userId) {
+  const { rows } = await pool.query(
+    `SELECT key, value FROM settings WHERE user_id = $1`,
+    [String(userId)]
+  );
+  const result = {};
+  rows.forEach(r => { result[r.key] = r.value; });
+  return result;
+}
+
+/**
+ * Upsert a setting value for a user.
+ * @param {string} userId
+ * @param {string} key
+ * @param {string} value
+ * @returns {Promise<object>} the inserted/updated row
+ */
+async function setSetting(userId, key, value) {
+  const { rows } = await pool.query(
+    `INSERT INTO settings (user_id, key, value, updated_at)
+     VALUES ($1, $2, $3, NOW())
+     ON CONFLICT (user_id, key) DO UPDATE SET value = $3, updated_at = NOW()
+     RETURNING *`,
+    [String(userId), key, value]
+  );
+  return rows[0];
+}
+
+/**
+ * Helper: get a config value with DB-first, env-fallback strategy.
+ * @param {string} userId
+ * @param {string} key - DB settings key
+ * @param {string} envKey - process.env key to fallback to
+ * @param {string} [defaultVal] - hardcoded fallback if both are null
+ * @returns {Promise<string>}
+ */
+async function getConfig(userId, key, envKey, defaultVal = '') {
+  const dbVal = await getSetting(userId, key);
+  if (dbVal !== null && dbVal !== '') return dbVal;
+  return process.env[envKey] || defaultVal;
+}
+
 module.exports = {
   pool,
   ensureUser,
@@ -328,4 +391,8 @@ module.exports = {
   getNotesSince,
   getRemindersDueInRange,
   getUpcomingRemindersNextWeek,
+  getSetting,
+  getAllSettings,
+  setSetting,
+  getConfig,
 };

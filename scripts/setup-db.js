@@ -49,6 +49,15 @@ async function setup() {
       updated_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE(user_id, key)
     );
+
+    CREATE TABLE IF NOT EXISTS settings (
+      id SERIAL PRIMARY KEY,
+      user_id TEXT REFERENCES users(id),
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(user_id, key)
+    );
   `);
 
   // ── Migration: add recurrence column for existing databases ─────────────

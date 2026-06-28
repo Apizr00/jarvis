@@ -1,12 +1,13 @@
 // src/llm/shared.js
 // Shared helpers used by all LLM providers
 const { dayjs, fmt } = require('../utils/datetime');
+const db = require('../db');
 
 // Known tool names — used for normalizing LLM responses that misuse the "type" field
 const KNOWN_TOOLS = [
   'create_reminder', 'update_reminder', 'cancel_reminder', 'list_reminders',
   'create_event', 'add_note', 'get_today', 'get_briefing', 'get_quote', 'set_fact',
-  'web_search', 'get_weekly_review',
+  'web_search', 'get_weekly_review', 'set_config', 'revert_config',
 ];
 
 // Common LLM typos → correct tool name
@@ -25,6 +26,13 @@ const TOOL_ALIASES = {
   'searchweb': 'web_search',
   'getweeklyreview': 'get_weekly_review',
   'weeklyreview': 'get_weekly_review',
+  'setconfig': 'set_config',
+  'changesetting': 'set_config',
+  'updatesetting': 'set_config',
+  'revertconfig': 'revert_config',
+  'revertsetting': 'revert_config',
+  'undosetting': 'revert_config',
+  'restore': 'revert_config',
 };
 
 /**
@@ -74,11 +82,13 @@ function normalizeLLMResponse(parsed) {
 
 /**
  * Build the system prompt for the LLM.
+ * Reads bot_name and bot_personality from DB first, falls back to .env.
+ * @param {string} userId
  * @param {Array<{key:string,value:string}>} facts - user memory facts
  * @param {string} timezone
  * @param {Array<{id:number,text:string,remind_at:string,recurrence:string|null}>} [reminders] - upcoming reminders
  */
-function buildSystemPrompt(facts, timezone, reminders) {
+async function buildSystemPrompt(userId, facts, timezone, reminders) {
   const factLines = facts.length
     ? facts.map(f => '- ' + f.key + ': ' + f.value).join('\n')
     : '(none yet)';
@@ -102,10 +112,13 @@ function buildSystemPrompt(facts, timezone, reminders) {
   const tzOffset = offsetStr.replace('GMT', ''); // "+08:00"
 
   // ── Personality ──────────────────────────────────────────────────────────────
-  const personality = (process.env.BOT_PERSONALITY || '').trim();
+  const personality = (await db.getConfig(userId, 'bot_personality', 'BOT_PERSONALITY')).trim();
   const personalityBlock = personality
     ? '─────────────── 🎭 PERSONALITY ───────────────\n' + personality + '\n\n'
     : '';
+
+  // ── Bot Name ────────────────────────────────────────────────────────────────
+  const botName = await db.getConfig(userId, 'bot_name', 'BOT_NAME', 'Jarvis');
 
   // ── JSON-first prompt: the most critical instruction MUST come first ──
   return '🚨 CRITICAL: You are NOT a chatbot. You are a JSON API endpoint.\n' +
@@ -119,7 +132,7 @@ function buildSystemPrompt(facts, timezone, reminders) {
     'pure conversation like greetings, answering factual questions, or casual chat.\n' +
     'NEVER use format B to say \"Done!\", \"Cancelled!\", \"Updated!\", \"Saved!\", or claim any action was taken.\n\n' +
     '─────────────── CONTEXT ───────────────\n' +
-    'You are ' + (process.env.BOT_NAME || 'Jarvis') + ', a personal AI assistant on Telegram.\n' +
+    'You are ' + botName + ', a personal AI assistant on Telegram.\n' +
     personalityBlock +
     'Timezone: ' + timezone + ' | Today: ' + today + '\n\n' +
     'User facts:\n' + factLines +
@@ -143,14 +156,18 @@ function buildSystemPrompt(facts, timezone, reminders) {
     'get_quote         → args: {}\n' +
     'set_fact          → args: { key, value }\n' +
     'web_search        → args: { query }\n' +
-    'get_weekly_review → args: {}\n\n' +
+    'get_weekly_review → args: {}\n' +
+    'set_config        → args: { key, value }\n' +
+    'revert_config     → args: { key }\n\n' +
     '─────────────── RULES ───────────────\n' +
     '• For times: use ISO-8601 with ' + tzOffset + ' offset. Convert "at 9pm" → "' + today + 'T21:00:00' + tzOffset + '"\n' +
     '• For cancel/update: match user description to CURRENT UPCOMING REMINDERS above and use the exact #ID\n' +
     '• If user says "change X to Y", use update_reminder (NOT create_reminder)\n' +
     '• If user asks what reminders exist, use list_reminders\n' +
     '• Recurrence values: "daily", "weekly", "weekdays", or null to remove recurrence\n' +
-    '• Use web_search for: latest news, current events, stock/crypto prices, weather forecasts, factual lookups, or anything requiring real-time/up-to-date info. User CANNOT web search themselves — only you can trigger it via this tool.';
+    '• Use web_search for: latest news, current events, stock/crypto prices, weather forecasts, factual lookups, or anything requiring real-time/up-to-date info. User CANNOT web search themselves — only you can trigger it via this tool.\n' +
+    '• set_config keys: "bot_name", "bot_personality", "morning_briefing_time" (24h HH:MM), "weekly_review_time" (24h HH:MM), "weather_location". Use this when user wants to change a bot setting.\n' +
+    '• revert_config keys: same as set_config. Use when user wants to undo/restore a previous setting (e.g. "tukar balik nama", "undo personality", "revert location").';
 }
 
 module.exports = { buildSystemPrompt, normalizeLLMResponse };

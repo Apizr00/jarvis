@@ -4,6 +4,56 @@ const db = require('../db');
 const { dayjs, fmt } = require('../utils/datetime');
 const redisCache = require('../redis');
 
+// ── Pending config changes (confirmation flow) ─────────────────────────────
+const pendingConfigChanges = new Map();
+
+/**
+ * Store a pending config change that requires confirmation.
+ * @param {string} userId
+ * @param {string} key - DB settings key
+ * @param {string} envKey - env var key
+ * @param {string} value - new value
+ * @param {string} label - human-readable label
+ */
+function setPendingConfig(userId, key, envKey, value, label) {
+  const ts = Date.now();
+  pendingConfigChanges.set(userId, { key, envKey, value, label, timestamp: ts });
+  // Auto-expire after 5 minutes (only if this exact entry is still the one stored)
+  setTimeout(() => {
+    const current = pendingConfigChanges.get(userId);
+    if (current && current.timestamp === ts) {
+      pendingConfigChanges.delete(userId);
+    }
+  }, 5 * 60 * 1000);
+}
+
+function getPendingConfig(userId) {
+  const pending = pendingConfigChanges.get(userId);
+  if (!pending) return null;
+  if (Date.now() - pending.timestamp > 5 * 60 * 1000) {
+    pendingConfigChanges.delete(userId);
+    return null;
+  }
+  return pending;
+}
+
+function removePendingConfig(userId) {
+  pendingConfigChanges.delete(userId);
+}
+
+async function confirmPendingConfig(userId) {
+  const pending = getPendingConfig(userId);
+  if (!pending) return null;
+  removePendingConfig(userId);
+  // Save current value as "previous" before overwriting (for undo/revert)
+  const currentVal = await db.getSetting(userId, pending.key);
+  if (currentVal !== null && currentVal !== '') {
+    await db.setSetting(userId, 'prev_' + pending.key, currentVal);
+  }
+  await db.setSetting(userId, pending.key, pending.value);
+  return pending;
+}
+
 /**
  * Escape special characters for Telegram's Markdown parser.
  * In legacy Markdown mode the reserved chars are: _ * ` [
@@ -254,9 +304,140 @@ async function executeTool(userId, toolCall) {
       return await buildWeeklyReview();
     }
 
+    // ── set_config ──────────────────────────────────────────────────────────
+    case 'set_config': {
+      const validKeys = {
+        bot_name: 'BOT_NAME',
+        bot_personality: 'BOT_PERSONALITY',
+        morning_briefing_time: 'MORNING_BRIEFING_TIME',
+        weekly_review_time: 'WEEKLY_REVIEW_TIME',
+        weather_location: 'WEATHER_LOCATION',
+      };
+
+      // Fuzzy key matching — catch common LLM variations
+      const keyAliases = {
+        'name': 'bot_name',
+        'nama': 'bot_name',
+        'botname': 'bot_name',
+        'personality': 'bot_personality',
+        'personaliti': 'bot_personality',
+        'persona': 'bot_personality',
+        'perwatakan': 'bot_personality',
+        'briefing_time': 'morning_briefing_time',
+        'briefing': 'morning_briefing_time',
+        'morning_time': 'morning_briefing_time',
+        'masa_briefing': 'morning_briefing_time',
+        'review_time': 'weekly_review_time',
+        'review': 'weekly_review_time',
+        'weekly_time': 'weekly_review_time',
+        'masa_review': 'weekly_review_time',
+        'location': 'weather_location',
+        'lokasi': 'weather_location',
+        'city': 'weather_location',
+        'bandar': 'weather_location',
+        'cuaca': 'weather_location',
+        'weather': 'weather_location',
+      };
+
+      if (!args.key || args.value === undefined) {
+        return 'I need both a setting key and value. Try: bot_name, bot_personality, morning_briefing_time, weekly_review_time, weather_location.';
+      }
+
+      let key = args.key.toLowerCase().trim();
+      // Resolve alias first
+      if (keyAliases[key]) key = keyAliases[key];
+      // Also try stripping underscores
+      if (!validKeys[key]) {
+        const stripped = key.replace(/[_\s-]/g, '');
+        const matched = Object.keys(validKeys).find(k => k.replace(/_/g, '') === stripped);
+        if (matched) key = matched;
+      }
+
+      const envKey = validKeys[key];
+      if (!envKey) {
+        return 'Unknown setting: "' + escapeMd(args.key) + '". Available: bot_name, bot_personality, morning_briefing_time (e.g. "7:00"), weekly_review_time, weather_location.';
+      }
+
+      // Validate time formats
+      if ((envKey === 'MORNING_BRIEFING_TIME' || envKey === 'WEEKLY_REVIEW_TIME') && !/^\d{1,2}:\d{2}$/.test(args.value)) {
+        return 'Time must be in 24h format, e.g. "7:00" or "20:00".';
+      }
+
+      const label = {
+        bot_name: 'Bot Name',
+        bot_personality: 'Bot Personality',
+        morning_briefing_time: 'Morning Briefing Time',
+        weekly_review_time: 'Weekly Review Time',
+        weather_location: 'Weather Location',
+      };
+
+      // ── Store pending & ask for confirmation ────────────────────────────
+      setPendingConfig(userId, key, envKey, args.value, label[key]);
+
+      const currentVal = await db.getConfig(userId, key, envKey);
+      const currentStr = currentVal ? '\n_Current: ' + escapeMd(currentVal.length > 50 ? currentVal.slice(0, 50) + '…' : currentVal) + '_' : '';
+
+      return {
+        type: 'confirm',
+        message: '⚙️ *Confirm Change?*\n\n' +
+          '*' + label[key] + '* → ' + escapeMd(args.value) + currentStr,
+      };
+    }
+
+    // ── revert_config ──────────────────────────────────────────────────────
+    case 'revert_config': {
+      const validKeys = {
+        bot_name: 'BOT_NAME', bot_personality: 'BOT_PERSONALITY',
+        morning_briefing_time: 'MORNING_BRIEFING_TIME', weekly_review_time: 'WEEKLY_REVIEW_TIME',
+        weather_location: 'WEATHER_LOCATION',
+      };
+      const keyAliases = {
+        'name': 'bot_name', 'nama': 'bot_name', 'personality': 'bot_personality',
+        'personaliti': 'bot_personality', 'persona': 'bot_personality',
+        'briefing': 'morning_briefing_time', 'review': 'weekly_review_time',
+        'location': 'weather_location', 'lokasi': 'weather_location', 'cuaca': 'weather_location',
+      };
+
+      let key = (args.key || '').toLowerCase().trim();
+      if (keyAliases[key]) key = keyAliases[key];
+      if (!validKeys[key]) {
+        return 'Unknown setting to revert. Try: bot_name, bot_personality, morning_briefing_time, weekly_review_time, weather_location.';
+      }
+
+      const prevVal = await db.getSetting(userId, 'prev_' + key);
+      if (!prevVal) {
+        return 'No previous value saved for ' + key + '. Nothing to revert to.';
+      }
+
+      // Save current as prev (allow re-revert), then restore previous
+      const currentVal = await db.getSetting(userId, key);
+      await db.setSetting(userId, key, prevVal);
+      if (currentVal !== null && currentVal !== '') {
+        await db.setSetting(userId, 'prev_' + key, currentVal);
+      } else {
+        // No current to swap — just clear the prev marker
+        await db.setSetting(userId, 'prev_' + key, '');
+      }
+
+      // Refresh cron if time setting changed
+      if (key === 'morning_briefing_time' || key === 'weekly_review_time') {
+        try {
+          const { refreshSchedules } = require('../scheduler');
+          if (typeof refreshSchedules === 'function') await refreshSchedules();
+        } catch { /* ignore */ }
+      }
+
+      const label = validKeys[key] === 'BOT_NAME' ? 'Bot Name' :
+        validKeys[key] === 'BOT_PERSONALITY' ? 'Bot Personality' :
+          validKeys[key] === 'MORNING_BRIEFING_TIME' ? 'Morning Briefing Time' :
+            validKeys[key] === 'WEEKLY_REVIEW_TIME' ? 'Weekly Review Time' : 'Weather Location';
+
+      return '↩️ *Reverted!*\n\n*' + label + '* → ' + escapeMd(prevVal);
+    }
+
     default:
       return 'I tried to use a tool called "' + escapeMd(name) + '" but I don\'t know how to do that yet.';
   }
 }
 
-module.exports = { executeTool, escapeMd, safeSendMessage };
+module.exports = { executeTool, escapeMd, safeSendMessage, getPendingConfig, confirmPendingConfig, removePendingConfig, setPendingConfig };
