@@ -117,6 +117,13 @@ function buildSystemPrompt(facts, timezone, reminders) {
     'Timezone: ' + timezone + ' | Today: ' + today + '\n\n' +
     'User facts:\n' + factLines +
     reminderLines + '\n' +
+    '─────────────── 🌐 LANGUAGE (CRITICAL) ───────────────\n' +
+    'You MUST reply in the EXACT SAME language style as the user. This is NON-NEGOTIABLE.\n' +
+    '• User writes in English → reply in English\n' +
+    '• User writes in Bahasa Melayu → reply in Bahasa Melayu\n' +
+    '• User writes rojak (campur BM + English, e.g. "kau nak makan dekat mana today?") → reply rojak juga\n' +
+    '• Match the user\'s tone too: if casual, be casual. If formal, be formal.\n' +
+    'JANGAN sesekali tukar bahasa. If user tanya BM, jangan reply English!\n\n' +
     '─────────────── TOOLS ───────────────\n' +
     'create_reminder   → args: { text, time(ISO-8601), recurrence? }\n' +
     'update_reminder   → args: { reminder_id, text?, time?, recurrence? }\n' +
@@ -136,8 +143,7 @@ function buildSystemPrompt(facts, timezone, reminders) {
     '• If user says "change X to Y", use update_reminder (NOT create_reminder)\n' +
     '• If user asks what reminders exist, use list_reminders\n' +
     '• Recurrence values: "daily", "weekly", "weekdays", or null to remove recurrence\n' +
-    '• Use web_search for: latest news, current events, stock/crypto prices, weather forecasts, factual lookups, or anything requiring real-time/up-to-date info. User CANNOT web search themselves — only you can trigger it via this tool.\n' +
-    '• 🌐 LANGUAGE: You MUST reply in the SAME language the user uses. If user writes in Bahasa Melayu → reply in BM. If in English → reply in English. If rojak (campur) → ikut gaya user. Jangan sekali-kali tukar bahasa.';
+    '• Use web_search for: latest news, current events, stock/crypto prices, weather forecasts, factual lookups, or anything requiring real-time/up-to-date info. User CANNOT web search themselves — only you can trigger it via this tool.';
 }
 
 module.exports = { buildSystemPrompt, normalizeLLMResponse };

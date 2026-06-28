@@ -356,6 +356,38 @@ function createBot() {
           }
         }
 
+        // ── Web Search: re-summarize results in the user's language via LLM ──
+        if (llmResponse.name === 'web_search') {
+          try {
+            const summarizePrompt =
+              '🌐 You just performed a web search for the user. Below are the raw search results.\n\n' +
+              'YOUR JOB: Summarize these results in a helpful, concise reply.\n\n' +
+              '🚨 CRITICAL LANGUAGE RULE (NON-NEGOTIABLE):\n' +
+              '• User wrote in English → reply in English\n' +
+              '• User wrote in Bahasa Melayu → reply in Bahasa Melayu\n' +
+              '• User wrote rojak (campur BM+English, e.g. "apa news terkini about AI?") → reply rojak juga\n' +
+              '• Match the user\'s exact language style and tone. JANGAN tukar bahasa!\n\n' +
+              'User\'s original query: "' + text + '"\n\n' +
+              '─────────────── RAW SEARCH RESULTS ───────────────\n' +
+              result + '\n' +
+              '──────────────────────────────────────────────────\n\n' +
+              'Now write a natural, friendly reply summarizing these results. ' +
+              'Respond with: {"type":"message","content":"your summary here"}';
+
+            const summarizeHistory = [{ role: 'user', content: summarizePrompt }];
+            const summaryResponse = await llm.chat(userId, text, summarizeHistory);
+            console.log('[Bot] Web search re-summary result:', summaryResponse.type, summaryResponse.content ? summaryResponse.content.slice(0, 150) : '');
+
+            if (summaryResponse.type === 'message' && summaryResponse.content) {
+              result = summaryResponse.content;
+            }
+            // If LLM failed to re-summarize, fall through and use raw result
+          } catch (summaryErr) {
+            console.warn('[Bot] Web search re-summary failed (using raw results):', summaryErr.message);
+            // result stays as raw search results
+          }
+        }
+
         // Combine results
         const finalResult = followupResult
           ? result + '\n\n' + followupResult
