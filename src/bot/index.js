@@ -17,6 +17,97 @@ const memory = require('../memory');
 
 const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
 
+// ── Time hallucination guard ────────────────────────────────────────────────
+// LLMs love to make up times. This function scans the bot's reply for any
+// time mention that doesn't match the actual current time, and fixes it.
+// Supports Malay ("pukul 6:50", "jam 6.50") and English ("6:50 am", "6.50pm").
+function fixHallucinatedTime(text) {
+  if (typeof text !== 'string' || text.length === 0) return text;
+
+  const tz = process.env.TIMEZONE || 'UTC';
+  const now = new Date();
+
+  // Get current hour and minute in configured timezone
+  const hour = parseInt(new Intl.DateTimeFormat('en', { timeZone: tz, hour: 'numeric', hour12: false }).format(now), 10);
+  const minute = parseInt(new Intl.DateTimeFormat('en', { timeZone: tz, minute: '2-digit' }).format(now), 10);
+  const actualTotalMins = hour * 60 + minute;
+
+  // Pattern: optional time-word prefix + HH:MM or HH.MM + optional AM/PM/suffix
+  const timePattern = /(pukul|jam|dah\s+(?:pukul|jam)\s+|around\s+|about\s+|at\s+|it'?s?\s+|is\s+|now\s+|already\s+)?(\d{1,2})[:.](\d{2})(?!\d)\s*(pagi|am|a\.m\.?|petang|malam|pm|p\.m\.?)?/gi;
+
+  // Collect all replacements (index, oldStr, newStr) to apply from right to left
+  const replacements = [];
+
+  let match;
+  while ((match = timePattern.exec(text)) !== null) {
+    const fullMatch = match[0];
+    const prefix = (match[1] || '');
+    const matchedHour = parseInt(match[2], 10);
+    const matchedMinute = parseInt(match[3], 10);
+    const period = (match[4] || '').toLowerCase();
+
+    // Convert to 24h for comparison
+    let matched24h = matchedHour;
+    if (/(petang|malam|pm|p\.m)/i.test(period)) {
+      if (matchedHour !== 12) matched24h = matchedHour + 12;
+    } else if (/(pagi|am|a\.m)/i.test(period)) {
+      if (matchedHour === 12) matched24h = 0;
+    }
+
+    const matchedTotalMins = matched24h * 60 + matchedMinute;
+    const diffMins = Math.abs(matchedTotalMins - actualTotalMins);
+
+    // Only fix if > 2 minutes off
+    if (diffMins <= 2) continue;
+
+    // Format the correct time
+    const correctHour12 = hour % 12 === 0 ? 12 : hour % 12;
+    const correctMinStr = minute.toString().padStart(2, '0');
+    const separator = fullMatch.includes(':') ? ':' : '.';
+
+    // Preserve original format as much as possible
+    let replacement = prefix + correctHour12 + separator + correctMinStr;
+    if (period) replacement += ' ' + period;
+
+    replacements.push({ index: match.index, oldStr: fullMatch, newStr: replacement });
+  }
+
+  // Also check "tengah hari" / "tengah malam" mentions
+  const tengahHariRe = /\btengah\s*hari\b/gi;
+  const tengahMalamRe = /\btengah\s*malam\b/gi;
+  const isNoon = hour === 12;
+  const isMidnight = hour === 0;
+
+  if (!isNoon) {
+    while ((match = tengahHariRe.exec(text)) !== null) {
+      const correctTime = 'pukul ' + hour + ':' + minute.toString().padStart(2, '0');
+      replacements.push({ index: match.index, oldStr: match[0], newStr: correctTime });
+    }
+  }
+  if (!isMidnight) {
+    while ((match = tengahMalamRe.exec(text)) !== null) {
+      const correctTime = 'pukul ' + hour + ':' + minute.toString().padStart(2, '0');
+      replacements.push({ index: match.index, oldStr: match[0], newStr: correctTime });
+    }
+  }
+
+  if (replacements.length === 0) return text;
+
+  // Sort by index descending so we can replace from right to left
+  replacements.sort((a, b) => b.index - a.index);
+
+  let fixed = text;
+  for (const r of replacements) {
+    const before = fixed.substring(0, r.index);
+    const after = fixed.substring(r.index + r.oldStr.length);
+    fixed = before + r.newStr + after;
+    console.log('[Bot] ⏰ Fixing hallucinated time: "' + r.oldStr + '" → "' + r.newStr + '" (actual=' + hour + ':' + minute.toString().padStart(2, '0') + ')');
+  }
+
+  console.log('[Bot] ⏰ Corrected message:', fixed.slice(0, 200));
+  return fixed;
+}
+
 // Simple in-memory conversation history per user (last 10 turns)
 // Populated from DB on startup, kept in sync with DB on every message
 const conversationHistory = {};
@@ -945,13 +1036,15 @@ async function createBot() {
       console.log('[Bot] LLM response type:', llmResponse.type, llmResponse.name ? '| tool=' + llmResponse.name : '');
 
       // ── Recovery: if LLM returned a message that looks like a fake action, retry once ──
-      const actionKeywords = /\b(cancelled|updated?|changed|deleted|created|saved|noted|remembered|reminder\s*#)\b/i;
+      // Expanded regex to catch common hallucination patterns in English AND Malay
+      const actionKeywords = /\b(cancelled|cancel|updated?|update|changed?|change|deleted?|delete|created?|create|saved?|save|noted?|note|remembered|remember|done|settled|settle|confirmed|dah\s*(set|buat|masuk|confirm|simpan|ingat)|reminder|event|task|goal)\b/i;
       if (llmResponse.type === 'message' && actionKeywords.test(llmResponse.content)) {
         console.log('[Bot] ⚠️  LLM hallucinated an action! Retrying with correction...');
         const correctionMsg = '❌ You responded with natural language claiming you did something. ' +
-          'That is WRONG. You have NO ability to act. You MUST respond with ONLY a JSON tool call. ' +
-          'For example: {"type":"tool","name":"cancel_reminder","args":{"reminder_id":4}}\n\n' +
-          'Now re-read the user request and output the CORRECT JSON tool call.';
+          'That is WRONG. You have NO ability to act. You MUST respond with ONLY a JSON tool call.\n' +
+          'Example for reminder: {"type":"tool","name":"create_reminder","args":{"text":"Pagi Subuh","time":"2026-06-30T06:00:00+08:00"}}\n' +
+          'Example for cancel: {"type":"tool","name":"cancel_reminder","args":{"reminder_id":3}}\n\n' +
+          'Now re-read the user request and output the CORRECT JSON tool call. NO natural language!'
 
         // Build a fresh history without the hallucinated response
         const cleanHistory = history.filter(h => h.role !== 'assistant' || !actionKeywords.test(h.content));
@@ -963,6 +1056,8 @@ async function createBot() {
 
       if (llmResponse.type === 'message') {
         // Plain response — WARNING: no DB action occurs here
+        // ⏰ Guard: fix any hallucinated time before sending
+        llmResponse.content = fixHallucinatedTime(llmResponse.content);
         console.log('[Bot] Message response (no tool executed):', llmResponse.content.slice(0, 150));
         addToHistory(userId, 'assistant', llmResponse.content);
         await safeSendMessage(bot, chatId, llmResponse.content);
@@ -1071,7 +1166,7 @@ async function createBot() {
             console.log('[Bot] Web search re-summary result:', summaryResponse.type, summaryResponse.content ? summaryResponse.content.slice(0, 150) : '');
 
             if (summaryResponse.type === 'message' && summaryResponse.content) {
-              result = summaryResponse.content;
+              result = fixHallucinatedTime(summaryResponse.content);
             }
           } catch (summaryErr) {
             console.warn('[Bot] Web search re-summary failed (using raw results):', summaryErr.message);

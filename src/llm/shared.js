@@ -98,6 +98,16 @@ function normalizeLLMResponse(parsed) {
     return { type: 'message', content: parsed.content };
   }
 
+  // Edge case: the entire object IS a tool call (e.g. {"create_reminder": {...}})
+  const keys = Object.keys(parsed);
+  for (const key of keys) {
+    const cleanKey = key.toLowerCase().replace(/[_-]/g, '');
+    const match = KNOWN_TOOLS.find(t => t.replace(/[_-]/g, '') === cleanKey);
+    if (match && typeof parsed[key] === 'object' && parsed[key] !== null) {
+      return { type: 'tool', name: match, args: parsed[key] };
+    }
+  }
+
   return null;
 }
 
@@ -162,16 +172,34 @@ async function buildSystemPrompt(userId, facts, timezone, reminders) {
     'RESPONSE FORMAT (choose exactly ONE):\n\n' +
     'A) To perform an action → {\"type\":\"tool\",\"name\":\"TOOL_NAME\",\"args\":{...}}\n' +
     'B) To just reply → {\"type\":\"message\",\"content\":\"your short reply\"}\n\n' +
-    '⚠️ WARNING: You have NO ability to create, cancel, update, save, or remember anything yourself.\n' +
-    'If a user asks you to DO something, you MUST use format A (tool call). Format B (message) is ONLY for\n' +
-    'pure conversation like greetings, answering factual questions, or casual chat.\n' +
-    'NEVER use format B to say \"Done!\", \"Cancelled!\", \"Updated!\", \"Saved!\", or claim any action was taken.\n\n' +
+    '⛔ CRITICAL WARNING — READ THIS TWICE:\n' +
+    'You have ZERO ability to do anything. You are just a text-to-JSON translator.\n' +
+    'If the user wants to create/set/cancel/update/delete/change/save/remember/note/add/remove ANYTHING,\n' +
+    'you MUST output format A (tool call). Format B (message) is STRICTLY ONLY for:\n' +
+    '• Greetings (\"hi\", \"hello\", \"apa khabar\")\n' +
+    '• Answering factual questions (\"what is photosynthesis?\")\n' +
+    '• Casual chat with NO action involved\n\n' +
+    '🚫 HALLUCINATION EXAMPLES (WRONG — DO NOT DO THIS):\n' +
+    '  ❌ {\"type\":\"message\",\"content\":\"Done! Reminder dah set untuk pukul 6.\"}\n' +
+    '  ❌ {\"type\":\"message\",\"content\":\"Okay, I\'ve saved that note!\"}\n' +
+    '  ❌ {\"type\":\"message\",\"content\":\"Cancelled your reminder.\"}\n' +
+    '✅ CORRECT ALTERNATIVES:\n' +
+    '  ✅ {\"type\":\"tool\",\"name\":\"create_reminder\",\"args\":{\"text\":\"Pagi Subuh\",\"time\":\"2026-06-30T06:00:00+08:00\"}}\n' +
+    '  ✅ {\"type\":\"tool\",\"name\":\"add_note\",\"args\":{\"content\":\"follow up with client\"}}\n' +
+    '  ✅ {\"type\":\"tool\",\"name\":\"cancel_reminder\",\"args\":{\"reminder_id\":3}}\n\n' +
     '─────────────── CONTEXT ───────────────\n' +
     'You are ' + botName + ', a personal AI assistant on Telegram.\n' +
     personalityBlock +
     'Timezone: ' + timezone + ' | Today: ' + today + ' | Current time: ' + currentTime + '\n\n' +
     'User facts:\n' + factLines +
     reminderLines + '\n' +
+    '─────────────── ⏰ TIME ACCURACY (CRITICAL — READ TWICE) ───────────────\n' +
+    'The CURRENT TIME provided above is THE ONLY reliable time reference. You have NO internal clock.\n' +
+    '🔥 DO NOT invent, guess, round, estimate, or approximate the time. Use the EXACT time from CONTEXT.\n' +
+    '🔥 If you mention a time in your message (e.g. "dah pukul 6:50", "its 7am now"), it MUST match the Current time above EXACTLY.\n' +
+    '🔥 If the user asks what time it is OR you need to reference time → call get_current_time tool. NEVER guess.\n' +
+    '🔥 Writing a wrong time (even 5 minutes off) is a CRITICAL ERROR that will confuse and upset the user.\n' +
+    '🔥 When in doubt: round DOWN to the exact minute shown. If current time says 6:40, say 6:40 — NOT 6:45, NOT 6:50.\n\n' +
     '─────────────── 🌐 LANGUAGE (CRITICAL) ───────────────\n' +
     'You MUST reply in the EXACT SAME language style as the user. This is NON-NEGOTIABLE.\n' +
     '• User writes in English → reply in English\n' +
