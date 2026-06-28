@@ -101,6 +101,12 @@ function buildSystemPrompt(facts, timezone, reminders) {
   const offsetStr = offsetParts.find(p => p.type === 'timeZoneName').value; // "GMT+08:00"
   const tzOffset = offsetStr.replace('GMT', ''); // "+08:00"
 
+  // ── Personality ──────────────────────────────────────────────────────────────
+  const personality = (process.env.BOT_PERSONALITY || '').trim();
+  const personalityBlock = personality
+    ? '─────────────── 🎭 PERSONALITY ───────────────\n' + personality + '\n\n'
+    : '';
+
   // ── JSON-first prompt: the most critical instruction MUST come first ──
   return '🚨 CRITICAL: You are NOT a chatbot. You are a JSON API endpoint.\n' +
     'Your ENTIRE response must be a single valid JSON object. Nothing else. No markdown. No explanation.\n' +
@@ -114,6 +120,7 @@ function buildSystemPrompt(facts, timezone, reminders) {
     'NEVER use format B to say \"Done!\", \"Cancelled!\", \"Updated!\", \"Saved!\", or claim any action was taken.\n\n' +
     '─────────────── CONTEXT ───────────────\n' +
     'You are Jarvis, a personal AI assistant on Telegram.\n' +
+    personalityBlock +
     'Timezone: ' + timezone + ' | Today: ' + today + '\n\n' +
     'User facts:\n' + factLines +
     reminderLines + '\n' +
