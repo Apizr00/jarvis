@@ -10,6 +10,7 @@ const { escapeMd, safeSendMessage } = tools;
 const { buildBriefingMessage } = require('../scheduler');
 const { getQuote } = require('../tools/quote');
 const { transcribe, downloadVoiceFile } = require('../llm/whisper');
+const { getApiStatus, formatStatusMessage } = require('../api/status');
 
 const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
 
@@ -62,6 +63,7 @@ function createBot() {
         '• "Note: look into React Native"\n' +
         '• "What\'s my schedule today?"\n' +
         '• "Remember that I prefer dark mode"\n\n' +
+        'Type /status to check API connections.\n\n' +
         'I\'m ready when you are.';
 
       await safeSendMessage(bot, msg.chat.id, welcome);
@@ -223,6 +225,7 @@ function createBot() {
       '/notes — View recent notes\n' +
       '/reminders — List upcoming reminders\n' +
       '/memory — See stored facts\n' +
+      '/status — Check API connections\n' +
       '/help — This message\n\n' +
       '*Or just talk to me naturally!*\n' +
       'Examples:\n' +
@@ -233,8 +236,22 @@ function createBot() {
       '• "Remember I wake up at 6am"\n' +
       '• "What\'s my day looking like?"\n' +
       '• "Cancel reminder #3"\n\n' +
-      '🎤 *You can also send voice messages!* _(requires OpenAI API key)_';
+      '🎤 *You can also send voice messages!*';
     await safeSendMessage(bot, msg.chat.id, help);
+  });
+
+  // ── /status command ───────────────────────────────────────────────────────
+  bot.onText(/\/status/, async (msg) => {
+    if (!isOwner(msg)) return;
+    await bot.sendChatAction(msg.chat.id, 'typing');
+    try {
+      const statuses = await getApiStatus(bot);
+      const message = formatStatusMessage(statuses);
+      await safeSendMessage(bot, msg.chat.id, message);
+    } catch (err) {
+      console.error('/status error:', err.message);
+      await bot.sendMessage(msg.chat.id, '❌ Could not check API status.');
+    }
   });
 
   // ── Shared text processing (used by both text and voice messages) ─────────

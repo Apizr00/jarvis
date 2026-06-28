@@ -30,7 +30,7 @@ function startScheduler(bot) {
   });
 
   // ── Morning briefing: configurable time (default 8:00 AM) ──────────────
-  const briefingTime = process.env.MORNING_BRIEFING_TIME || '8:00';
+  const briefingTime = process.env.MORNING_BRIEFING_TIME || '7:00';
   const [hour, minute] = briefingTime.split(':').map(n => parseInt(n, 10));
   const cronExpr = `${minute} ${hour} * * *`;
   console.log(`🌅 Morning briefing scheduled for ${briefingTime} daily`);

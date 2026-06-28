@@ -6,6 +6,7 @@ const redis = require('./redis');
 const { createBot } = require('./bot');
 const { createApiServer } = require('./api');
 const { startScheduler } = require('./scheduler');
+const { getApiStatus, formatStatusMessage } = require('./api/status');
 
 // ── Validate required env vars ────────────────────────────────────────────────
 const required = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_OWNER_ID', 'DEEPSEEK_API_KEY', 'DATABASE_URL'];
@@ -45,6 +46,19 @@ async function main() {
     console.log('🌐 API server running on http://localhost:' + port);
   });
 
+  // ── Check API status ────────────────────────────────────────────────────────
+  console.log('');
+  console.log('🔌 API STATUS');
+  console.log('─────────────');
+  const statuses = await getApiStatus(bot);
+  for (const s of statuses) {
+    const icon = s.icon || '•';
+    const label = s.connected !== null
+      ? (s.connected ? '\x1b[32monline\x1b[0m ' : '\x1b[31moffline\x1b[0m')
+      : (s.configured ? 'untested' : '\x1b[90mn/a\x1b[0m     ');
+    const padded = (icon + '  ' + s.name + ' ').padEnd(32, '.');
+    console.log('  ' + padded + ' ' + label);
+  }
   console.log('✅ Jarvis is fully operational.');
   console.log('');
 

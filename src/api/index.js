@@ -52,7 +52,7 @@ function createApiServer() {
   app.get('/', (req, res) => {
     res.json({
       name: 'Jarvis - Personal AI Assistant',
-      version: '1.0.0',
+      version: '2.0.0',
       routes: ['GET /', 'GET /today', 'POST /notes', 'GET /memory', 'GET /health'],
     });
   });
