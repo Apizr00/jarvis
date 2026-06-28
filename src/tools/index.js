@@ -280,6 +280,28 @@ async function executeTool(userId, toolCall) {
       return reply.trim();
     }
 
+    // ── get_current_time ─────────────────────────────────────────────────────
+    case 'get_current_time': {
+      const tz = process.env.TIMEZONE || 'UTC';
+      const now = new Date();
+      const timeFormatted = new Intl.DateTimeFormat('en', {
+        timeZone: tz,
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+        weekday: 'long',
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      }).format(now);
+
+      const offsetParts = new Intl.DateTimeFormat('en', { timeZone: tz, timeZoneName: 'longOffset' })
+        .formatToParts(now);
+      const offsetStr = offsetParts.find(p => p.type === 'timeZoneName').value; // "GMT+08:00"
+
+      return '🕐 Current time: ' + timeFormatted + ' (' + offsetStr + ')';
+    }
+
     // ── set_fact ──────────────────────────────────────────────────────────────
     case 'set_fact': {
       if (!args.key || !args.value) {

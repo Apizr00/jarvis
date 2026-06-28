@@ -9,6 +9,7 @@ const KNOWN_TOOLS = [
   'create_event', 'update_event', 'cancel_event',
   'add_note', 'get_today', 'get_briefing', 'get_quote', 'set_fact',
   'web_search', 'get_weekly_review', 'set_config', 'revert_config',
+  'get_current_time',
 ];
 
 // Common LLM typos → correct tool name
@@ -36,6 +37,11 @@ const TOOL_ALIASES = {
   'revertsetting': 'revert_config',
   'undosetting': 'revert_config',
   'restore': 'revert_config',
+  'gettime': 'get_current_time',
+  'currenttime': 'get_current_time',
+  'whattime': 'get_current_time',
+  'timenow': 'get_current_time',
+  'now': 'get_current_time',
 };
 
 /**
@@ -106,13 +112,26 @@ async function buildSystemPrompt(userId, facts, timezone, reminders) {
       }).join('\n') + '\n';
   }
 
-  const today = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(new Date());
+  const now = new Date();
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(now);
 
   // Compute current UTC offset (e.g. "+08:00") for the configured timezone
   const offsetParts = new Intl.DateTimeFormat('en', { timeZone: timezone, timeZoneName: 'longOffset' })
-    .formatToParts(new Date());
+    .formatToParts(now);
   const offsetStr = offsetParts.find(p => p.type === 'timeZoneName').value; // "GMT+08:00"
   const tzOffset = offsetStr.replace('GMT', ''); // "+08:00"
+
+  // Current time in the configured timezone (e.g. "8:39 PM" or "20:39")
+  const currentTime = new Intl.DateTimeFormat('en', {
+    timeZone: timezone,
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  }).format(now);
 
   // ── Personality ──────────────────────────────────────────────────────────────
   const personality = (await db.getConfig(userId, 'bot_personality', 'BOT_PERSONALITY')).trim();
@@ -137,7 +156,7 @@ async function buildSystemPrompt(userId, facts, timezone, reminders) {
     '─────────────── CONTEXT ───────────────\n' +
     'You are ' + botName + ', a personal AI assistant on Telegram.\n' +
     personalityBlock +
-    'Timezone: ' + timezone + ' | Today: ' + today + '\n\n' +
+    'Timezone: ' + timezone + ' | Today: ' + today + ' | Current time: ' + currentTime + '\n\n' +
     'User facts:\n' + factLines +
     reminderLines + '\n' +
     '─────────────── 🌐 LANGUAGE (CRITICAL) ───────────────\n' +
@@ -164,6 +183,7 @@ async function buildSystemPrompt(userId, facts, timezone, reminders) {
     'get_weekly_review → args: {}\n' +
     'set_config        → args: { key, value }\n' +
     'revert_config     → args: { key }\n\n' +
+    'get_current_time  → args: {} — returns the current date and time in the user\'s timezone\n\n' +
     '─────────────── RULES ───────────────\n' +
     '• For times: use ISO-8601 with ' + tzOffset + ' offset. Convert "at 9pm" → "' + today + 'T21:00:00' + tzOffset + '"\n' +
     '• For cancel/update: match user description to CURRENT UPCOMING REMINDERS above and use the exact #ID\n' +
