@@ -57,7 +57,7 @@ function createBot() {
       await db.ensureUser(OWNER_ID, name);
 
       const welcome =
-        'Hey ' + name + '! I\'m *Jarvis*, your personal assistant. 🤖\n\n' +
+        'Hey ' + name + '! I\'m *' + botName + '*, your personal assistant. 🤖\n\n' +
         'You can talk to me naturally. Try:\n' +
         '• "Remind me to call mum at 6pm"\n' +
         '• "Add gym to my calendar tomorrow at 7am"\n' +
