@@ -1,6 +1,6 @@
 # 🤖 Jarvis — Personal AI Assistant for Telegram
 
-A self-hosted personal assistant that lives in your Telegram. Talk to it naturally — set reminders, log events, save notes, and let it remember things about you.
+A self-hosted personal AI assistant that lives in your Telegram. Talk to it naturally — set reminders, schedule events, save notes, and let it remember things about you. Wakes you up with a morning briefing complete with weather and a motivational quote.
 
 **Stack:** Node.js · PostgreSQL · Redis (optional) · DeepSeek + Xiaomi MiMo · Telegram Bot API
 
@@ -8,16 +8,21 @@ A self-hosted personal assistant that lives in your Telegram. Talk to it natural
 
 ## ✅ What it can do
 
-| You say...                         | Jarvis does...                              |
-| ---------------------------------- | ------------------------------------------- |
-| "Remind me to call mum at 6pm"     | Creates a DB reminder, fires at exactly 6pm |
-| "Add gym to calendar tomorrow 7am" | Saves an event                              |
-| "Note: look into React Native"     | Saves a note                                |
-| "What's my day?"                   | Shows today's events + reminders            |
-| "Remember I sleep at 1am"          | Stores a long-term memory fact              |
-| `/today`                           | Quick schedule overview                     |
-| `/notes`                           | Last 10 notes                               |
-| `/memory`                          | All stored facts about you                  |
+| You say...                         | Jarvis does...                                         |
+| ---------------------------------- | ------------------------------------------------------ |
+| "Remind me to call mum at 6pm"     | Creates a reminder, pings you at exactly 6pm           |
+| "Cancel my call mum reminder"      | Cancels the matching reminder by ID                    |
+| "Move my gym reminder to 8am"      | Updates the reminder time                              |
+| "Remind me to stretch every day"   | Creates a recurring daily reminder                     |
+| "Add gym to calendar tomorrow 7am" | Saves an event                                         |
+| "Note: look into React Native"     | Saves a note                                           |
+| "What's my day?" / `/today`        | Shows today's events + reminders                       |
+| "Remember I sleep at 1am"          | Stores a long-term memory fact                         |
+| "What do you know about me?"       | Shows all stored facts about you                       |
+| "Motivate me" / "Give me a quote"  | Fetches a motivational quote from ZenQuotes            |
+| **Automatic: every morning**       | 🌅 Morning briefing — weather, quote, today's schedule |
+| `/notes`                           | Last 10 notes                                          |
+| `/memory`                          | All stored facts about you                             |
 
 ---
 
@@ -30,6 +35,7 @@ A self-hosted personal assistant that lives in your Telegram. Talk to it natural
 - Your personal Telegram user ID
 - _(Optional)_ Redis **v7+** — caches user facts, bot works without it
 - _(Optional)_ Xiaomi MiMo API key — backup LLM fallback if DeepSeek is down
+- _(Optional)_ OpenWeatherMap API key — enables weather in the morning briefing
 
 ---
 
@@ -104,6 +110,11 @@ MIMO_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 MIMO_BASE_URL=https://api.xiaomimimo.com/v1
 MIMO_MODEL=mimo-v2.5-pro
 
+# Weather (optional — enables weather in morning briefing)
+# Get a free API key at https://openweathermap.org/api
+WEATHER_API_KEY=your_openweathermap_api_key
+WEATHER_LOCATION=Kuala Lumpur
+
 # Database
 DATABASE_URL=postgresql://jarvis:yourpassword@localhost:5432/jarvisdb
 
@@ -112,6 +123,9 @@ REDIS_URL=redis://localhost:6379
 
 PORT=3000
 TIMEZONE=Asia/Kuala_Lumpur
+
+# Morning briefing time (24h format, default 8:00)
+MORNING_BRIEFING_TIME=8:00
 ```
 
 > ⚠️ **TIMEZONE** — use your local timezone so reminders fire at the right time.
@@ -181,14 +195,15 @@ pm2 stop jarvis     # stop
 
 ## 🌐 REST API (optional)
 
-The app also runs a local API for debugging:
+The app runs a local API for debugging and external integrations:
 
-| Endpoint      | Description                         |
-| ------------- | ----------------------------------- |
-| `GET /health` | Check if server is running          |
-| `GET /today`  | Today's events and reminders (JSON) |
-| `GET /memory` | All stored data (JSON)              |
-| `POST /notes` | Add a note `{"content":"..."}`      |
+| Endpoint      | Description                                  |
+| ------------- | -------------------------------------------- |
+| `GET /`       | API info — name, version, available routes   |
+| `GET /health` | Health check — status + uptime               |
+| `GET /today`  | Today's events and reminders (JSON)          |
+| `GET /memory` | All stored data — facts, events, notes, etc. |
+| `POST /notes` | Add a note `{"content":"..."}`               |
 
 Example:
 
@@ -235,24 +250,27 @@ jarvis/
 ├── src/
 │   ├── index.js          # Entry point — boots everything
 │   ├── bot/
-│   │   └── index.js      # Telegram bot, message handling
+│   │   └── index.js      # Telegram bot, message handling, commands
 │   ├── llm/
 │   │   ├── index.js      # LLM Router (DeepSeek → MiMo fallback)
 │   │   ├── shared.js     # Shared system prompt builder
 │   │   ├── deepseek.js   # DeepSeek API provider (primary)
 │   │   └── mimo.js       # Xiaomi MiMo API provider (backup)
 │   ├── tools/
-│   │   └── index.js      # Tool executor (create_reminder, add_note, etc.)
+│   │   ├── index.js      # Tool executor (create_reminder, add_note, etc.)
+│   │   ├── quote.js      # Random motivational quote fetcher (ZenQuotes)
+│   │   └── weather.js    # Current weather fetcher (OpenWeatherMap)
 │   ├── scheduler/
-│   │   └── index.js      # Cron job that fires due reminders every 30s
+│   │   └── index.js      # Cron jobs: reminder poller + morning briefing
 │   ├── api/
-│   │   └── index.js      # REST API server
+│   │   └── index.js      # REST API server (Express)
 │   ├── redis/
 │   │   └── index.js      # Redis cache layer (optional, auto-fallback)
 │   └── db/
 │       └── index.js      # All PostgreSQL database queries
 ├── scripts/
 │   └── setup-db.js       # One-time DB table creation
+├── test-briefing.js      # Quick test script for morning briefing
 ├── .env.example          # Environment variable template
 ├── package.json
 └── README.md
@@ -288,15 +306,42 @@ jarvis/
 → Both DeepSeek AND MiMo are down (or API keys are invalid).
 → Check both API keys and account balances.
 
+**Morning briefing not showing weather**
+→ Set `WEATHER_API_KEY` and `WEATHER_LOCATION` in `.env`. Weather is optional — if omitted, only the quote and schedule are shown.
+
+**"ZenQuotes fetch failed" in logs**
+→ The free ZenQuotes API occasionally goes down. Built-in fallback quotes are used automatically — nothing to worry about.
+
+---
+
+## 📝 Available LLM Tools
+
+The LLM is instructed to use these tool calls to perform actions:
+
+| Tool              | Arguments                                       | What it does                 |
+| ----------------- | ----------------------------------------------- | ---------------------------- |
+| `create_reminder` | `text`, `time` (ISO-8601), `recurrence?`        | Creates a new reminder       |
+| `update_reminder` | `reminder_id`, `text?`, `time?`, `recurrence?`  | Updates an existing reminder |
+| `cancel_reminder` | `reminder_id`                                   | Cancels a reminder by ID     |
+| `list_reminders`  | _(none)_                                        | Lists all upcoming reminders |
+| `create_event`    | `title`, `time` (ISO-8601), `duration_minutes?` | Schedules a calendar event   |
+| `add_note`        | `content`                                       | Saves a new note             |
+| `get_today`       | _(none)_                                        | Shows today's schedule       |
+| `get_briefing`    | _(none)_                                        | Generates morning briefing   |
+| `get_quote`       | _(none)_                                        | Fetches a motivational quote |
+| `set_fact`        | `key`, `value`                                  | Stores a memory fact         |
+
 ---
 
 ## 🚀 What's next (v2 ideas)
 
 - Voice messages via Whisper API
-- Morning briefing (`/morning` command)
-- Recurring reminders (daily habits)
-- Web dashboard
-- Multi-device sync
+- Natural language calendar queries ("What's my week look like?")
+- Recurring reminders with custom intervals (every 3 days, etc.)
+- Web dashboard for viewing/managing reminders and notes
+- Multi-device sync via Telegram sync
+- Habit tracking with streaks
+- Expense tracking ("Spent RM15 on lunch")
 
 ---
 
