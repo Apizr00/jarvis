@@ -20,6 +20,7 @@ A self-hosted personal AI assistant that lives in your Telegram. Talk to it natu
 | "Remember I sleep at 1am"          | Stores a long-term memory fact                         |
 | "What do you know about me?"       | Shows all stored facts about you                       |
 | "Motivate me" / "Give me a quote"  | Fetches a motivational quote from ZenQuotes            |
+| 🎤 Send a voice message            | Transcribes via Whisper AI and responds normally       |
 | **Automatic: every morning**       | 🌅 Morning briefing — weather, quote, today's schedule |
 | `/notes`                           | Last 10 notes                                          |
 | `/memory`                          | All stored facts about you                             |
@@ -35,6 +36,7 @@ A self-hosted personal AI assistant that lives in your Telegram. Talk to it natu
 - Your personal Telegram user ID
 - _(Optional)_ Redis **v7+** — caches user facts, bot works without it
 - _(Optional)_ Xiaomi MiMo API key — backup LLM fallback if DeepSeek is down
+- _(Optional)_ OpenAI API key — enables voice message transcription via Whisper
 - _(Optional)_ OpenWeatherMap API key — enables weather in the morning briefing
 
 ---
@@ -109,6 +111,13 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 MIMO_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 MIMO_BASE_URL=https://api.xiaomimimo.com/v1
 MIMO_MODEL=mimo-v2.5-pro
+
+# OpenAI Whisper (optional — enables voice message transcription)
+OPENAI_API_KEY=your_openai_api_key_here
+# Force language: "ms" for Malay, "en" for English, or leave blank for auto-detect
+WHISPER_LANGUAGE=
+# Optional prompt hint for mixed-language / code-switching audio
+# WHISPER_PROMPT=English and Bahasa Malaysia mixed conversation
 
 # Weather (optional — enables weather in morning briefing)
 # Get a free API key at https://openweathermap.org/api
@@ -255,7 +264,8 @@ jarvis/
 │   │   ├── index.js      # LLM Router (DeepSeek → MiMo fallback)
 │   │   ├── shared.js     # Shared system prompt builder
 │   │   ├── deepseek.js   # DeepSeek API provider (primary)
-│   │   └── mimo.js       # Xiaomi MiMo API provider (backup)
+│   │   ├── mimo.js       # Xiaomi MiMo API provider (backup)
+│   │   └── whisper.js    # OpenAI Whisper voice transcription
 │   ├── tools/
 │   │   ├── index.js      # Tool executor (create_reminder, add_note, etc.)
 │   │   ├── quote.js      # Random motivational quote fetcher (ZenQuotes)
@@ -285,6 +295,10 @@ jarvis/
 
 **"password authentication failed for user jarvis"**
 → Double-check the password in `DATABASE_URL` matches what you set in PostgreSQL.
+
+**Voice messages not working**
+→ Set `OPENAI_API_KEY` in `.env` with a valid OpenAI API key.
+→ OpenAI's Whisper API costs ~$0.006 per minute of audio.
 
 **Bot not responding**
 → Check `TELEGRAM_OWNER_ID` — it must be your numeric user ID, not your username.
@@ -335,7 +349,7 @@ The LLM is instructed to use these tool calls to perform actions:
 
 ## 🚀 What's next (v2 ideas)
 
-- Voice messages via Whisper API
+- Voice reply — Jarvis responds with synthesized speech (TTS)
 - Natural language calendar queries ("What's my week look like?")
 - Recurring reminders with custom intervals (every 3 days, etc.)
 - Web dashboard for viewing/managing reminders and notes
@@ -353,6 +367,7 @@ The LLM is instructed to use these tool calls to perform actions:
 | PostgreSQL (Neon free tier) | Free                             |
 | DeepSeek API                | ~$0.001 per message (very cheap) |
 | Xiaomi MiMo (backup only)   | Pay-as-you-go, pennies           |
+| OpenAI Whisper (voice only) | ~$0.006/min of audio             |
 | Telegram Bot API            | Free                             |
 | Redis (optional, local)     | Free                             |
 

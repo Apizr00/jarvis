@@ -26,7 +26,7 @@ async function main() {
   console.log('  ╚█████╔╝██║  ██║██║  ██║ ╚████╔╝ ██║███████║');
   console.log('   ╚════╝ ╚═╝  ╚═╝╚═╝  ╚═╝  ╚═══╝  ╚═╝╚══════╝');
   console.log('');
-  console.log('  🤖  J A R V I S  —  Personal AI Assistant v1.0  🤖');
+  console.log('  🤖  J A R V I S  —  Personal AI Assistant v2.0  🤖');
   console.log('');
 
   // Connect Redis (non-blocking — bot works without it)

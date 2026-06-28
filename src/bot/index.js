@@ -9,6 +9,7 @@ const tools = require('../tools');
 const { escapeMd, safeSendMessage } = tools;
 const { buildBriefingMessage } = require('../scheduler');
 const { getQuote } = require('../tools/quote');
+const { transcribe, downloadVoiceFile } = require('../llm/whisper');
 
 const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
 
@@ -231,31 +232,22 @@ function createBot() {
       '• "Note: follow up with client on Friday"\n' +
       '• "Remember I wake up at 6am"\n' +
       '• "What\'s my day looking like?"\n' +
-      '• "Cancel reminder #3"';
+      '• "Cancel reminder #3"\n\n' +
+      '🎤 *You can also send voice messages!* _(requires OpenAI API key)_';
     await safeSendMessage(bot, msg.chat.id, help);
   });
 
-  // ── Main message handler ──────────────────────────────────────────────────
-  bot.on('message', async (msg) => {
-    // Skip commands (handled above) and non-owner messages
-    if (!isOwner(msg)) return;
-    if (!msg.text) return;
-    if (msg.text.startsWith('/')) return;
-
-    const userId = OWNER_ID;
-    const chatId = msg.chat.id;
-
-    await db.ensureUser(userId, msg.from.first_name || 'Owner');
-
-    // Show typing indicator
+  // ── Shared text processing (used by both text and voice messages) ─────────
+  async function processUserText(bot, chatId, userId, userName, text) {
+    await db.ensureUser(userId, userName);
     await bot.sendChatAction(chatId, 'typing');
 
     try {
       const history = getHistory(userId);
-      let llmResponse = await llm.chat(userId, msg.text, history);
+      let llmResponse = await llm.chat(userId, text, history);
 
       // Add user message to history
-      addToHistory(userId, 'user', msg.text);
+      addToHistory(userId, 'user', text);
 
       console.log('[Bot] LLM response type:', llmResponse.type, llmResponse.name ? '| tool=' + llmResponse.name : '');
 
@@ -272,7 +264,7 @@ function createBot() {
         const cleanHistory = history.filter(h => h.role !== 'assistant' || !actionKeywords.test(h.content));
         cleanHistory.push({ role: 'user', content: correctionMsg });
 
-        llmResponse = await llm.chat(userId, msg.text, cleanHistory);
+        llmResponse = await llm.chat(userId, text, cleanHistory);
         console.log('[Bot] Retry response type:', llmResponse.type, llmResponse.name ? '| tool=' + llmResponse.name : '');
       }
 
@@ -309,13 +301,79 @@ function createBot() {
       console.error('Message handler error:', err.message);
       let errorMsg = 'Something went wrong. ';
       if (err.response && err.response.status === 401) {
-        errorMsg += 'Check your DeepSeek API key.';
+        errorMsg += 'Check your API key.';
       } else if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND') {
-        errorMsg += 'Can\'t reach DeepSeek API. Check your internet connection.';
+        errorMsg += 'Can\'t reach the API. Check your internet connection.';
       } else {
         errorMsg += 'Please try again.';
       }
       await safeSendMessage(bot, chatId, errorMsg);
+    }
+  }
+
+  // ── Main text message handler ────────────────────────────────────────────
+  bot.on('message', async (msg) => {
+    // Skip commands (handled above) and non-owner messages
+    if (!isOwner(msg)) return;
+    if (!msg.text) return;
+    if (msg.text.startsWith('/')) return;
+
+    const userId = OWNER_ID;
+    const chatId = msg.chat.id;
+    const userName = msg.from.first_name || 'Owner';
+
+    await processUserText(bot, chatId, userId, userName, msg.text);
+  });
+
+  // ── Voice message handler ────────────────────────────────────────────────
+  bot.on('voice', async (msg) => {
+    if (!isOwner(msg)) return;
+
+    const userId = OWNER_ID;
+    const chatId = msg.chat.id;
+    const userName = msg.from.first_name || 'Owner';
+
+    console.log('[Bot] 🎤 Voice message received (duration:', msg.voice.duration + 's)');
+
+    // Check if OpenAI API key is configured
+    if (!process.env.OPENAI_API_KEY) {
+      await safeSendMessage(bot, chatId,
+        '🎤 Voice messages are not set up yet.\n\n' +
+        'Add your *OPENAI_API_KEY* to the `.env` file to enable voice transcription with Whisper.'
+      );
+      return;
+    }
+
+    await bot.sendChatAction(chatId, 'typing');
+
+    let tmpPath;
+    try {
+      // Download the voice file from Telegram
+      tmpPath = await downloadVoiceFile(bot, msg.voice.file_id);
+
+      // Transcribe with Whisper
+      const transcribedText = await transcribe(tmpPath, 'telegram_bot');
+
+      if (!transcribedText) {
+        await bot.sendMessage(chatId, '🎤 I received your voice message but couldn\'t make out any words. Try again?');
+        return;
+      }
+
+      // Echo the transcription so the user can see what was understood
+      await bot.sendMessage(chatId, '🎤 _"' + escapeMd(transcribedText) + '"_', { parse_mode: 'Markdown' });
+
+      // Process the transcribed text through the normal pipeline
+      await processUserText(bot, chatId, userId, userName, transcribedText);
+
+    } catch (err) {
+      console.error('[Bot] Voice processing error:', err.message);
+      if (err.response && err.response.status === 401) {
+        await safeSendMessage(bot, chatId, '🔑 Invalid OpenAI API key. Check your OPENAI_API_KEY in .env');
+      } else if (err.message.includes('OPENAI_API_KEY')) {
+        await safeSendMessage(bot, chatId, '🎤 Voice transcription is not configured. Add OPENAI_API_KEY to your .env file.');
+      } else {
+        await safeSendMessage(bot, chatId, '🎤 Sorry, I couldn\'t process that voice message. Please try again or type it out.');
+      }
     }
   });
 
