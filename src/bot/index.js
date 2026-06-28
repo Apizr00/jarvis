@@ -2,7 +2,7 @@
 // Telegram bot - handles all incoming messages
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
-const dayjs = require('dayjs');
+const { dayjs, fmt } = require('../utils/datetime');
 const db = require('../db');
 const llm = require('../llm');
 const tools = require('../tools');
@@ -126,7 +126,7 @@ function createBot() {
     const inlineKeyboard = [];
 
     reminders.forEach(r => {
-      const t = dayjs(r.remind_at).format('ddd, D MMM [at] h:mm A');
+      const t = fmt(r.remind_at, 'ddd, D MMM [at] h:mm A');
       const recurring = r.recurrence ? ' 🔁' : '';
       reply += '• ' + t + ' — ' + escapeMd(r.text) + recurring + '\n';
 

@@ -2,7 +2,7 @@
 // Polls the DB every 30s for due reminders + morning briefing cron
 const cron = require('node-cron');
 const db = require('../db');
-const dayjs = require('dayjs');
+const { dayjs, fmt } = require('../utils/datetime');
 const { escapeMd, safeSendMessage } = require('../tools');
 const { getWeatherSummary } = require('../tools/weather');
 const { getQuote } = require('../tools/quote');
@@ -51,8 +51,8 @@ async function fireReminder(reminder) {
   if (!botInstance) return;
 
   try {
-    const timeFormatted = dayjs(reminder.remind_at).format('h:mm A');
-    const dateFormatted = dayjs(reminder.remind_at).format('dddd, D MMM YYYY');
+    const timeFormatted = fmt(reminder.remind_at, 'h:mm A');
+    const dateFormatted = fmt(reminder.remind_at, 'dddd, D MMM YYYY');
     const recurrenceLabel = { daily: '🔁 Daily', weekly: '🔁 Weekly', weekdays: '🔁 Weekdays' };
 
     const message =
@@ -68,7 +68,7 @@ async function fireReminder(reminder) {
       // Recurring: reschedule to next occurrence
       const nextTime = await db.rescheduleRecurring(reminder.id, reminder.recurrence, reminder.remind_at);
       if (nextTime) {
-        const nextFormatted = dayjs(nextTime).format('ddd, D MMM [at] h:mm A');
+        const nextFormatted = fmt(nextTime, 'ddd, D MMM [at] h:mm A');
         await safeSendMessage(botInstance, reminder.user_id, '🔁 Next occurrence: ' + nextFormatted);
       }
       console.log('Fired recurring reminder #' + reminder.id + ' (' + reminder.recurrence + ') → next: ' + (nextTime || 'N/A'));
@@ -91,7 +91,7 @@ async function buildBriefingMessage() {
   if (!userId) return '';
 
   const tz = process.env.TIMEZONE || 'UTC';
-  const today = dayjs().format('dddd, D MMMM YYYY');
+  const today = fmt(new Date(), 'dddd, D MMMM YYYY');
 
   const [events, reminders, overdue, userName] = await Promise.all([
     db.getTodayEvents(userId),
@@ -107,7 +107,7 @@ async function buildBriefingMessage() {
   if (events.length > 0) {
     message += '*📅 Today\'s Events:*\n';
     events.forEach(e => {
-      const t = dayjs(e.event_time).format('h:mm A');
+      const t = fmt(e.event_time, 'h:mm A');
       message += '• ' + t + ' — ' + escapeMd(e.title) + '\n';
     });
     message += '\n';
@@ -119,7 +119,7 @@ async function buildBriefingMessage() {
   if (reminders.length > 0) {
     message += '*⏰ Today\'s Reminders:*\n';
     reminders.forEach(r => {
-      const t = dayjs(r.remind_at).format('h:mm A');
+      const t = fmt(r.remind_at, 'h:mm A');
       const recurring = r.recurrence ? ' 🔁' : '';
       message += '• ' + t + ' — ' + escapeMd(r.text) + recurring + '\n';
     });
@@ -132,7 +132,7 @@ async function buildBriefingMessage() {
   if (overdue.length > 0) {
     message += '*⚠️ Overdue:*\n';
     overdue.forEach(r => {
-      const t = dayjs(r.remind_at).format('MMM D, h:mm A');
+      const t = fmt(r.remind_at, 'MMM D, h:mm A');
       message += '• ' + escapeMd(r.text) + ' _(was due ' + t + ')_\n';
     });
     message += '\n';

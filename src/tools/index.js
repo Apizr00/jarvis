@@ -1,7 +1,7 @@
 // src/tools/index.js
 // Tool executor - maps LLM tool calls to actual DB operations
 const db = require('../db');
-const dayjs = require('dayjs');
+const { dayjs, fmt } = require('../utils/datetime');
 const redisCache = require('../redis');
 
 /**
@@ -78,8 +78,8 @@ async function executeTool(userId, toolCall) {
       }
       const recurrence = args.recurrence || null;
       const reminder = await db.createReminder(userId, args.text, remindAt, recurrence);
-      const dateFormatted = dayjs(reminder.remind_at).format('dddd, D MMM YYYY');
-      const timeFormatted = dayjs(reminder.remind_at).format('h:mm A');
+      const dateFormatted = fmt(reminder.remind_at, 'dddd, D MMM YYYY');
+      const timeFormatted = fmt(reminder.remind_at, 'h:mm A');
       const recurrenceLabel = { daily: '🔁 Repeats daily', weekly: '🔁 Repeats weekly', weekdays: '🔁 Repeats every weekday' };
 
       let reply =
@@ -104,8 +104,8 @@ async function executeTool(userId, toolCall) {
       }
       const duration = args.duration_minutes || 60;
       const event = await db.createEvent(userId, args.title, eventTime, duration);
-      const dateFormatted = dayjs(event.event_time).format('dddd, D MMM YYYY');
-      const timeFormatted = dayjs(event.event_time).format('h:mm A');
+      const dateFormatted = fmt(event.event_time, 'dddd, D MMM YYYY');
+      const timeFormatted = fmt(event.event_time, 'h:mm A');
 
       return (
         '📅 *Event added!*\n\n' +
@@ -122,7 +122,7 @@ async function executeTool(userId, toolCall) {
         return 'What did you want me to note down?';
       }
       await db.addNote(userId, args.content);
-      const now = dayjs().format('ddd, D MMM [at] h:mm A');
+      const now = fmt(new Date(), 'ddd, D MMM [at] h:mm A');
       return '📝 *Note saved!*\n\n' + escapeMd(args.content) + '\n\n_' + now + '_';
     }
 
@@ -142,7 +142,7 @@ async function executeTool(userId, toolCall) {
       if (events.length > 0) {
         reply += '*📅 Events*\n';
         events.forEach(e => {
-          const t = dayjs(e.event_time).format('h:mm A');
+          const t = fmt(e.event_time, 'h:mm A');
           reply += '• ' + t + ' — ' + escapeMd(e.title) + '\n';
         });
         reply += '\n';
@@ -151,7 +151,7 @@ async function executeTool(userId, toolCall) {
       if (reminders.length > 0) {
         reply += '*⏰ Reminders*\n';
         reminders.forEach(r => {
-          const t = dayjs(r.remind_at).format('h:mm A');
+          const t = fmt(r.remind_at, 'h:mm A');
           reply += '• ' + t + ' — ' + escapeMd(r.text) + '\n';
         });
       }
@@ -177,7 +177,7 @@ async function executeTool(userId, toolCall) {
       }
       let reply = '*⏰ Upcoming Reminders*\n\n';
       reminders.forEach(r => {
-        const t = dayjs(r.remind_at).format('ddd, D MMM [at] h:mm A');
+        const t = fmt(r.remind_at, 'ddd, D MMM [at] h:mm A');
         const recurring = r.recurrence ? ' 🔁' : '';
         reply += '• ' + t + ' — ' + escapeMd(r.text) + recurring + ' _(#' + r.id + ')_\n';
       });
@@ -214,8 +214,8 @@ async function executeTool(userId, toolCall) {
         return 'I couldn\'t find reminder #' + args.reminder_id + '. It may have already been cancelled.';
       }
 
-      const dateFormatted = dayjs(updated.remind_at).format('dddd, D MMM YYYY');
-      const timeFormatted = dayjs(updated.remind_at).format('h:mm A');
+      const dateFormatted = fmt(updated.remind_at, 'dddd, D MMM YYYY');
+      const timeFormatted = fmt(updated.remind_at, 'h:mm A');
       const recLabel = updated.recurrence ? '\n🔁 ' + updated.recurrence : '';
 
       let reply =

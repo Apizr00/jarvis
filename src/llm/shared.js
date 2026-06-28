@@ -1,6 +1,6 @@
 // src/llm/shared.js
 // Shared helpers used by all LLM providers
-const dayjs = require('dayjs');
+const { dayjs, fmt } = require('../utils/datetime');
 
 /**
  * Build the system prompt for the LLM.
@@ -17,7 +17,7 @@ function buildSystemPrompt(facts, timezone, reminders) {
   if (reminders && reminders.length > 0) {
     reminderLines = '\nCURRENT UPCOMING REMINDERS (use these exact IDs for cancel/update):\n' +
       reminders.map(r => {
-        const t = dayjs(r.remind_at).format('ddd, D MMM [at] h:mm A');
+        const t = fmt(r.remind_at, 'ddd, D MMM [at] h:mm A');
         const rec = r.recurrence ? ' [' + r.recurrence + ']' : '';
         return '- #' + r.id + ': "' + r.text + '" on ' + t + rec;
       }).join('\n') + '\n';
