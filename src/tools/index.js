@@ -233,6 +233,15 @@ async function executeTool(userId, toolCall) {
       return await getQuote();
     }
 
+    // ── web_search ───────────────────────────────────────────────────────────
+    case 'web_search': {
+      const { webSearch } = require('./search');
+      if (!args.query) {
+        return 'What would you like me to search for?';
+      }
+      return await webSearch(args.query);
+    }
+
     // ── get_briefing ─────────────────────────────────────────────────────────
     case 'get_briefing': {
       const { buildBriefingMessage } = require('../scheduler');

@@ -120,6 +120,23 @@ async function getApiStatus(bot) {
     detail: oaKey ? 'OPENAI_API_KEY set' : 'OPENAI_API_KEY missing',
   });
 
+  // ── Tavily Search ─────────────────────────────────────────────────────────
+  const tvKey = process.env.TAVILY_API_KEY;
+  let tvConnected = null;
+  if (tvKey) {
+    tvConnected = await checkEndpoint(
+      'https://api.tavily.com/search',
+      { Authorization: 'Bearer ' + tvKey }
+    );
+  }
+  results.push({
+    name: 'Tavily (Web Search)',
+    icon: '🔍',
+    configured: !!tvKey,
+    connected: tvConnected,
+    detail: tvKey ? 'TAVILY_API_KEY set' : 'TAVILY_API_KEY missing',
+  });
+
   // ── Redis ────────────────────────────────────────────────────────────────
   let redisConnected = null;
   try {

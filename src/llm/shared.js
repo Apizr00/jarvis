@@ -6,6 +6,7 @@ const { dayjs, fmt } = require('../utils/datetime');
 const KNOWN_TOOLS = [
   'create_reminder', 'update_reminder', 'cancel_reminder', 'list_reminders',
   'create_event', 'add_note', 'get_today', 'get_briefing', 'get_quote', 'set_fact',
+  'web_search',
 ];
 
 // Common LLM typos → correct tool name
@@ -20,6 +21,8 @@ const TOOL_ALIASES = {
   'getbriefing': 'get_briefing',
   'getquote': 'get_quote',
   'setfact': 'set_fact',
+  'websearch': 'web_search',
+  'searchweb': 'web_search',
 };
 
 /**
@@ -122,13 +125,16 @@ function buildSystemPrompt(facts, timezone, reminders) {
     'get_today         → args: {}\n' +
     'get_briefing      → args: {}\n' +
     'get_quote         → args: {}\n' +
-    'set_fact          → args: { key, value }\n\n' +
+    'set_fact          → args: { key, value }\n' +
+    'web_search        → args: { query }\n\n' +
     '─────────────── RULES ───────────────\n' +
     '• For times: use ISO-8601 with ' + tzOffset + ' offset. Convert "at 9pm" → "' + today + 'T21:00:00' + tzOffset + '"\n' +
     '• For cancel/update: match user description to CURRENT UPCOMING REMINDERS above and use the exact #ID\n' +
-    '• If user says \"change X to Y\", use update_reminder (NOT create_reminder)\n' +
+    '• If user says "change X to Y", use update_reminder (NOT create_reminder)\n' +
     '• If user asks what reminders exist, use list_reminders\n' +
-    '• Recurrence values: \"daily\", \"weekly\", \"weekdays\", or null to remove recurrence';
+    '• Recurrence values: "daily", "weekly", "weekdays", or null to remove recurrence\n' +
+    '• Use web_search for: latest news, current events, stock/crypto prices, weather forecasts, factual lookups, or anything requiring real-time/up-to-date info. User CANNOT web search themselves — only you can trigger it via this tool.\n' +
+    '• 🌐 LANGUAGE: You MUST reply in the SAME language the user uses. If user writes in Bahasa Melayu → reply in BM. If in English → reply in English. If rojak (campur) → ikut gaya user. Jangan sekali-kali tukar bahasa.';
 }
 
 module.exports = { buildSystemPrompt, normalizeLLMResponse };
