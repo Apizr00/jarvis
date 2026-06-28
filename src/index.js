@@ -30,8 +30,8 @@ async function main() {
   console.log('  🤖  J A R V I S  —  Personal AI Assistant v2.0  🤖');
   console.log('');
 
-  // Connect Redis (non-blocking — bot works without it)
-  redis.connect();
+  // Connect Redis
+  await redis.connect();
 
   // Start Telegram bot
   const bot = createBot();
