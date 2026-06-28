@@ -16,7 +16,7 @@ const FALLBACK_QUOTES = [
  */
 async function getQuote() {
   try {
-    const { data } = await axios.get('https://zenquotes.io/api/random', { timeout: 8000 });
+    const { data } = await axios.get('https://zenquotes.io/api/random', { timeout: 4000 });
     if (Array.isArray(data) && data.length > 0 && data[0].q) {
       const quote = data[0].q;
       const author = data[0].a;
@@ -24,7 +24,10 @@ async function getQuote() {
     }
     throw new Error('Empty response');
   } catch (err) {
-    console.warn('⚠️  Quote fetch failed:', err.message);
+    // Zenquotes is a free API and occasionally down — fall back to built-in quotes
+    if (!err.message.includes('timeout')) {
+      console.warn('⚠️  Quote fetch failed:', err.message);
+    }
     const idx = Math.floor(Math.random() * FALLBACK_QUOTES.length);
     return FALLBACK_QUOTES[idx];
   }
