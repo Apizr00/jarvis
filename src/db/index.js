@@ -204,6 +204,55 @@ async function getTodayEvents(userId) {
   return rows;
 }
 
+/**
+ * Cancel an event by deleting it (events don't have a status column).
+ */
+async function cancelEvent(id) {
+  await pool.query(`DELETE FROM events WHERE id = $1`, [id]);
+}
+
+/**
+ * Update an existing event's title, time, and/or duration.
+ */
+async function updateEvent(id, updates) {
+  const setClauses = [];
+  const values = [];
+  let paramIdx = 1;
+
+  if (updates.title !== undefined) {
+    setClauses.push('title = $' + paramIdx++);
+    values.push(updates.title);
+  }
+  if (updates.event_time !== undefined) {
+    setClauses.push('event_time = $' + paramIdx++);
+    values.push(updates.event_time);
+  }
+  if (updates.duration_minutes !== undefined) {
+    setClauses.push('duration_minutes = $' + paramIdx++);
+    values.push(updates.duration_minutes);
+  }
+
+  if (setClauses.length === 0) return null;
+
+  values.push(id);
+  const { rows } = await pool.query(
+    `UPDATE events SET ${setClauses.join(', ')} WHERE id = $${paramIdx} RETURNING *`,
+    values
+  );
+  return rows[0] || null;
+}
+
+/**
+ * Snooze a reminder by pushing its remind_at forward by N minutes.
+ */
+async function snoozeReminder(id, minutes = 10) {
+  const { rows } = await pool.query(
+    `UPDATE reminders SET remind_at = remind_at + ($2 || ' minutes')::INTERVAL WHERE id = $1 RETURNING *`,
+    [id, String(minutes)]
+  );
+  return rows[0] || null;
+}
+
 // ── Notes ─────────────────────────────────────────────────────────────────────
 
 async function addNote(userId, content) {
@@ -212,6 +261,13 @@ async function addNote(userId, content) {
     [String(userId), content]
   );
   return rows[0];
+}
+
+/**
+ * Delete a note by ID.
+ */
+async function deleteNote(id) {
+  await pool.query(`DELETE FROM notes WHERE id = $1`, [id]);
 }
 
 async function getRecentNotes(userId, limit = 10) {
@@ -241,6 +297,16 @@ async function getAllFacts(userId) {
     [String(userId)]
   );
   return rows;
+}
+
+/**
+ * Delete a memory fact by user and key.
+ */
+async function deleteFact(userId, key) {
+  await pool.query(
+    `DELETE FROM memory_facts WHERE user_id = $1 AND key = $2`,
+    [String(userId), key]
+  );
 }
 
 // ── Full memory dump ──────────────────────────────────────────────────────────
@@ -381,12 +447,17 @@ module.exports = {
   cancelReminder,
   updateReminder,
   rescheduleRecurring,
+  snoozeReminder,
   createEvent,
   getTodayEvents,
+  cancelEvent,
+  updateEvent,
   addNote,
+  deleteNote,
   getRecentNotes,
   setFact,
   getAllFacts,
+  deleteFact,
   getFullMemory,
   getNotesSince,
   getRemindersDueInRange,

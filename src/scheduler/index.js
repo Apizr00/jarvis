@@ -13,6 +13,9 @@ let botInstance = null;
 let briefingTask = null;
 let reviewTask = null;
 
+// Track recently fired reminder IDs to prevent re-firing within the poll window
+const recentlyFired = new Map();
+
 const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
 
 /**
@@ -28,7 +31,18 @@ async function startScheduler(bot) {
     try {
       const due = await db.getPendingReminders();
       for (const reminder of due) {
+        // Skip if already fired within last 60 seconds
+        if (recentlyFired.has(reminder.id)) {
+          const lastFired = recentlyFired.get(reminder.id);
+          if (Date.now() - lastFired < 60000) continue;
+        }
+        recentlyFired.set(reminder.id, Date.now());
         await fireReminder(reminder);
+      }
+      // Clean up old entries every 5 minutes
+      const cutoff = Date.now() - 300000;
+      for (const [id, ts] of recentlyFired) {
+        if (ts < cutoff) recentlyFired.delete(id);
       }
     } catch (err) {
       console.error('Scheduler error:', err.message);
@@ -98,19 +112,37 @@ async function fireReminder(reminder) {
       '🕐 ' + timeFormatted +
       (reminder.recurrence ? '\n' + (recurrenceLabel[reminder.recurrence] || '🔁 ' + reminder.recurrence) : '');
 
-    await safeSendMessage(botInstance, reminder.user_id, message);
+    const inlineKeyboard = [[
+      { text: '✅ Done', callback_data: 'dismiss_reminder:' + reminder.id },
+      { text: '🔁 Snooze 10m', callback_data: 'snooze_reminder:' + reminder.id },
+    ]];
+
+    try {
+      await botInstance.sendMessage(reminder.user_id, message, {
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: inlineKeyboard },
+      });
+    } catch {
+      await botInstance.sendMessage(reminder.user_id, message, {
+        reply_markup: { inline_keyboard: inlineKeyboard },
+      });
+    }
 
     if (reminder.recurrence) {
       // Recurring: reschedule to next occurrence
       const nextTime = await db.rescheduleRecurring(reminder.id, reminder.recurrence, reminder.remind_at);
       if (nextTime) {
         const nextFormatted = fmt(nextTime, 'ddd, D MMM [at] h:mm A');
-        await safeSendMessage(botInstance, reminder.user_id, '🔁 Next occurrence: ' + nextFormatted);
+        try {
+          await botInstance.sendMessage(reminder.user_id, '🔁 Next occurrence: ' + escapeMd(nextFormatted), { parse_mode: 'Markdown' });
+        } catch {
+          await botInstance.sendMessage(reminder.user_id, '🔁 Next occurrence: ' + nextFormatted);
+        }
       }
       console.log('Fired recurring reminder #' + reminder.id + ' (' + reminder.recurrence + ') → next: ' + (nextTime || 'N/A'));
     } else {
-      // One-shot: mark as sent
-      await db.markReminderSent(reminder.id);
+      // One-shot: leave as pending until user dismisses or cancels
+      // (don't auto-mark as sent — let the user dismiss via button)
       console.log('Fired reminder #' + reminder.id + ' for user ' + reminder.user_id);
     }
   } catch (err) {

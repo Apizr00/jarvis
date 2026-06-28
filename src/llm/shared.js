@@ -6,7 +6,8 @@ const db = require('../db');
 // Known tool names — used for normalizing LLM responses that misuse the "type" field
 const KNOWN_TOOLS = [
   'create_reminder', 'update_reminder', 'cancel_reminder', 'list_reminders',
-  'create_event', 'add_note', 'get_today', 'get_briefing', 'get_quote', 'set_fact',
+  'create_event', 'update_event', 'cancel_event',
+  'add_note', 'get_today', 'get_briefing', 'get_quote', 'set_fact',
   'web_search', 'get_weekly_review', 'set_config', 'revert_config',
 ];
 
@@ -17,6 +18,8 @@ const TOOL_ALIASES = {
   'updatereminder': 'update_reminder',
   'listreminders': 'list_reminders',
   'createevent': 'create_event',
+  'updateevent': 'update_event',
+  'cancelevent': 'cancel_event',
   'addnote': 'add_note',
   'settoday': 'get_today',
   'getbriefing': 'get_briefing',
@@ -150,6 +153,8 @@ async function buildSystemPrompt(userId, facts, timezone, reminders) {
     'cancel_reminder   → args: { reminder_id }\n' +
     'list_reminders    → args: {}\n' +
     'create_event      → args: { title, time(ISO-8601), duration_minutes? }\n' +
+    'update_event      → args: { event_id, title?, time?, duration_minutes? }\n' +
+    'cancel_event      → args: { event_id }\n' +
     'add_note          → args: { content }\n' +
     'get_today         → args: {}\n' +
     'get_briefing      → args: {}\n' +
@@ -162,7 +167,8 @@ async function buildSystemPrompt(userId, facts, timezone, reminders) {
     '─────────────── RULES ───────────────\n' +
     '• For times: use ISO-8601 with ' + tzOffset + ' offset. Convert "at 9pm" → "' + today + 'T21:00:00' + tzOffset + '"\n' +
     '• For cancel/update: match user description to CURRENT UPCOMING REMINDERS above and use the exact #ID\n' +
-    '• If user says "change X to Y", use update_reminder (NOT create_reminder)\n' +
+    '• For event cancel/update: use the event_id from context when user is editing an event\n' +
+    '• If user says "change X to Y", use update_reminder or update_event (NOT create_reminder/create_event)\n' +
     '• If user asks what reminders exist, use list_reminders\n' +
     '• Recurrence values: "daily", "weekly", "weekdays", or null to remove recurrence\n' +
     '• Use web_search for: latest news, current events, stock/crypto prices, weather forecasts, factual lookups, or anything requiring real-time/up-to-date info. User CANNOT web search themselves — only you can trigger it via this tool.\n' +

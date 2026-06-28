@@ -140,7 +140,15 @@ async function executeTool(userId, toolCall) {
       if (recurrence) {
         reply += '\n' + (recurrenceLabel[recurrence] || '🔁 ' + recurrence);
       }
-      return reply;
+
+      // Return structured object with ID for inline buttons
+      return {
+        type: 'result',
+        tool: 'create_reminder',
+        message: reply,
+        id: reminder.id,
+        meta: { text: args.text, remind_at: reminder.remind_at, recurrence },
+      };
     }
 
     // ── create_event ─────────────────────────────────────────────────────────
@@ -157,13 +165,69 @@ async function executeTool(userId, toolCall) {
       const dateFormatted = fmt(event.event_time, 'dddd, D MMM YYYY');
       const timeFormatted = fmt(event.event_time, 'h:mm A');
 
-      return (
+      const reply =
         '📅 *Event added!*\n\n' +
         escapeMd(event.title) + '\n\n' +
         '📅 ' + dateFormatted + '\n' +
         '🕐 ' + timeFormatted + '\n' +
-        '⏳ ' + duration + ' min'
-      );
+        '⏳ ' + duration + ' min';
+
+      return {
+        type: 'result',
+        tool: 'create_event',
+        message: reply,
+        id: event.id,
+        meta: { title: event.title, event_time: event.event_time, duration_minutes: duration },
+      };
+    }
+
+    // ── update_event ─────────────────────────────────────────────────────────
+    case 'update_event': {
+      if (!args.event_id) {
+        return 'Which event did you want to update? I need an ID.';
+      }
+      const updates = {};
+      if (args.title) updates.title = args.title;
+      if (args.time) {
+        const newTime = parseLocalTime(args.time);
+        if (isNaN(newTime.getTime())) {
+          return 'I couldn\'t parse that new time. Please try again.';
+        }
+        updates.event_time = newTime.toISOString();
+      }
+      if (args.duration_minutes !== undefined) updates.duration_minutes = args.duration_minutes;
+
+      const updated = await db.updateEvent(args.event_id, updates);
+      if (!updated) {
+        return 'I couldn\'t find event #' + args.event_id + '. It may have already been removed.';
+      }
+
+      const dateFormatted = fmt(updated.event_time, 'dddd, D MMM YYYY');
+      const timeFormatted = fmt(updated.event_time, 'h:mm A');
+
+      let reply =
+        '✏️ *Event updated!*\n\n' +
+        escapeMd(updated.title) + '\n\n' +
+        '📅 ' + dateFormatted + '\n' +
+        '🕐 ' + timeFormatted + '\n' +
+        '⏳ ' + updated.duration_minutes + ' min';
+
+      return {
+        type: 'result',
+        tool: 'update_event',
+        message: reply,
+        id: updated.id,
+        meta: { title: updated.title, event_time: updated.event_time, duration_minutes: updated.duration_minutes },
+      };
+    }
+
+    // ── cancel_event ─────────────────────────────────────────────────────────
+    case 'cancel_event': {
+      if (!args.event_id) {
+        return 'Which event did you want to cancel? I need an ID.';
+      }
+      await db.cancelEvent(args.event_id);
+      return '❌ *Cancelled* — event #' + args.event_id + ' has been removed.';
     }
 
     // ── add_note ─────────────────────────────────────────────────────────────
@@ -171,9 +235,16 @@ async function executeTool(userId, toolCall) {
       if (!args.content) {
         return 'What did you want me to note down?';
       }
-      await db.addNote(userId, args.content);
+      const note = await db.addNote(userId, args.content);
       const now = fmt(new Date(), 'ddd, D MMM [at] h:mm A');
-      return '📝 *Note saved!*\n\n' + escapeMd(args.content) + '\n\n_' + now + '_';
+      const reply = '📝 *Note saved!*\n\n' + escapeMd(args.content) + '\n\n_' + now + '_';
+      return {
+        type: 'result',
+        tool: 'add_note',
+        message: reply,
+        id: note.id,
+        meta: { content: args.content },
+      };
     }
 
     // ── get_today ─────────────────────────────────────────────────────────────
@@ -216,7 +287,13 @@ async function executeTool(userId, toolCall) {
       }
       await db.setFact(userId, args.key, args.value);
       redisCache.invalidateFactsCache(userId);
-      return '🧠 *Remembered!*\n\n' + escapeMd(args.key) + ' → ' + escapeMd(args.value);
+      const reply = '🧠 *Remembered!*\n\n' + escapeMd(args.key) + ' → ' + escapeMd(args.value);
+      return {
+        type: 'result',
+        tool: 'set_fact',
+        message: reply,
+        meta: { key: args.key, value: args.value },
+      };
     }
 
     // ── list_reminders ───────────────────────────────────────────────────────
@@ -274,7 +351,14 @@ async function executeTool(userId, toolCall) {
         '📅 ' + dateFormatted + '\n' +
         '🕐 ' + timeFormatted +
         recLabel;
-      return reply;
+
+      return {
+        type: 'result',
+        tool: 'update_reminder',
+        message: reply,
+        id: updated.id,
+        meta: { text: updated.text, remind_at: updated.remind_at, recurrence: updated.recurrence },
+      };
     }
 
     // ── get_quote ────────────────────────────────────────────────────────────

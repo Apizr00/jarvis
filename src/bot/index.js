@@ -19,6 +19,35 @@ const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
 // Simple in-memory conversation history per user (last 10 turns)
 const conversationHistory = {};
 
+// Track which item the user is currently editing (set by inline button click)
+// Format: { userId: { type: 'reminder'|'event', id: number, label: string, timestamp: number } }
+const pendingEdits = {};
+
+function setPendingEdit(userId, type, id, label) {
+  pendingEdits[userId] = { type, id, label, timestamp: Date.now() };
+  // Auto-expire after 2 minutes
+  setTimeout(() => {
+    const current = pendingEdits[userId];
+    if (current && current.timestamp === pendingEdits[userId]?.timestamp) {
+      delete pendingEdits[userId];
+    }
+  }, 2 * 60 * 1000);
+}
+
+function getPendingEdit(userId) {
+  const edit = pendingEdits[userId];
+  if (!edit) return null;
+  if (Date.now() - edit.timestamp > 2 * 60 * 1000) {
+    delete pendingEdits[userId];
+    return null;
+  }
+  return edit;
+}
+
+function clearPendingEdit(userId) {
+  delete pendingEdits[userId];
+}
+
 function getHistory(userId) {
   if (!conversationHistory[userId]) conversationHistory[userId] = [];
   return conversationHistory[userId];
@@ -235,6 +264,149 @@ async function createBot() {
       } catch (err) {
         console.error('Revert config error:', err.message);
         await bot.answerCallbackQuery(callbackQuery.id, { text: 'Failed to revert.' });
+      }
+      return;
+    }
+
+    // ── Edit reminder: prompt user for changes ──────────────────────────
+    if (data.startsWith('edit_reminder:')) {
+      const reminderId = parseInt(data.split(':')[1], 10);
+      if (isNaN(reminderId)) return;
+      await bot.answerCallbackQuery(callbackQuery.id);
+
+      // Fetch reminder text for context
+      let label = 'reminder #' + reminderId;
+      try {
+        const reminders = await db.getUpcomingReminders(userId, 50);
+        const found = reminders.find(r => r.id === reminderId);
+        if (found) label = '"' + found.text + '"';
+      } catch { /* ignore */ }
+
+      setPendingEdit(userId, 'reminder', reminderId, label);
+
+      await bot.sendMessage(chatId,
+        '✏️ *Editing ' + escapeMd(label) + ' (#' + reminderId + ')*\n\n' +
+        'Just tell me what to change. Contoh:\n' +
+        '• "Tukar ke pukul 3 petang"\n' +
+        '• "Change to 8pm tomorrow"\n' +
+        '• "Repeat daily"',
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    // ── Edit event: prompt user for changes ──────────────────────────────
+    if (data.startsWith('edit_event:')) {
+      const eventId = parseInt(data.split(':')[1], 10);
+      if (isNaN(eventId)) return;
+      await bot.answerCallbackQuery(callbackQuery.id);
+
+      let label = 'event #' + eventId;
+      setPendingEdit(userId, 'event', eventId, label);
+
+      await bot.sendMessage(chatId,
+        '✏️ *Editing ' + escapeMd(label) + ' (#' + eventId + ')*\n\n' +
+        'Just tell me what to change. Contoh:\n' +
+        '• "Tukar ke pukul 3 petang"\n' +
+        '• "Change title to Team meeting"\n' +
+        '• "Change duration to 30 min"',
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    // ── Cancel event ─────────────────────────────────────────────────────
+    if (data.startsWith('cancel_event:')) {
+      const eventId = parseInt(data.split(':')[1], 10);
+      if (isNaN(eventId)) return;
+      try {
+        await db.cancelEvent(eventId);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '🗑️ Event cancelled!' });
+        await bot.editMessageReplyMarkup(
+          { inline_keyboard: [] },
+          { chat_id: chatId, message_id: msgId }
+        );
+      } catch (err) {
+        console.error('Cancel event error:', err.message);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Failed to cancel. Try again.' });
+      }
+      return;
+    }
+
+    // ── Delete note ──────────────────────────────────────────────────────
+    if (data.startsWith('delete_note:')) {
+      const noteId = parseInt(data.split(':')[1], 10);
+      if (isNaN(noteId)) return;
+      try {
+        await db.deleteNote(noteId);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '🗑️ Note deleted!' });
+        await bot.editMessageReplyMarkup(
+          { inline_keyboard: [] },
+          { chat_id: chatId, message_id: msgId }
+        );
+      } catch (err) {
+        console.error('Delete note error:', err.message);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Failed to delete. Try again.' });
+      }
+      return;
+    }
+
+    // ── Forget fact ──────────────────────────────────────────────────────
+    if (data.startsWith('forget_fact:')) {
+      const factKey = decodeURIComponent(data.split(':').slice(1).join(':'));
+      if (!factKey) return;
+      try {
+        await db.deleteFact(userId, factKey);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '🧠 Fact forgotten!' });
+        await bot.editMessageReplyMarkup(
+          { inline_keyboard: [] },
+          { chat_id: chatId, message_id: msgId }
+        );
+      } catch (err) {
+        console.error('Forget fact error:', err.message);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Failed to forget. Try again.' });
+      }
+      return;
+    }
+
+    // ── Dismiss reminder (mark as done) ──────────────────────────────────
+    if (data.startsWith('dismiss_reminder:')) {
+      const reminderId = parseInt(data.split(':')[1], 10);
+      if (isNaN(reminderId)) return;
+      try {
+        await db.markReminderSent(reminderId);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Done!' });
+        await bot.editMessageReplyMarkup(
+          { inline_keyboard: [] },
+          { chat_id: chatId, message_id: msgId }
+        );
+      } catch (err) {
+        console.error('Dismiss reminder error:', err.message);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Failed. Try again.' });
+      }
+      return;
+    }
+
+    // ── Snooze reminder ──────────────────────────────────────────────────
+    if (data.startsWith('snooze_reminder:')) {
+      const reminderId = parseInt(data.split(':')[1], 10);
+      if (isNaN(reminderId)) return;
+      try {
+        const snoozed = await db.snoozeReminder(reminderId, 10);
+        if (!snoozed) {
+          await bot.answerCallbackQuery(callbackQuery.id, { text: 'Reminder not found.' });
+          return;
+        }
+        const newTime = fmt(snoozed.remind_at, 'h:mm A');
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '🔁 Snoozed 10 min → ' + newTime });
+        await bot.editMessageReplyMarkup(
+          { inline_keyboard: [] },
+          { chat_id: chatId, message_id: msgId }
+        );
+        await bot.sendMessage(chatId, '🔁 Reminder snoozed for 10 minutes — will remind again at *' + escapeMd(newTime) + '*.', { parse_mode: 'Markdown' });
+      } catch (err) {
+        console.error('Snooze reminder error:', err.message);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Failed to snooze.' });
       }
       return;
     }
@@ -536,6 +708,22 @@ async function createBot() {
     await bot.sendChatAction(chatId, 'typing');
 
     try {
+      // ── Inject pending edit context so LLM knows which item to edit ──
+      const edit = getPendingEdit(userId);
+      if (edit) {
+        if (edit.type === 'reminder') {
+          text = '✏️ EDITING REMINDER #' + edit.id + ' (' + edit.label + ')\n' +
+            'User clicked "Edit" on this reminder. Now they are telling you what to change.\n' +
+            'You MUST use update_reminder with reminder_id=' + edit.id + '. Do NOT create a new reminder.\n' +
+            'User says: ' + text;
+        } else if (edit.type === 'event') {
+          text = '✏️ EDITING EVENT #' + edit.id + ' (' + edit.label + ')\n' +
+            'User clicked "Edit" on this event. Now they are telling you what to change.\n' +
+            'You MUST use update_event with event_id=' + edit.id + '. Do NOT create a new event.\n' +
+            'User says: ' + text;
+        }
+      }
+
       const history = getHistory(userId);
       let llmResponse = await llm.chat(userId, text, history);
 
@@ -636,7 +824,7 @@ async function createBot() {
                 name: 'create_reminder',
                 args: followupResponse.args,
               });
-              console.log('[Bot] Smart follow-up reminder created:', followupResult.slice(0, 150));
+              console.log('[Bot] Smart follow-up reminder created');
             }
           } catch (fuErr) {
             console.warn('[Bot] Smart follow-up check failed (non-fatal):', fuErr.message);
@@ -656,7 +844,7 @@ async function createBot() {
               '• Match the user\'s exact language style and tone. JANGAN tukar bahasa!\n\n' +
               'User\'s original query: "' + text + '"\n\n' +
               '─────────────── RAW SEARCH RESULTS ───────────────\n' +
-              result + '\n' +
+              (typeof result === 'object' && result.message ? result.message : result) + '\n' +
               '──────────────────────────────────────────────────\n\n' +
               'Now write a natural, friendly reply summarizing these results. ' +
               'Respond with: {"type":"message","content":"your summary here"}';
@@ -668,20 +856,77 @@ async function createBot() {
             if (summaryResponse.type === 'message' && summaryResponse.content) {
               result = summaryResponse.content;
             }
-            // If LLM failed to re-summarize, fall through and use raw result
           } catch (summaryErr) {
             console.warn('[Bot] Web search re-summary failed (using raw results):', summaryErr.message);
-            // result stays as raw search results
           }
         }
 
-        // Combine results
-        const finalResult = followupResult
-          ? result + '\n\n' + followupResult
-          : result;
+        // ── Send result with inline buttons for actionable tool results ──
+        const isStructured = result && typeof result === 'object' && result.type === 'result';
+        const resultText = isStructured ? result.message : result;
+
+        // ── Clear pending edit after successful update ──
+        if (isStructured && (result.tool === 'update_reminder' || result.tool === 'update_event')) {
+          clearPendingEdit(userId);
+        }
+        // If user said something unrelated while editing, clear pending edit
+        if (edit && !isStructured) {
+          clearPendingEdit(userId);
+        }
+
+        // Build final text (with possible follow-up)
+        const followupText = followupResult
+          ? (typeof followupResult === 'object' && followupResult.message ? followupResult.message : followupResult)
+          : null;
+        const finalResult = followupText ? resultText + '\n\n' + followupText : resultText;
 
         addToHistory(userId, 'assistant', finalResult);
-        await safeSendMessage(bot, chatId, finalResult);
+
+        // Determine inline keyboard based on tool type
+        let inlineKeyboard = null;
+        if (isStructured) {
+          switch (result.tool) {
+            case 'create_reminder':
+            case 'update_reminder':
+              inlineKeyboard = [[
+                { text: '✏️ Edit', callback_data: 'edit_reminder:' + result.id },
+                { text: '❌ Cancel', callback_data: 'cancel_reminder:' + result.id },
+              ]];
+              break;
+            case 'create_event':
+            case 'update_event':
+              inlineKeyboard = [[
+                { text: '✏️ Edit', callback_data: 'edit_event:' + result.id },
+                { text: '❌ Cancel', callback_data: 'cancel_event:' + result.id },
+              ]];
+              break;
+            case 'add_note':
+              inlineKeyboard = [[
+                { text: '❌ Delete', callback_data: 'delete_note:' + result.id },
+              ]];
+              break;
+            case 'set_fact':
+              inlineKeyboard = [[
+                { text: '❌ Forget', callback_data: 'forget_fact:' + encodeURIComponent(result.meta.key) },
+              ]];
+              break;
+          }
+        }
+
+        if (inlineKeyboard) {
+          try {
+            await bot.sendMessage(chatId, finalResult, {
+              parse_mode: 'Markdown',
+              reply_markup: { inline_keyboard: inlineKeyboard },
+            });
+          } catch {
+            await bot.sendMessage(chatId, finalResult, {
+              reply_markup: { inline_keyboard: inlineKeyboard },
+            });
+          }
+        } else {
+          await safeSendMessage(bot, chatId, finalResult);
+        }
 
       } else {
         console.log('[Bot] Unknown LLM response type:', llmResponse.type);
