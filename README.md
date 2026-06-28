@@ -430,14 +430,16 @@ Clicking **🔁 Snooze 10m** pushes the reminder forward by 10 minutes and remov
 
 ## 💰 Running costs
 
-| Service                       | Cost                                 |
-| ----------------------------- | ------------------------------------ | --- | -------------------------- | -------------------------------- | --- | --------------------------- | -------------------- |
-| VPS (e.g. OVHcloud)           | ~€4/month                            |
-| PostgreSQL (Neon free tier)   | Free (10 GB storage)                 |
-| DeepSeek API                  | ~$0.14 / 1M input tokens, very cheap |
-| Xiaomi MiMo (backup only)     | Pay-as-you-go, pennies               |     | Tavily Search (web search) | Free tier (1,000 searches/month) |     | OpenAI Whisper (voice only) | ~$0.006/min of audio |
-| OpenWeatherMap (weather only) | Free tier (1,000 calls/day)          |
-| Telegram Bot API              | Free                                 |
-| Redis (optional, local)       | Free                                 |
+| Service                     | Cost                             |
+| --------------------------- | -------------------------------- |
+| VPS (e.g. OVHcloud)         | ~€4/month                        |
+| DeepSeek API                | ~$0.14 / 1M input tokens         |
+| Xiaomi MiMo (backup only)   | Pay-as-you-go, pennies           |
+| OpenAI Whisper (voice only) | ~$0.006/min of audio             |
+| PostgreSQL (Neon free tier) | Free (10 GB storage)             |
+| Tavily Search (web search)  | Free tier (1,000 searches/month) |
+| OpenWeatherMap (weather)    | Free tier (1,000 calls/day)      |
+| Telegram Bot API            | Free                             |
+| Redis (optional, local)     | Free                             |
 
 **Total: roughly €4–5/month** for a fully personal AI assistant.
