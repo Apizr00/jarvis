@@ -4,7 +4,7 @@ require('dotenv').config();
 const axios = require('axios');
 const db = require('../db');
 const redisCache = require('../redis');
-const { buildSystemPrompt } = require('./shared');
+const { buildSystemPrompt, normalizeLLMResponse } = require('./shared');
 
 const DEEPSEEK_URL = (process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com') + '/v1/chat/completions';
 
@@ -54,12 +54,13 @@ async function chat(userId, userMessage, conversationHistory) {
   try {
     const cleaned = rawText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
     const parsed = JSON.parse(cleaned);
-    if (parsed.type === 'message' || parsed.type === 'tool') {
-      console.log('[DeepSeek] Parsed OK (type=' + parsed.type + ')');
-      return parsed;
+    const normalized = normalizeLLMResponse(parsed);
+    if (normalized) {
+      console.log('[DeepSeek] Parsed OK (type=' + normalized.type + (normalized.name ? ', name=' + normalized.name : '') + ')');
+      return normalized;
     }
-    // Valid JSON but wrong type — fall through to rawText
-    console.log('[DeepSeek] Valid JSON but unexpected type=' + parsed.type + ', falling back to rawText');
+    // Valid JSON but unrecognized structure — fall through to rawText
+    console.log('[DeepSeek] Valid JSON but unrecognized structure, falling back to rawText');
     return { type: 'message', content: rawText };
   } catch (e) {
     // ── Try 2: extract JSON object with regex ───────────────────────────
@@ -67,11 +68,12 @@ async function chat(userId, userMessage, conversationHistory) {
     if (jsonMatch) {
       try {
         const extracted = JSON.parse(jsonMatch[0]);
-        if (extracted.type === 'message' || extracted.type === 'tool') {
-          console.log('[DeepSeek] Regex-extracted JSON OK (type=' + extracted.type + ')');
-          return extracted;
+        const normalized = normalizeLLMResponse(extracted);
+        if (normalized) {
+          console.log('[DeepSeek] Regex-extracted JSON OK (type=' + normalized.type + (normalized.name ? ', name=' + normalized.name : '') + ')');
+          return normalized;
         }
-        console.log('[DeepSeek] Regex-extracted JSON but unexpected type=' + extracted.type);
+        console.log('[DeepSeek] Regex-extracted JSON but unrecognized structure');
       } catch (_) {
         console.log('[DeepSeek] Regex extraction found but JSON.parse failed');
       }

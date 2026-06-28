@@ -2,6 +2,71 @@
 // Shared helpers used by all LLM providers
 const { dayjs, fmt } = require('../utils/datetime');
 
+// Known tool names — used for normalizing LLM responses that misuse the "type" field
+const KNOWN_TOOLS = [
+  'create_reminder', 'update_reminder', 'cancel_reminder', 'list_reminders',
+  'create_event', 'add_note', 'get_today', 'get_briefing', 'get_quote', 'set_fact',
+];
+
+// Common LLM typos → correct tool name
+const TOOL_ALIASES = {
+  'createreminder': 'create_reminder',
+  'cancelreminder': 'cancel_reminder',
+  'updatereminder': 'update_reminder',
+  'listreminders': 'list_reminders',
+  'createevent': 'create_event',
+  'addnote': 'add_note',
+  'settoday': 'get_today',
+  'getbriefing': 'get_briefing',
+  'getquote': 'get_quote',
+  'setfact': 'set_fact',
+};
+
+/**
+ * Parse and normalize an LLM's JSON response.
+ * Handles common LLM mistakes like using the tool name as the "type" value
+ * (e.g., {"type":"set_fact",...} instead of {"type":"tool","name":"set_fact",...}).
+ *
+ * @param {object} parsed - already JSON.parsed object
+ * @returns {object|null} normalized {type, name?, content?, args?} or null if unparseable
+ */
+function normalizeLLMResponse(parsed) {
+  // Already correct
+  if (parsed.type === 'message' || parsed.type === 'tool') {
+    return parsed;
+  }
+
+  // Has args → likely a tool call with wrong "type"
+  if (parsed.args && typeof parsed.args === 'object') {
+    let toolName = parsed.name || parsed.type || '';
+
+    // Fix common typos/aliases
+    const lower = toolName.toLowerCase().replace(/[_-]/g, '');
+    if (TOOL_ALIASES[lower]) {
+      toolName = TOOL_ALIASES[lower];
+    }
+
+    // Validate it's a known tool
+    if (KNOWN_TOOLS.includes(toolName)) {
+      return { type: 'tool', name: toolName, args: parsed.args };
+    }
+
+    // Fuzzy match: try to find closest known tool
+    const fuzzy = KNOWN_TOOLS.find(t => t.replace(/[_-]/g, '') === lower);
+    if (fuzzy) {
+      return { type: 'tool', name: fuzzy, args: parsed.args };
+    }
+  }
+
+  // Has "content" but wrong type → treat as message
+  if (parsed.content && typeof parsed.content === 'string') {
+    return { type: 'message', content: parsed.content };
+  }
+
+  return null;
+}
+
+
 /**
  * Build the system prompt for the LLM.
  * @param {Array<{key:string,value:string}>} facts - user memory facts
@@ -66,4 +131,4 @@ function buildSystemPrompt(facts, timezone, reminders) {
     '• Recurrence values: \"daily\", \"weekly\", \"weekdays\", or null to remove recurrence';
 }
 
-module.exports = { buildSystemPrompt };
+module.exports = { buildSystemPrompt, normalizeLLMResponse };
