@@ -1,6 +1,6 @@
 # 🤖 Jarvis — Personal AI Assistant for Telegram
 
-A self-hosted personal AI assistant that lives in your Telegram. Talk to it naturally — set reminders, schedule events, save notes, and let it remember things about you. Wakes you up with a morning briefing complete with weather and a motivational quote.
+A self-hosted personal AI assistant that lives in your Telegram. Talk to it naturally — set reminders, schedule events, save notes, and let it remember things about you. Wakes you up with a morning briefing complete with weather and a motivational quote. All interactions come with **inline keyboard buttons** for quick actions like edit, cancel, delete, snooze, and dismiss.
 
 **Stack:** Node.js · PostgreSQL · Redis (optional) · DeepSeek + Xiaomi MiMo · Telegram Bot API
 
@@ -8,22 +8,41 @@ A self-hosted personal AI assistant that lives in your Telegram. Talk to it natu
 
 ## ✅ What it can do
 
-| You say...                         | Jarvis does...                                         |
-| ---------------------------------- | ------------------------------------------------------ |
-| "Remind me to call mum at 6pm"     | Creates a reminder, pings you at exactly 6pm           |
-| "Cancel my call mum reminder"      | Cancels the matching reminder by ID                    |
-| "Move my gym reminder to 8am"      | Updates the reminder time                              |
-| "Remind me to stretch every day"   | Creates a recurring daily reminder                     |
-| "Add gym to calendar tomorrow 7am" | Saves an event                                         |
-| "Note: look into React Native"     | Saves a note                                           |
-| "What's my day?" / `/today`        | Shows today's events + reminders                       |
-| "Remember I sleep at 1am"          | Stores a long-term memory fact                         |
-| "What do you know about me?"       | Shows all stored facts about you                       |
-| "Motivate me" / "Give me a quote"  | Fetches a motivational quote from ZenQuotes            |
-| 🎤 Send a voice message            | Transcribes via Whisper AI and responds normally       |
-| **Automatic: every morning**       | 🌅 Morning briefing — weather, quote, today's schedule |
-| `/notes`                           | Last 10 notes                                          |
-| `/memory`                          | All stored facts about you                             |
+| You say...                         | Jarvis does...                                                     |
+| ---------------------------------- | ------------------------------------------------------------------ |
+| "Remind me to call mum at 6pm"     | Creates a reminder, pings you with `[✅ Done] [🔁 Snooze]` buttons |
+| "Cancel my call mum reminder"      | Cancels the matching reminder by ID                                |
+| "Move my gym reminder to 8am"      | Updates the reminder time                                          |
+| "Remind me to stretch every day"   | Creates a recurring daily reminder                                 |
+| "Add gym to calendar tomorrow 7am" | Saves an event with `[✏️ Edit] [❌ Cancel]` buttons                |
+| "Note: look into React Native"     | Saves a note with `[❌ Delete]` button                             |
+| "Remember I sleep at 1am"          | Stores a memory fact with `[❌ Forget]` button                     |
+| "What's my day?" / `/today`        | Shows today's events + reminders                                   |
+| "What do you know about me?"       | Shows all stored facts about you                                   |
+| "Motivate me" / "Give me a quote"  | Fetches a motivational quote from ZenQuotes                        |
+| "Search for latest AI news"        | Performs a web search and summarizes results                       |
+| 🎤 Send a voice message            | Transcribes via Whisper AI and responds normally                   |
+| "What's the weather?"              | Shows current weather for your configured location                 |
+| `/briefing`                        | 🌅 Morning briefing — weather, quote, today's schedule             |
+| `/review`                          | 📊 Weekly review — notes, completed tasks, upcoming week           |
+| `/reminders`                       | Lists upcoming reminders with `[❌ Cancel]` buttons                |
+| `/notes`                           | Last 10 notes                                                      |
+| `/memory`                          | All stored facts about you                                         |
+| `/settings`                        | View current bot name, personality, times, location                |
+| `/status`                          | Check API connections (DeepSeek, MiMo, Whisper, Redis, etc.)       |
+
+### ⚙️ Settings you can change
+
+| Command                | What it changes                    |
+| ---------------------- | ---------------------------------- |
+| `/setname <name>`      | Bot's display name                 |
+| `/setpersonality <t>`  | Bot's personality/tone             |
+| `/setlocation <city>`  | Weather location                   |
+| `/setbriefing <HH:MM>` | Morning briefing time              |
+| `/setreview <HH:MM>`   | Weekly review time (Sunday)        |
+| `/revert`              | Revert a setting to previous value |
+
+All setting changes ask for **confirmation** with `[✅ Ya] [❌ Batal]` buttons before applying.
 
 ---
 
@@ -133,8 +152,17 @@ REDIS_URL=redis://localhost:6379
 PORT=3000
 TIMEZONE=Asia/Kuala_Lumpur
 
-# Morning briefing time (24h format, default 8:00)
-MORNING_BRIEFING_TIME=8:00
+# Bot personality (optional — custom tone for responses)
+# BOT_PERSONALITY=You are a helpful and witty assistant. Keep responses short and fun.
+
+# Bot display name (optional — overrides default "Jarvis")
+# BOT_NAME=Jarvis
+
+# Morning briefing time (24h format, default 7:00)
+MORNING_BRIEFING_TIME=7:00
+
+# Weekly review time (24h format, Sunday, default 20:00)
+# WEEKLY_REVIEW_TIME=20:00
 ```
 
 > ⚠️ **TIMEZONE** — use your local timezone so reminders fire at the right time.
@@ -269,15 +297,19 @@ jarvis/
 │   ├── tools/
 │   │   ├── index.js      # Tool executor (create_reminder, add_note, etc.)
 │   │   ├── quote.js      # Random motivational quote fetcher (ZenQuotes)
+│   │   ├── search.js     # Web search via LLM
 │   │   └── weather.js    # Current weather fetcher (OpenWeatherMap)
 │   ├── scheduler/
-│   │   └── index.js      # Cron jobs: reminder poller + morning briefing
+│   │   └── index.js      # Cron jobs: reminder poller + morning briefing + weekly review
 │   ├── api/
-│   │   └── index.js      # REST API server (Express)
+│   │   ├── index.js      # REST API server (Express)
+│   │   └── status.js     # API health check for /status command
 │   ├── redis/
 │   │   └── index.js      # Redis cache layer (optional, auto-fallback)
-│   └── db/
-│       └── index.js      # All PostgreSQL database queries
+│   ├── db/
+│   │   └── index.js      # All PostgreSQL database queries
+│   └── utils/
+│       └── datetime.js   # Date/time formatting helpers (dayjs)
 ├── scripts/
 │   └── setup-db.js       # One-time DB table creation
 ├── test-briefing.js      # Quick test script for morning briefing
@@ -332,28 +364,60 @@ jarvis/
 
 The LLM is instructed to use these tool calls to perform actions:
 
-| Tool              | Arguments                                       | What it does                 |
-| ----------------- | ----------------------------------------------- | ---------------------------- |
-| `create_reminder` | `text`, `time` (ISO-8601), `recurrence?`        | Creates a new reminder       |
-| `update_reminder` | `reminder_id`, `text?`, `time?`, `recurrence?`  | Updates an existing reminder |
-| `cancel_reminder` | `reminder_id`                                   | Cancels a reminder by ID     |
-| `list_reminders`  | _(none)_                                        | Lists all upcoming reminders |
-| `create_event`    | `title`, `time` (ISO-8601), `duration_minutes?` | Schedules a calendar event   |
-| `add_note`        | `content`                                       | Saves a new note             |
-| `get_today`       | _(none)_                                        | Shows today's schedule       |
-| `get_briefing`    | _(none)_                                        | Generates morning briefing   |
-| `get_quote`       | _(none)_                                        | Fetches a motivational quote |
-| `set_fact`        | `key`, `value`                                  | Stores a memory fact         |
+| Tool                | Arguments                                          | What it does                    |
+| ------------------- | -------------------------------------------------- | ------------------------------- |
+| `create_reminder`   | `text`, `time` (ISO-8601), `recurrence?`           | Creates a new reminder          |
+| `update_reminder`   | `reminder_id`, `text?`, `time?`, `recurrence?`     | Updates an existing reminder    |
+| `cancel_reminder`   | `reminder_id`                                      | Cancels a reminder by ID        |
+| `list_reminders`    | _(none)_                                           | Lists all upcoming reminders    |
+| `create_event`      | `title`, `time` (ISO-8601), `duration_minutes?`    | Schedules a calendar event      |
+| `update_event`      | `event_id`, `title?`, `time?`, `duration_minutes?` | Updates an existing event       |
+| `cancel_event`      | `event_id`                                         | Cancels an event by ID          |
+| `add_note`          | `content`                                          | Saves a new note                |
+| `get_today`         | _(none)_                                           | Shows today's schedule          |
+| `get_briefing`      | _(none)_                                           | Generates morning briefing      |
+| `get_weekly_review` | _(none)_                                           | Generates weekly review summary |
+| `get_quote`         | _(none)_                                           | Fetches a motivational quote    |
+| `set_fact`          | `key`, `value`                                     | Stores a memory fact            |
+| `web_search`        | `query`                                            | Searches the web via LLM        |
+| `set_config`        | `key`, `value`                                     | Changes a bot setting           |
+| `revert_config`     | `key`                                              | Reverts a setting to previous   |
+
+---
+
+## 🔘 Telegram Inline Buttons
+
+Every actionable response comes with inline keyboard buttons — no need to type commands:
+
+| Context                     | Buttons                         |
+| --------------------------- | ------------------------------- |
+| Reminder created / updated  | `[✏️ Edit]` `[❌ Cancel]`       |
+| Event created / updated     | `[✏️ Edit]` `[❌ Cancel]`       |
+| Note saved                  | `[❌ Delete]`                   |
+| Fact remembered             | `[❌ Forget]`                   |
+| Reminder fires (scheduler)  | `[✅ Done]` `[🔁 Snooze 10m]`   |
+| `/reminders` list           | `[❌ Cancel: ...]` per reminder |
+| Setting change confirmation | `[✅ Ya]` `[❌ Batal]`          |
+| `/revert` options           | `[↩️ Setting → prev value]`     |
+
+Clicking **✏️ Edit** stores the item being edited — just type your change naturally (e.g. "tukar ke 3pm") and Jarvis knows exactly which item to update. No need to mention the ID.
+
+Clicking **🔁 Snooze 10m** pushes the reminder forward by 10 minutes and removes the keyboard.
 
 ---
 
 ## 🚀 What's next (v2 ideas)
 
+- ✅ ~~Inline keyboard buttons for quick actions~~ (done)
+- ✅ ~~Web search via LLM~~ (done)
+- ✅ ~~Settings system (bot name, personality, times, location)~~ (done)
+- ✅ ~~Weekly review summary~~ (done)
+- ✅ ~~Visual /status check for API connections~~ (done)
 - Voice reply — Jarvis responds with synthesized speech (TTS)
 - Natural language calendar queries ("What's my week look like?")
 - Recurring reminders with custom intervals (every 3 days, etc.)
 - Web dashboard for viewing/managing reminders and notes
-- Multi-device sync via Telegram sync
+- Multi-user support (family/team shared assistant)
 - Habit tracking with streaks
 - Expense tracking ("Spent RM15 on lunch")
 
