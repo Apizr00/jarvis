@@ -58,6 +58,28 @@ async function setup() {
       updated_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE(user_id, key)
     );
+
+    CREATE TABLE IF NOT EXISTS chat_history (
+      id SERIAL PRIMARY KEY,
+      user_id TEXT REFERENCES users(id),
+      role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+      content TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_history_user_time
+      ON chat_history (user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS reflections (
+      id SERIAL PRIMARY KEY,
+      user_id TEXT REFERENCES users(id),
+      date DATE NOT NULL DEFAULT CURRENT_DATE,
+      summary TEXT NOT NULL,
+      pattern_insights TEXT,
+      fact_changes TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(user_id, date)
+    );
   `);
 
   // ── Migration: add recurrence column for existing databases ─────────────
@@ -66,6 +88,26 @@ async function setup() {
   } catch {
     // column already exists — safe to ignore
   }
+
+  // ── Migration: add importance & access tracking for memory facts ─────────
+  try {
+    await pool.query(`ALTER TABLE memory_facts ADD COLUMN IF NOT EXISTS importance INTEGER DEFAULT 5`);
+  } catch { /* ignore */ }
+  try {
+    await pool.query(`ALTER TABLE memory_facts ADD COLUMN IF NOT EXISTS access_count INTEGER DEFAULT 0`);
+  } catch { /* ignore */ }
+  try {
+    await pool.query(`ALTER TABLE memory_facts ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ`);
+  } catch { /* ignore */ }
+  try {
+    await pool.query(`ALTER TABLE memory_facts ADD COLUMN IF NOT EXISTS confidence REAL DEFAULT 0.7`);
+  } catch { /* ignore */ }
+  try {
+    await pool.query(`ALTER TABLE memory_facts ADD COLUMN IF NOT EXISTS conflict_flag BOOLEAN DEFAULT FALSE`);
+  } catch { /* ignore */ }
+  try {
+    await pool.query(`ALTER TABLE memory_facts ADD COLUMN IF NOT EXISTS previous_value TEXT`);
+  } catch { /* ignore */ }
 
   console.log('✅ All tables created successfully!');
   await pool.end();

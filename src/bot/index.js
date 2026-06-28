@@ -13,11 +13,29 @@ const { getQuote } = require('../tools/quote');
 let { refreshSchedules } = require('../scheduler');
 const { transcribe, downloadVoiceFile } = require('../llm/whisper');
 const { getApiStatus, formatStatusMessage } = require('../api/status');
+const memory = require('../memory');
 
 const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
 
 // Simple in-memory conversation history per user (last 10 turns)
+// Populated from DB on startup, kept in sync with DB on every message
 const conversationHistory = {};
+
+/**
+ * Load recent chat history from DB into in-memory cache.
+ * Called once at bot startup to restore context.
+ */
+async function loadHistoryFromDB(userId) {
+  try {
+    const rows = await db.getRecentChatHistory(userId, 20);
+    if (rows.length > 0) {
+      conversationHistory[userId] = rows;
+      console.log('[Bot] 📜 Loaded ' + rows.length + ' history messages from DB for user ' + userId);
+    }
+  } catch (err) {
+    console.warn('[Bot] Could not load chat history from DB:', err.message);
+  }
+}
 
 // Track which item the user is currently editing (set by inline button click)
 // Format: { userId: { type: 'reminder'|'event', id: number, label: string, timestamp: number } }
@@ -58,6 +76,11 @@ function addToHistory(userId, role, content) {
   history.push({ role, content });
   // Keep last 10 messages to avoid huge prompts
   if (history.length > 10) history.splice(0, history.length - 10);
+
+  // 💾 Persist to DB (fire-and-forget — don't block the response)
+  db.saveChatMessage(userId, role, content).catch(err => {
+    console.warn('[Bot] Failed to persist chat message:', err.message);
+  });
 }
 
 function clearHistory(userId) {
@@ -70,6 +93,9 @@ async function createBot() {
 
   const botName = await db.getConfig(OWNER_ID, 'bot_name', 'BOT_NAME', 'Jarvis');
   console.log('🤖 ' + botName + ' bot is online and polling...');
+
+  // 💾 Restore conversation history from DB on startup
+  await loadHistoryFromDB(OWNER_ID);
 
   // ── Guard: only respond to the owner ──────────────────────────────────────
   function isOwner(msg) {
@@ -134,6 +160,39 @@ async function createBot() {
     await safeSendMessage(bot, msg.chat.id, reply.trim());
   });
 
+  // ── /history command — search past conversations ─────────────────────────
+  bot.onText(/\/history(?:\s+(.+))?/, async (msg, match) => {
+    if (!isOwner(msg)) return;
+    await db.ensureUser(OWNER_ID, msg.from.first_name || 'Owner');
+
+    const query = (match[1] || '').trim();
+    const results = await db.searchChatHistory(OWNER_ID, query, 10);
+
+    if (results.length === 0) {
+      return bot.sendMessage(msg.chat.id,
+        query
+          ? 'No past conversations matching "' + escapeMd(query) + '".'
+          : 'No chat history yet. Start talking to me!');
+    }
+
+    let reply = query
+      ? '*🔍 History: "' + escapeMd(query) + '"*\n\n'
+      : '*💬 Recent Conversations*\n\n';
+
+    results.forEach(r => {
+      const date = fmt(r.created_at, 'MMM D, h:mm A');
+      const icon = r.role === 'user' ? '👤' : '🤖';
+      const truncated = r.content.length > 80 ? r.content.substring(0, 80) + '…' : r.content;
+      reply += icon + ' _' + date + '_:\n' + escapeMd(truncated) + '\n\n';
+    });
+
+    try {
+      await bot.sendMessage(msg.chat.id, reply.trim(), { parse_mode: 'Markdown' });
+    } catch {
+      await bot.sendMessage(msg.chat.id, reply.trim());
+    }
+  });
+
   // ── /memory command shortcut ──────────────────────────────────────────────
   bot.onText(/\/memory/, async (msg) => {
     if (!isOwner(msg)) return;
@@ -147,6 +206,76 @@ async function createBot() {
       reply += '• *' + escapeMd(f.key) + ':* ' + escapeMd(f.value) + '\n';
     });
     await safeSendMessage(bot, msg.chat.id, reply.trim());
+  });
+
+  // ── /verify command — review & resolve conflicting facts ─────────────────
+  bot.onText(/\/verify/, async (msg) => {
+    if (!isOwner(msg)) return;
+    await db.ensureUser(OWNER_ID, msg.from.first_name || 'Owner');
+
+    const conflicts = await memory.getConflicts(OWNER_ID);
+    if (conflicts.length === 0) {
+      return bot.sendMessage(msg.chat.id, '✅ No conflicting facts. All memory is consistent!');
+    }
+
+    let reply = '*⚠️ Conflicting Facts — Please Review*\n\n';
+    const inlineKeyboard = [];
+
+    conflicts.forEach((c, i) => {
+      reply += '*' + (i + 1) + '. ' + escapeMd(c.key) + '*\n';
+      reply += '  🟢 *Current:* ' + escapeMd(c.value) + ' _(confidence: ' + (c.confidence || '?') + ')_\n';
+      if (c.previous_value) {
+        reply += '  🔴 *Previous:* ' + escapeMd(c.previous_value) + '\n';
+      }
+      reply += '\n';
+
+      inlineKeyboard.push([{
+        text: '✅ Keep "' + (c.value.length > 15 ? c.value.slice(0, 15) + '…' : c.value) + '"',
+        callback_data: 'resolve_conflict:' + encodeURIComponent(c.key) + ':keep_current',
+      }]);
+      if (c.previous_value) {
+        inlineKeyboard.push([{
+          text: '↩️ Restore "' + (c.previous_value.length > 15 ? c.previous_value.slice(0, 15) + '…' : c.previous_value) + '"',
+          callback_data: 'resolve_conflict:' + encodeURIComponent(c.key) + ':restore_previous',
+        }]);
+      }
+    });
+
+    try {
+      await bot.sendMessage(msg.chat.id, reply.trim(), {
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: inlineKeyboard },
+      });
+    } catch {
+      await bot.sendMessage(msg.chat.id, reply.trim(), {
+        reply_markup: { inline_keyboard: inlineKeyboard },
+      });
+    }
+  });
+
+  // ── /reflect command — generate today's reflection ───────────────────────
+  bot.onText(/\/reflect/, async (msg) => {
+    if (!isOwner(msg)) return;
+    await bot.sendChatAction(msg.chat.id, 'typing');
+
+    try {
+      // Check if already generated today
+      const existing = await db.getTodayReflection(OWNER_ID);
+      if (existing) {
+        await safeSendMessage(bot, msg.chat.id, '*🧘 Today\'s Reflection*\n\n' + existing.summary);
+        return;
+      }
+
+      const reflection = await memory.generateDailyReflection(OWNER_ID, llm.chat);
+      if (reflection) {
+        await safeSendMessage(bot, msg.chat.id, '*🧘 Today\'s Reflection*\n\n' + reflection);
+      } else {
+        await bot.sendMessage(msg.chat.id, '📭 Not enough activity today to reflect on. Talk to me more!');
+      }
+    } catch (err) {
+      console.error('/reflect error:', err.message);
+      await bot.sendMessage(msg.chat.id, '❌ Could not generate reflection.');
+    }
   });
 
   // ── /reminders command ────────────────────────────────────────────────────
@@ -369,6 +498,28 @@ async function createBot() {
       return;
     }
 
+    // ── Resolve conflict ─────────────────────────────────────────────────
+    if (data.startsWith('resolve_conflict:')) {
+      const parts = data.split(':');
+      const factKey = decodeURIComponent(parts[1]);
+      const resolution = parts[2]; // 'keep_current' or 'restore_previous'
+      if (!factKey || !resolution) return;
+
+      try {
+        await memory.resolveConflict(userId, factKey, resolution);
+        const label = resolution === 'restore_previous' ? '↩️ Restored previous value!' : '✅ Kept current value!';
+        await bot.answerCallbackQuery(callbackQuery.id, { text: label });
+        await bot.editMessageReplyMarkup(
+          { inline_keyboard: [] },
+          { chat_id: chatId, message_id: msgId }
+        );
+      } catch (err) {
+        console.error('Resolve conflict error:', err.message);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Failed to resolve. Try again.' });
+      }
+      return;
+    }
+
     // ── Dismiss reminder (mark as done) ──────────────────────────────────
     if (data.startsWith('dismiss_reminder:')) {
       const reminderId = parseInt(data.split(':')[1], 10);
@@ -493,6 +644,9 @@ async function createBot() {
       '/notes — View recent notes\n' +
       '/reminders — List upcoming reminders\n' +
       '/memory — See stored facts\n' +
+      '/verify — Review & resolve conflicting facts\n' +
+      '/reflect — Generate daily reflection & insights\n' +
+      '/history — Search past conversations (/history <keyword>)\n' +
       '/status — Check API connections\n' +
       '/help — This message\n' +
       '/settings — View current bot settings\n' +
@@ -755,6 +909,9 @@ async function createBot() {
         addToHistory(userId, 'assistant', llmResponse.content);
         await safeSendMessage(bot, chatId, llmResponse.content);
 
+        // 🔍 Auto-extract facts from this exchange (fire-and-forget)
+        memory.extractFactsFromChat(userId, text, llmResponse.content, llm.chat);
+
       } else if (llmResponse.type === 'tool') {
         // Execute tool
         console.log('[Bot] Executing tool:', llmResponse.name, JSON.stringify(llmResponse.args).slice(0, 200));
@@ -793,6 +950,8 @@ async function createBot() {
               },
             });
           }
+          // 🔍 Auto-extract facts from this exchange (fire-and-forget)
+          memory.extractFactsFromChat(userId, text, result.message, llm.chat);
           return; // Done — wait for user to click button or type "ya"
         }
 
@@ -927,6 +1086,9 @@ async function createBot() {
         } else {
           await safeSendMessage(bot, chatId, finalResult);
         }
+
+        // 🔍 Auto-extract facts from this exchange (fire-and-forget)
+        memory.extractFactsFromChat(userId, text, finalResult, llm.chat);
 
       } else {
         console.log('[Bot] Unknown LLM response type:', llmResponse.type);

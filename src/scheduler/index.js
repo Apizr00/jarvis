@@ -2,6 +2,7 @@
 // Polls the DB every 30s for due reminders + morning briefing cron
 const cron = require('node-cron');
 const db = require('../db');
+const memory = require('../memory');
 const { dayjs, fmt } = require('../utils/datetime');
 const { escapeMd, safeSendMessage } = require('../tools');
 const { getWeatherSummary } = require('../tools/weather');
@@ -12,6 +13,8 @@ let botInstance = null;
 // Track active cron tasks so we can stop & restart them dynamically
 let briefingTask = null;
 let reviewTask = null;
+let cleanupTask = null;
+let reflectionTask = null;
 
 // Track recently fired reminder IDs to prevent re-firing within the poll window
 const recentlyFired = new Map();
@@ -51,6 +54,49 @@ async function startScheduler(bot) {
 
   // ── Initial schedule setup from DB (falls back to .env) ────────────────
   await refreshSchedules();
+
+  // ── Daily memory cleanup: 3:00 AM every day ───────────────────────────
+  if (cleanupTask) { cleanupTask.stop(); cleanupTask = null; }
+  cleanupTask = cron.schedule('0 3 * * *', async () => {
+    try {
+      const OWNER = String(process.env.TELEGRAM_OWNER_ID);
+      // Clean up stale memory facts (low importance + old)
+      const deletedFacts = await memory.autoCleanupFacts(OWNER, 3, 30);
+      if (deletedFacts > 0) {
+        console.log('[Scheduler] 🧹 Memory cleanup: removed ' + deletedFacts + ' stale facts');
+      }
+      // Prune chat history older than 90 days
+      const prunedChats = await memory.pruneOldHistory(OWNER, 90);
+      if (prunedChats > 0) {
+        console.log('[Scheduler] 💬 Chat history prune: removed ' + prunedChats + ' old messages');
+      }
+    } catch (err) {
+      console.error('[Scheduler] Cleanup error:', err.message);
+    }
+  });
+  console.log('🧹 Daily cleanup scheduled for 3:00 AM (facts + chat history)');
+
+  // ── Daily reflection: 10:00 PM every day ─────────────────────────────
+  if (reflectionTask) { reflectionTask.stop(); reflectionTask = null; }
+  reflectionTask = cron.schedule('0 22 * * *', async () => {
+    try {
+      const OWNER = String(process.env.TELEGRAM_OWNER_ID);
+      // Need to import llm dynamically to avoid circular dependency
+      const llm = require('../llm');
+      const reflection = await memory.generateDailyReflection(OWNER, llm.chat);
+      if (reflection && botInstance) {
+        try {
+          await botInstance.sendMessage(OWNER, '*🧘 Daily Reflection*\n\n' + reflection, { parse_mode: 'Markdown' });
+        } catch {
+          await botInstance.sendMessage(OWNER, '🧘 Daily Reflection\n\n' + reflection);
+        }
+        console.log('[Scheduler] 🧘 Daily reflection sent');
+      }
+    } catch (err) {
+      console.error('[Scheduler] Reflection error:', err.message);
+    }
+  });
+  console.log('🧘 Daily reflection scheduled for 10:00 PM');
 }
 
 /**

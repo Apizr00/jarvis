@@ -293,7 +293,7 @@ async function setFact(userId, key, value) {
 
 async function getAllFacts(userId) {
   const { rows } = await pool.query(
-    `SELECT key, value FROM memory_facts WHERE user_id = $1`,
+    `SELECT key, value, confidence, conflict_flag, importance, access_count, updated_at, last_accessed_at FROM memory_facts WHERE user_id = $1`,
     [String(userId)]
   );
   return rows;
@@ -434,6 +434,248 @@ async function getConfig(userId, key, envKey, defaultVal = '') {
   return process.env[envKey] || defaultVal;
 }
 
+// ── Chat History ──────────────────────────────────────────────────────────────
+
+/**
+ * Save a single chat message to persistent history.
+ * @param {string} userId
+ * @param {'user'|'assistant'} role
+ * @param {string} content
+ * @returns {Promise<object>} the inserted row
+ */
+async function saveChatMessage(userId, role, content) {
+  const { rows } = await pool.query(
+    `INSERT INTO chat_history (user_id, role, content) VALUES ($1, $2, $3) RETURNING *`,
+    [String(userId), role, content]
+  );
+  return rows[0];
+}
+
+/**
+ * Get the most recent N chat messages for a user.
+ * Used to restore short-term memory after a restart.
+ * @param {string} userId
+ * @param {number} [limit=20] - max messages to return
+ * @returns {Promise<Array<{role:string, content:string}>>}
+ */
+async function getRecentChatHistory(userId, limit = 20) {
+  const { rows } = await pool.query(
+    `SELECT role, content FROM chat_history
+     WHERE user_id = $1
+     ORDER BY created_at DESC
+     LIMIT $2`,
+    [String(userId), limit]
+  );
+  // Reverse to chronological order (oldest first)
+  return rows.reverse();
+}
+
+/**
+ * Search chat history for messages matching a query.
+ * Used for episodic memory — "what did we talk about last week?"
+ * @param {string} userId
+ * @param {string} query - search term
+ * @param {number} [limit=10]
+ * @returns {Promise<Array<{role:string, content:string, created_at:string}>>}
+ */
+async function searchChatHistory(userId, query, limit = 10) {
+  const { rows } = await pool.query(
+    `SELECT role, content, created_at FROM chat_history
+     WHERE user_id = $1
+       AND (content ILIKE '%' || $2 || '%' OR $2 = '')
+     ORDER BY created_at DESC
+     LIMIT $3`,
+    [String(userId), query, limit]
+  );
+  return rows;
+}
+
+/**
+ * Get chat messages within a date range (for episodic/weekly review).
+ * @param {string} userId
+ * @param {string} fromDate - ISO date string
+ * @param {string} toDate - ISO date string
+ * @returns {Promise<Array<{role:string, content:string, created_at:string}>>}
+ */
+async function getChatHistoryInRange(userId, fromDate, toDate) {
+  const { rows } = await pool.query(
+    `SELECT role, content, created_at FROM chat_history
+     WHERE user_id = $1
+       AND created_at >= $2 AND created_at < $3
+     ORDER BY created_at ASC`,
+    [String(userId), fromDate, toDate]
+  );
+  return rows;
+}
+
+/**
+ * Delete old chat history beyond a certain age.
+ * Keeps the DB lean — only recent history is useful for short-term context.
+ * @param {string} userId
+ * @param {number} [keepDays=90] - keep history up to this many days old
+ * @returns {Promise<number>} number of rows deleted
+ */
+async function pruneOldChatHistory(userId, keepDays = 90) {
+  const { rowCount } = await pool.query(
+    `DELETE FROM chat_history
+     WHERE user_id = $1
+       AND created_at < NOW() - ($2 || ' days')::INTERVAL`,
+    [String(userId), String(keepDays)]
+  );
+  return rowCount;
+}
+
+/**
+ * Get a summary of topics discussed (for reflection).
+ * Returns a count of messages per day in the last N days.
+ * @param {string} userId
+ * @param {number} [days=7]
+ * @returns {Promise<Array<{date:string, user_count:string, assistant_count:string}>>}
+ */
+async function getChatActivitySummary(userId, days = 7) {
+  const { rows } = await pool.query(
+    `SELECT
+       DATE(created_at) AS date,
+       COUNT(*) FILTER (WHERE role = 'user') AS user_count,
+       COUNT(*) FILTER (WHERE role = 'assistant') AS assistant_count
+     FROM chat_history
+     WHERE user_id = $1
+       AND created_at >= NOW() - ($2 || ' days')::INTERVAL
+     GROUP BY DATE(created_at)
+     ORDER BY date DESC`,
+    [String(userId), String(days)]
+  );
+  return rows;
+}
+
+// ── Confidence & Conflict Management ─────────────────────────────────────────
+
+/**
+ * Update confidence score for a fact. Used when user confirms/corrects info.
+ * @param {string} userId
+ * @param {string} key
+ * @param {number} confidence - 0.0 to 1.0
+ */
+async function updateFactConfidence(userId, key, confidence) {
+  await pool.query(
+    `UPDATE memory_facts SET confidence = $3, updated_at = NOW() WHERE user_id = $1 AND key = $2`,
+    [String(userId), key, Math.max(0, Math.min(1, confidence))]
+  );
+}
+
+/**
+ * Mark a fact as having conflicting information (e.g. old value vs new value).
+ * Saves the previous value so user can review.
+ * @param {string} userId
+ * @param {string} key
+ * @param {string} previousValue - the old value being replaced
+ */
+async function flagFactConflict(userId, key, previousValue) {
+  await pool.query(
+    `UPDATE memory_facts
+     SET conflict_flag = TRUE, previous_value = $3, confidence = GREATEST(confidence - 0.2, 0.1), updated_at = NOW()
+     WHERE user_id = $1 AND key = $2`,
+    [String(userId), key, previousValue]
+  );
+}
+
+/**
+ * Resolve a conflict on a fact (user picked which value is correct).
+ * @param {string} userId
+ * @param {string} key
+ * @param {'keep_current'|'restore_previous'} resolution
+ */
+async function resolveFactConflict(userId, key, resolution) {
+  if (resolution === 'restore_previous') {
+    // Swap: restore previous_value → current, keep old current as previous_value
+    await pool.query(
+      `UPDATE memory_facts
+       SET value = previous_value,
+           previous_value = value,
+           conflict_flag = FALSE,
+           confidence = 0.9,
+           updated_at = NOW()
+       WHERE user_id = $1 AND key = $2 AND previous_value IS NOT NULL`,
+      [String(userId), key]
+    );
+  } else {
+    // Keep current, clear conflict
+    await pool.query(
+      `UPDATE memory_facts
+       SET conflict_flag = FALSE, previous_value = NULL, confidence = 0.9, updated_at = NOW()
+       WHERE user_id = $1 AND key = $2`,
+      [String(userId), key]
+    );
+  }
+}
+
+/**
+ * Get all facts that have unresolved conflicts.
+ * @param {string} userId
+ * @returns {Promise<Array<{key:string, value:string, previous_value:string|null, confidence:number}>>}
+ */
+async function getConflictFacts(userId) {
+  const { rows } = await pool.query(
+    `SELECT key, value, previous_value, confidence
+     FROM memory_facts WHERE user_id = $1 AND conflict_flag = TRUE`,
+    [String(userId)]
+  );
+  return rows;
+}
+
+// ── Reflections ──────────────────────────────────────────────────────────────
+
+/**
+ * Save a daily reflection.
+ * @param {string} userId
+ * @param {string} date - YYYY-MM-DD
+ * @param {string} summary - main reflection text
+ * @param {string} [patternInsights] - detected patterns
+ * @param {string} [factChanges] - facts that changed today
+ * @returns {Promise<object>}
+ */
+async function saveReflection(userId, date, summary, patternInsights, factChanges) {
+  const { rows } = await pool.query(
+    `INSERT INTO reflections (user_id, date, summary, pattern_insights, fact_changes)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (user_id, date) DO UPDATE
+       SET summary = $3, pattern_insights = $4, fact_changes = $5, created_at = NOW()
+     RETURNING *`,
+    [String(userId), date, summary, patternInsights || null, factChanges || null]
+  );
+  return rows[0];
+}
+
+/**
+ * Get the most recent reflections.
+ * @param {string} userId
+ * @param {number} [limit=7]
+ * @returns {Promise<Array>}
+ */
+async function getRecentReflections(userId, limit = 7) {
+  const { rows } = await pool.query(
+    `SELECT * FROM reflections WHERE user_id = $1 ORDER BY date DESC LIMIT $2`,
+    [String(userId), limit]
+  );
+  return rows;
+}
+
+/**
+ * Get today's reflection if it exists.
+ * Uses the configured timezone for consistent "today" calculation.
+ * @param {string} userId
+ * @returns {Promise<object|null>}
+ */
+async function getTodayReflection(userId) {
+  const { rows } = await pool.query(
+    `SELECT * FROM reflections
+     WHERE user_id = $1
+       AND date = (CURRENT_DATE AT TIME ZONE $2)::date`,
+    [String(userId), process.env.TIMEZONE || 'UTC']
+  );
+  return rows.length > 0 ? rows[0] : null;
+}
+
 module.exports = {
   pool,
   ensureUser,
@@ -466,4 +708,20 @@ module.exports = {
   getAllSettings,
   setSetting,
   getConfig,
+  // Chat history
+  saveChatMessage,
+  getRecentChatHistory,
+  searchChatHistory,
+  getChatHistoryInRange,
+  pruneOldChatHistory,
+  getChatActivitySummary,
+  // Confidence & conflict
+  updateFactConfidence,
+  flagFactConflict,
+  resolveFactConflict,
+  getConflictFacts,
+  // Reflections
+  saveReflection,
+  getRecentReflections,
+  getTodayReflection,
 };

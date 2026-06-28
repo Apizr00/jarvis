@@ -4,6 +4,7 @@ require('dotenv').config();
 const axios = require('axios');
 const db = require('../db');
 const redisCache = require('../redis');
+const memory = require('../memory');
 const { buildSystemPrompt, normalizeLLMResponse } = require('./shared');
 
 const MIMO_BASE = (process.env.MIMO_BASE_URL || 'https://api.xiaomimimo.com').replace(/\/+$/, '');
@@ -14,12 +15,11 @@ const MIMO_URL = MIMO_BASE.endsWith('/v1')
 async function chat(userId, userMessage, conversationHistory) {
   if (!conversationHistory) conversationHistory = [];
 
-  // Try Redis cache first, fall back to DB
-  let facts = await redisCache.getFactsCache(userId);
-  if (facts === null) {
-    facts = await db.getAllFacts(userId);
-    redisCache.setFactsCache(userId, facts);
-  }
+  // 🔍 Semantic search: only retrieve facts relevant to user's current message
+  let facts = await memory.searchFacts(userId, userMessage);
+
+  // Record that these facts were accessed (for importance scoring)
+  memory.recordFactAccess(userId, facts.map(f => f.key));
 
   // Fetch upcoming reminders so the LLM can reference them by ID for update/cancel
   const upcomingReminders = await db.getUpcomingReminders(userId, 15);
