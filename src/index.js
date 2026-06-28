@@ -27,7 +27,8 @@ async function main() {
   console.log('  ╚█████╔╝██║  ██║██║  ██║ ╚████╔╝ ██║███████║');
   console.log('   ╚════╝ ╚═╝  ╚═╝╚═╝  ╚═╝  ╚═══╝  ╚═╝╚══════╝');
   console.log('');
-  console.log('  🤖  J A R V I S  —  Personal AI Assistant v2.0  🤖');
+  const botName = (process.env.BOT_NAME || 'JARVIS').toUpperCase();
+  console.log('  🤖  ' + botName + '  —  Personal AI Assistant v2.0  🤖');
   console.log('');
 
   // Connect Redis

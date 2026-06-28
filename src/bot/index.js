@@ -32,7 +32,8 @@ function addToHistory(userId, role, content) {
 function createBot() {
   const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
-  console.log('🤖 Jarvis bot is online and polling...');
+  const botName = process.env.BOT_NAME || 'Jarvis';
+  console.log('🤖 ' + botName + ' bot is online and polling...');
 
   // ── Guard: only respond to the owner ──────────────────────────────────────
   function isOwner(msg) {

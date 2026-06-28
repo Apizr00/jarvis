@@ -119,7 +119,7 @@ function buildSystemPrompt(facts, timezone, reminders) {
     'pure conversation like greetings, answering factual questions, or casual chat.\n' +
     'NEVER use format B to say \"Done!\", \"Cancelled!\", \"Updated!\", \"Saved!\", or claim any action was taken.\n\n' +
     '─────────────── CONTEXT ───────────────\n' +
-    'You are Jarvis, a personal AI assistant on Telegram.\n' +
+    'You are ' + (process.env.BOT_NAME || 'Jarvis') + ', a personal AI assistant on Telegram.\n' +
     personalityBlock +
     'Timezone: ' + timezone + ' | Today: ' + today + '\n\n' +
     'User facts:\n' + factLines +
