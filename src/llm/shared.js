@@ -6,7 +6,7 @@ const { dayjs, fmt } = require('../utils/datetime');
 const KNOWN_TOOLS = [
   'create_reminder', 'update_reminder', 'cancel_reminder', 'list_reminders',
   'create_event', 'add_note', 'get_today', 'get_briefing', 'get_quote', 'set_fact',
-  'web_search',
+  'web_search', 'get_weekly_review',
 ];
 
 // Common LLM typos → correct tool name
@@ -23,6 +23,8 @@ const TOOL_ALIASES = {
   'setfact': 'set_fact',
   'websearch': 'web_search',
   'searchweb': 'web_search',
+  'getweeklyreview': 'get_weekly_review',
+  'weeklyreview': 'get_weekly_review',
 };
 
 /**
@@ -126,7 +128,8 @@ function buildSystemPrompt(facts, timezone, reminders) {
     'get_briefing      → args: {}\n' +
     'get_quote         → args: {}\n' +
     'set_fact          → args: { key, value }\n' +
-    'web_search        → args: { query }\n\n' +
+    'web_search        → args: { query }\n' +
+    'get_weekly_review → args: {}\n\n' +
     '─────────────── RULES ───────────────\n' +
     '• For times: use ISO-8601 with ' + tzOffset + ' offset. Convert "at 9pm" → "' + today + 'T21:00:00' + tzOffset + '"\n' +
     '• For cancel/update: match user description to CURRENT UPCOMING REMINDERS above and use the exact #ID\n' +

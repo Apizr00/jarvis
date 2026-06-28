@@ -248,6 +248,12 @@ async function executeTool(userId, toolCall) {
       return await buildBriefingMessage();
     }
 
+    // ── get_weekly_review ────────────────────────────────────────────────────
+    case 'get_weekly_review': {
+      const { buildWeeklyReview } = require('../scheduler');
+      return await buildWeeklyReview();
+    }
+
     default:
       return 'I tried to use a tool called "' + escapeMd(name) + '" but I don\'t know how to do that yet.';
   }

@@ -200,6 +200,20 @@ function createBot() {
     }
   });
 
+  // ── /review command ──────────────────────────────────────────────────────
+  bot.onText(/\/review/, async (msg) => {
+    if (!isOwner(msg)) return;
+    await bot.sendChatAction(msg.chat.id, 'typing');
+    try {
+      const { buildWeeklyReview } = require('../scheduler');
+      const message = await buildWeeklyReview();
+      await safeSendMessage(bot, msg.chat.id, message);
+    } catch (err) {
+      console.error('/review error:', err.message);
+      await bot.sendMessage(msg.chat.id, '❌ Could not generate weekly review.');
+    }
+  });
+
   // ── /quote command ────────────────────────────────────────────────────────
   bot.onText(/\/quote/, async (msg) => {
     if (!isOwner(msg)) return;
@@ -221,6 +235,7 @@ function createBot() {
       '/start — Wake up Jarvis\n' +
       '/today — See today\'s schedule\n' +
       '/briefing — Morning briefing (events, reminders, weather, quote)\n' +
+      '/review — Weekly review summary\n' +
       '/quote — Get a motivational quote\n' +
       '/notes — View recent notes\n' +
       '/reminders — List upcoming reminders\n' +
@@ -306,8 +321,48 @@ function createBot() {
           result = 'I tried to do that but ran into a problem. Please try again.';
         }
 
-        addToHistory(userId, 'assistant', result);
-        await safeSendMessage(bot, chatId, result);
+        // ── Smart Follow-up: after add_note, check if it implies a reminder ──
+        let followupResult = null;
+        if (llmResponse.name === 'add_note' && llmResponse.args.content) {
+          const noteContent = llmResponse.args.content;
+          const followupPrompt =
+            '📝 The user just saved this note: "' + noteContent + '"\n\n' +
+            'YOUR JOB: Determine if this note implies a follow-up task that should become a reminder.\n\n' +
+            'Examples that SHOULD create a reminder:\n' +
+            '• "follow up with Ali on Friday" → reminder: "Follow up with Ali" on Friday\n' +
+            '• "call client tomorrow 3pm" → reminder: "Call client" tomorrow at 3pm\n' +
+            '• "send report by Monday" → reminder: "Send report" on Monday\n\n' +
+            'Examples that should NOT:\n' +
+            '• "React Native looks promising" → no reminder\n' +
+            '• "idea for blog post" → no reminder (just an idea)\n' +
+            '• "buy groceries" → no specific time, so no reminder\n\n' +
+            'If a reminder IS needed, output: {"type":"tool","name":"create_reminder","args":{"text":"...","time":"ISO-8601"}}\n' +
+            'If NOT needed, output: {"type":"message","content":"SKIP"}';
+
+          try {
+            const followupHistory = [{ role: 'user', content: followupPrompt }];
+            const followupResponse = await llm.chat(userId, noteContent, followupHistory);
+            console.log('[Bot] Follow-up check result:', followupResponse.type, followupResponse.name || '');
+
+            if (followupResponse.type === 'tool' && followupResponse.name === 'create_reminder') {
+              followupResult = await tools.executeTool(userId, {
+                name: 'create_reminder',
+                args: followupResponse.args,
+              });
+              console.log('[Bot] Smart follow-up reminder created:', followupResult.slice(0, 150));
+            }
+          } catch (fuErr) {
+            console.warn('[Bot] Smart follow-up check failed (non-fatal):', fuErr.message);
+          }
+        }
+
+        // Combine results
+        const finalResult = followupResult
+          ? result + '\n\n' + followupResult
+          : result;
+
+        addToHistory(userId, 'assistant', finalResult);
+        await safeSendMessage(bot, chatId, finalResult);
 
       } else {
         console.log('[Bot] Unknown LLM response type:', llmResponse.type);

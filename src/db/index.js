@@ -260,6 +260,51 @@ async function getFullMemory(userId) {
   };
 }
 
+// ── Weekly Review Queries ─────────────────────────────────────────────────────
+
+/**
+ * Get notes created since a given date.
+ */
+async function getNotesSince(userId, since) {
+  const { rows } = await pool.query(
+    `SELECT * FROM notes
+     WHERE user_id = $1 AND created_at >= $2
+     ORDER BY created_at DESC`,
+    [String(userId), since]
+  );
+  return rows;
+}
+
+/**
+ * Get reminders that were due this week (fired or still pending within range).
+ * Uses remind_at date as a proxy for "completed this week".
+ */
+async function getRemindersDueInRange(userId, fromDate, toDate) {
+  const { rows } = await pool.query(
+    `SELECT * FROM reminders
+     WHERE user_id = $1
+       AND remind_at >= $2 AND remind_at < $3
+     ORDER BY remind_at ASC`,
+    [String(userId), fromDate, toDate]
+  );
+  return rows;
+}
+
+/**
+ * Get upcoming reminders for the next 7 days.
+ */
+async function getUpcomingRemindersNextWeek(userId, fromDate, toDate) {
+  const { rows } = await pool.query(
+    `SELECT * FROM reminders
+     WHERE user_id = $1
+       AND remind_at >= $2 AND remind_at < $3
+       AND status = 'pending'
+     ORDER BY remind_at ASC`,
+    [String(userId), fromDate, toDate]
+  );
+  return rows;
+}
+
 module.exports = {
   pool,
   ensureUser,
@@ -280,4 +325,7 @@ module.exports = {
   setFact,
   getAllFacts,
   getFullMemory,
+  getNotesSince,
+  getRemindersDueInRange,
+  getUpcomingRemindersNextWeek,
 };

@@ -42,6 +42,21 @@ function startScheduler(bot) {
       console.error('Morning briefing error:', err.message);
     }
   });
+
+  // ── Weekly Review: Sunday evening (default 8:00 PM) ───────────────────
+  const reviewTime = process.env.WEEKLY_REVIEW_TIME || '20:00';
+  const [revHour, revMinute] = reviewTime.split(':').map(n => parseInt(n, 10));
+  // Sunday = 0 in cron. Run at specified time on Sundays.
+  const reviewCronExpr = `${revMinute} ${revHour} * * 0`;
+  console.log(`📊 Weekly review scheduled for Sunday at ${reviewTime}`);
+
+  cron.schedule(reviewCronExpr, async () => {
+    try {
+      await sendWeeklyReview();
+    } catch (err) {
+      console.error('Weekly review error:', err.message);
+    }
+  });
 }
 
 /**
@@ -167,4 +182,118 @@ async function sendMorningBriefing() {
   }
 }
 
-module.exports = { startScheduler, buildBriefingMessage };
+/**
+ * Build the weekly review message.
+ * Summarizes notes, reminders fired, and upcoming week.
+ * @returns {Promise<string>}
+ */
+async function buildWeeklyReview() {
+  const userId = String(process.env.TELEGRAM_OWNER_ID);
+  if (!userId) return '';
+
+  const tz = process.env.TIMEZONE || 'UTC';
+  const now = dayjs();
+
+  // ── Date ranges ──────────────────────────────────────────────────────
+  const startOfWeek = now.startOf('week');  // Sunday 00:00
+  const endOfWeek = now.endOf('week');      // Saturday 23:59
+  const startOfNextWeek = endOfWeek.add(1, 'second');
+  const endOfNextWeek = startOfNextWeek.add(7, 'day');
+
+  const weekLabel = fmt(startOfWeek.toDate(), 'D MMM') + ' – ' + fmt(endOfWeek.toDate(), 'D MMM YYYY');
+  const nextWeekLabel = fmt(startOfNextWeek.toDate(), 'D MMM') + ' – ' + fmt(endOfNextWeek.toDate(), 'D MMM YYYY');
+
+  const [notes, weekReminders, nextWeekReminders, userName] = await Promise.all([
+    db.getNotesSince(userId, startOfWeek.toISOString()),
+    db.getRemindersDueInRange(userId, startOfWeek.toISOString(), endOfWeek.toISOString()),
+    db.getUpcomingRemindersNextWeek(userId, startOfNextWeek.toISOString(), endOfNextWeek.toISOString()),
+    db.getUserName(userId),
+  ]);
+
+  const name = userName || 'Boss';
+  let message = '📊 *Weekly Review*\n' + escapeMd(weekLabel) + '\n\n';
+  message += 'Hey ' + escapeMd(name) + ', here\'s your week in review:\n\n';
+
+  // ── Notes saved this week ────────────────────────────────────────────
+  if (notes.length > 0) {
+    message += '*📝 Notes Saved (' + notes.length + '):*\n';
+    notes.forEach(n => {
+      const date = fmt(n.created_at, 'ddd, D MMM');
+      message += '• ' + escapeMd(n.content.length > 60 ? n.content.substring(0, 60) + '…' : n.content) + ' _(' + date + ')_\n';
+    });
+    message += '\n';
+  } else {
+    message += '*📝 Notes:* None this week\n\n';
+  }
+
+  // ── Reminders this week ──────────────────────────────────────────────
+  const fired = weekReminders.filter(r => r.status === 'sent');
+  const missed = weekReminders.filter(r => r.status === 'pending');
+  const cancelled = weekReminders.filter(r => r.status === 'cancelled');
+
+  if (weekReminders.length > 0) {
+    message += '*⏰ Reminders This Week:*\n';
+    if (fired.length > 0) {
+      message += '✅ *Completed:*\n';
+      fired.forEach(r => {
+        message += '  • ' + escapeMd(r.text) + '\n';
+      });
+    }
+    if (missed.length > 0) {
+      message += '⚠️ *Missed:*\n';
+      missed.forEach(r => {
+        const t = fmt(r.remind_at, 'ddd, h:mm A');
+        message += '  • ' + escapeMd(r.text) + ' _(' + t + ')_\n';
+      });
+    }
+    if (cancelled.length > 0) {
+      message += '❌ *Cancelled:* ' + cancelled.length + '\n';
+    }
+    message += '\n';
+  } else {
+    message += '*⏰ Reminders:* None this week\n\n';
+  }
+
+  // ── Coming next week ─────────────────────────────────────────────────
+  if (nextWeekReminders.length > 0) {
+    message += '*🔜 Coming Next Week (' + nextWeekLabel + '):*\n';
+    nextWeekReminders.forEach(r => {
+      const t = fmt(r.remind_at, 'ddd, h:mm A');
+      const rec = r.recurrence ? ' 🔁' : '';
+      message += '• ' + escapeMd(r.text) + ' — ' + t + rec + '\n';
+    });
+    message += '\n';
+  } else {
+    message += '*🔜 Next Week:* Nothing scheduled yet\n\n';
+  }
+
+  // ── Stats ────────────────────────────────────────────────────────────
+  const totalActions = notes.length + fired.length;
+  message += '📈 *This Week\'s Stats:*\n';
+  message += '• ' + notes.length + ' notes saved\n';
+  message += '• ' + fired.length + ' reminders completed\n';
+  if (missed.length > 0) {
+    message += '• ' + missed.length + ' missed ⚠️\n';
+  }
+  message += '\n_Great job! Keep it up next week! 💪_';
+
+  return message;
+}
+
+/**
+ * Send the weekly review to the owner.
+ */
+async function sendWeeklyReview() {
+  if (!botInstance) return;
+
+  try {
+    const message = await buildWeeklyReview();
+    if (!message) return;
+    await safeSendMessage(botInstance, String(process.env.TELEGRAM_OWNER_ID), message);
+    console.log('📊 Weekly review sent');
+  } catch (err) {
+    console.error('Weekly review failed:', err.message);
+  }
+}
+
+module.exports = { startScheduler, buildBriefingMessage, buildWeeklyReview };
