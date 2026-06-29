@@ -48,7 +48,7 @@ User
 ## ✅ What it can do
 
 | You say...                            | Jarvis does...                                                      |
-| ------------------------------------- | ------------------------------------------------------------------- | ----- | -------- | ----- | ----------- |
+| ------------------------------------- | ------------------------------------------------------------------- |
 | "Remind me to call mum at 6pm"        | Creates a reminder, pings you with `[✅ Done] [🔁 Snooze]` buttons  |
 | "Cancel my call mum reminder"         | Cancels the matching reminder by ID                                 |
 | "Move my gym reminder to 8am"         | Updates the reminder time                                           |
@@ -77,7 +77,7 @@ User
 | `/review`                             | 📊 Weekly review — notes, completed tasks, upcoming week            |
 | `/reflect`                            | 🧘 Daily reflection — patterns, changes, suggestions                |
 | `/patterns`                           | 🔍 View detected behavioral patterns (usage, topics, trends)        |
-| `/patterns usage`                     | Filter patterns by type: usage                                      | topic | behavior | trend | correlation |
+| `/patterns usage`                     | Filter patterns by type: usage, topic, behavior, trend, correlation |
 | `/reminders`                          | Lists upcoming reminders with `[❌ Cancel]` buttons                 |
 | `/tasks`                              | 📋 Lists all active tasks sorted by priority                        |
 | `/goals`                              | 🎯 Shows all goals with progress bars                               |
