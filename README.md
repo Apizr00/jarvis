@@ -609,11 +609,11 @@ Jarvis has a sophisticated memory architecture:
 - ✅ Daily reflection (`/reflect` + auto 10PM)
 - ✅ Task management (status tracking, priority, inline buttons)
 - ✅ Goal management (progress tracking, target dates)
+- ✅ Pattern recognition (dedicated non-LLM: usage, topic, behavior, trend, correlation)
+- ✅ Relationship memory (dedicated table for people you mention)
 
 ### ⬜ Fasa 3 — Future
 
-- ⬜ Pattern recognition (dedicated system beyond LLM reflection)
-- ⬜ Relationship memory (dedicated table for people you mention)
 - ⬜ Document input (PDF, images, location)
 - ⬜ Habit tracking with streaks
 - ⬜ Expense tracking

@@ -1155,7 +1155,7 @@ async function createBot() {
         relationships.extractPeopleFromChat(userId, text, llmResponse.content, llm.chat);
 
         // �🔍 Track for pattern recognition (fire-and-forget)
-        patterns.trackMessage(userId, { role: 'user', content: msg.text });
+        patterns.trackMessage(userId, { role: 'user', content: text });
         patterns.trackMessage(userId, { role: 'assistant', content: llmResponse.content });
 
       } else if (llmResponse.type === 'tool') {
@@ -1201,7 +1201,7 @@ async function createBot() {
           // � Auto-extract people mentioned (fire-and-forget)
           relationships.extractPeopleFromChat(userId, text, result.message, llm.chat);
           // �🔍 Track for pattern recognition (fire-and-forget)
-          patterns.trackMessage(userId, { role: 'user', content: msg.text });
+          patterns.trackMessage(userId, { role: 'user', content: text });
           patterns.trackMessage(userId, { role: 'assistant', content: result.message });
           return; // Done — wait for user to click button or type "ya"
         }
@@ -1358,7 +1358,7 @@ async function createBot() {
         relationships.extractPeopleFromChat(userId, text, finalResult, llm.chat);
 
         // �🔍 Track for pattern recognition (fire-and-forget)
-        patterns.trackMessage(userId, { role: 'user', content: msg.text });
+        patterns.trackMessage(userId, { role: 'user', content: text });
         patterns.trackMessage(userId, {
           role: 'assistant',
           content: finalResult,

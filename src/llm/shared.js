@@ -112,6 +112,16 @@ function normalizeLLMResponse(parsed) {
     }
   }
 
+  // Edge case: extraction/memory response formats like {"people":[]} or {"facts":[]}
+  // These are valid responses from auto-extraction LLM calls — treat as messages
+  // so the extraction functions can parse them.
+  if (keys.length === 1) {
+    const onlyKey = keys[0].toLowerCase();
+    if (onlyKey === 'people' || onlyKey === 'facts') {
+      return { type: 'message', content: JSON.stringify(parsed) };
+    }
+  }
+
   return null;
 }
 
