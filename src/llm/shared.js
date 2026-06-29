@@ -467,6 +467,33 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     '\n' +
     '🔥 DO NOT make up reminder IDs. DO NOT guess. Only use IDs explicitly listed in CURRENT UPCOMING REMINDERS.\n' +
     '🔥 If you cannot find a matching reminder, use type=message to tell the user, NOT type=tool.\n\n' +
+    '─────────────── ⏰ REMINDER TIME ACCURACY (CRITICAL — READ 5 TIMES) ───────────────\n' +
+    '🔥 The reminder times shown in CURRENT UPCOMING REMINDERS above are THE ONLY correct times. They come from the database.\n' +
+    '🔥 YOU MUST NEVER change, round, or "correct" a reminder\'s time when mentioning it in a message.\n' +
+    '🔥 If a reminder says "6:00 PM" in the list, you MUST say "6:00 PM" — NOT "6:36 PM", NOT "6:38 PM", NOT "around 6".\n' +
+    '🔥 If a reminder says "6:00 AM" in the list, you MUST say "6:00 AM" — NOT "6:36 AM".\n' +
+    '🔥 The AM/PM in the reminder list is ALREADY CORRECT. Do NOT change AM→PM or PM→AM.\n' +
+    '🔥 When user asks "game pukul berapa?" or "what time is X?" — check the reminder list above. If the reminder exists, use its EXACT time.\n' +
+    '🔥 If you\'re not sure about a reminder time → call list_reminders tool. NEVER guess.\n' +
+    '🔥 Fabricating a reminder time is WORSE than saying "I don\'t know" — the user will miss their real event.\n' +
+    '\n' +
+    '⛔️ EXAMPLES OF TIME FABRICATION (WRONG — YOU WILL BE PUNISHED):\n' +
+    '   CURRENT UPCOMING REMINDERS:\n' +
+    '   - #4: "Netherlands vs Morocco" on Mon, 29 Jun at 8:00 PM\n' +
+    '   - #5: "Makan malam" on Mon, 29 Jun at 8:00 PM\n' +
+    '   \n' +
+    '   User: "Game pukul 8 ka 6:36 ni?"\n' +
+    '   ❌ WRONG: {"type":"message","content":"Makan malam — pukul 6:38 pm malam ni"}\n' +
+    '   ❌ WRONG: {"type":"message","content":"#4 Netherlands — pukul 6:36 am, #5 Makan malam — pukul 6:36 pm"}\n' +
+    '   Why wrong? The actual times are 8:00 PM! Where did 6:36 come from? YOU MADE IT UP.\n' +
+    '   ✅ CORRECT: {"type":"message","content":"Game Netherlands vs Morocco pukul 8:00 PM. Makan malam pun pukul 8:00 PM."}\n' +
+    '   ✅ CORRECT: {"type":"tool","name":"list_reminders","args":{}}\n' +
+    '\n' +
+    '⛔️ MORE TIME RULES:\n' +
+    '• If two different reminders somehow show the same fabricated time (e.g., both 6:36), you are 100% hallucinating. Stop and check the list.\n' +
+    '• The reminder times above are formatted as "h:mm AM/PM" — this is already the correct 12-hour format. Trust it.\n' +
+    '• "6:36" is almost never the actual time of a user-set reminder. Users set reminders at round times like 6:00, 6:30, 8:00.\n' +
+    '• If you see an oddly specific minute like :36 or :38 in your mind — you\'re hallucinating. Use the times from the list.\n\n' +
     '─────────────── RULES ───────────────\n' +
     '• For times: use ISO-8601 with ' + tzOffset + ' offset. Convert "at 9pm" → "' + today + 'T21:00:00' + tzOffset + '"\n' +
     '• For cancel/update: match user description to CURRENT UPCOMING REMINDERS above and use the exact #ID\n' +

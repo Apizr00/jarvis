@@ -1142,8 +1142,9 @@ async function createBot() {
       console.log('[Bot] LLM response type:', llmResponse.type, llmResponse.name ? '| tool=' + llmResponse.name : '');
 
       // ── Recovery: if LLM returned a message that looks like a fake action, retry once ──
-      // Expanded regex to catch common hallucination patterns in English AND Malay
-      const actionKeywords = /\b(cancelled|cancel|updated?|update|changed?|change|deleted?|delete|created?|create|saved?|save|noted?|note|remembered|remember|done|settled|settle|confirmed|dah\s*(set|buat|masuk|confirm|simpan|ingat)|reminder|event|task|goal)\b/i;
+      // Narrowed regex: only catch CLEAR hallucinated action claims, not normal conversation.
+      // A hallucinated action message typically says "I've done X" or "Done! X created" etc.
+      const actionKeywords = /\b(?:i've\s+(?:created|set|saved|added|updated|cancelled|deleted|removed|changed|recorded)|i\s+have\s+(?:created|set|saved|added)|i\s+will\s+(?:remind|create|set|save|add|cancel|delete)|dah\s+(?:set|buat|masuk|confirm|simpan|ingat|create|save|cancel|delete|tambah|jadual|schedule)|sudah\s+(?:set|create|tambah|save|cancel|delete)|telah\s+(?:set|create|tambah|save|cancel)|akan\s+(?:set|create|tambah|ingatkan)|all\s+set|got\s+it|done!|siap\s+dah|okay\s+dah)\b/i;
       if (llmResponse.type === 'message' && actionKeywords.test(llmResponse.content)) {
         console.log('[Bot] ⚠️  LLM hallucinated an action! Retrying with correction...');
         const correctionMsg = '❌ You responded with natural language claiming you did something. ' +
@@ -1164,9 +1165,40 @@ async function createBot() {
       // If LLM returns a message that looks like a formatted reminder list,
       // replace it with the actual tool call to get correct times from DB.
       if (llmResponse.type === 'message') {
-        const fakeListPattern = /upcoming\s*reminders|⏰.*reminder|reminder.*#\d+|•.*#\d+.*—/i;
-        if (fakeListPattern.test(llmResponse.content)) {
+        const content = llmResponse.content;
+
+        // Pattern 1: "#4 - Text — pukul X:XX am", "#5 — Text", bullet lists
+        const pattern1 = /(?:^|\n)\s*#\d+\s*[-–—]|upcoming\s*reminders|⏰.*reminder|reminder.*#\d+|•.*#\d+/im;
+
+        // Pattern 2: Numbered list with date+time — "1. Text — 29 Jun 2026, 7:15 pm"
+        const pattern2 = /(?:^|\n)\s*\d+\.\s+.+?\s*[-–—]\s*\d{1,2}\s+\w{3}\s+\d{4}\s*,?\s*\d{1,2}:\d{2}/im;
+
+        // Pattern 3: Multiple "X. Text — time" format (two or more numbered items)
+        const numberedItems = content.match(/(?:^|\n)\s*(\d+)\.\s+.+?[-–—].+?(?:\n|$)/gi);
+        const hasMultipleNumberedItems = numberedItems && numberedItems.length >= 2;
+
+        // Pattern 4: Content mentions "reminder" AND has multiple lines with dash-separated times
+        const hasReminderWord = /\breminder(s)?\b/i.test(content);
+        const timeEntries = content.match(/\d{1,2}[:.]\d{2}\s*(?:am|pm|AM|PM)/g);
+        const hasMultipleTimes = timeEntries && timeEntries.length >= 2;
+
+        const looksLikeReminderList =
+          pattern1.test(content) ||
+          pattern2.test(content) ||
+          hasMultipleNumberedItems ||
+          (hasReminderWord && hasMultipleTimes);
+
+        // Also check: does the message mention multiple #numbers (like #4, #5)?
+        const hashIdMatches = content.match(/#(\d+)/g);
+        const hasMultipleHashIds = hashIdMatches && hashIdMatches.length >= 2;
+
+        if (looksLikeReminderList || hasMultipleHashIds) {
           console.log('[Bot] ⚠️ LLM hallucinated reminder list! Replacing with real list_reminders tool call.');
+          console.log('[Bot]    Detected by: pattern1=' + pattern1.test(content) +
+            ' pattern2=' + pattern2.test(content) +
+            ' numberedItems=' + hasMultipleNumberedItems +
+            ' reminderWord+times=' + (hasReminderWord && hasMultipleTimes) +
+            ' hashIds=' + hasMultipleHashIds);
           llmResponse = { type: 'tool', name: 'list_reminders', args: {} };
         }
       }

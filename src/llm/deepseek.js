@@ -84,10 +84,16 @@ async function chat(userId, userMessage, conversationHistory, options = {}) {
       const validation = validator.validateLLMResponse(normalized, {
         timezone: process.env.TIMEZONE || 'UTC',
         userFacts: facts,
+        upcomingReminders: upcomingReminders,
       });
 
       if (!validation.isValid && normalized.type === 'message') {
         console.warn('[DeepSeek] ⚠️ Hallucination detected:', validation.issues.join('; '));
+        // If reminder fabrication, force list_reminders tool call instead of fallback message
+        if (validation.forceToolCall) {
+          console.log('[DeepSeek] 🔄 Forcing list_reminders tool call to get accurate times');
+          return { type: 'tool', name: 'list_reminders', args: {} };
+        }
         // Override with a safe clarifying question
         const fallback = validator.generateFallbackResponse(userMessage);
         return { type: 'message', content: fallback };
@@ -127,10 +133,16 @@ async function chat(userId, userMessage, conversationHistory, options = {}) {
           const validation = validator.validateLLMResponse(normalized, {
             timezone: process.env.TIMEZONE || 'UTC',
             userFacts: facts,
+            upcomingReminders: upcomingReminders,
           });
 
           if (!validation.isValid && normalized.type === 'message') {
             console.warn('[DeepSeek] ⚠️ Hallucination detected:', validation.issues.join('; '));
+            // If reminder fabrication, force list_reminders tool call
+            if (validation.forceToolCall) {
+              console.log('[DeepSeek] 🔄 Forcing list_reminders tool call to get accurate times');
+              return { type: 'tool', name: 'list_reminders', args: {} };
+            }
             const fallback = validator.generateFallbackResponse(userMessage);
             return { type: 'message', content: fallback };
           }
