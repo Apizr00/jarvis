@@ -122,6 +122,42 @@ async function startScheduler(bot) {
     }
   });
   console.log('🔍 Pattern analysis scheduled for 11:00 PM daily');
+
+  // ── Fasa 5: Proactive check-in: every 30 minutes ─────────────────────
+  const proactive = require('../executive/proactive');
+  let proactiveTask = null;
+  if (proactiveTask) { proactiveTask.stop(); proactiveTask = null; }
+  proactiveTask = cron.schedule('*/30 * * * *', async () => {
+    try {
+      const OWNER = String(process.env.TELEGRAM_OWNER_ID);
+      if (botInstance) {
+        const sent = await proactive.maybeSendProactiveMessage(botInstance, OWNER);
+        if (sent) {
+          console.log('[Scheduler] 📤 Proactive message sent');
+        }
+      }
+    } catch (err) {
+      console.error('[Scheduler] Proactive error:', err.message);
+    }
+  });
+  console.log('💬 Proactive check-in scheduled for every 30 minutes');
+
+  // ── Fasa 5: Quick self-evaluation: every hour ────────────────────────
+  const evaluator = require('../executive/evaluator');
+  let evalTask = null;
+  if (evalTask) { evalTask.stop(); evalTask = null; }
+  evalTask = cron.schedule('0 * * * *', async () => {
+    try {
+      const OWNER = String(process.env.TELEGRAM_OWNER_ID);
+      const summary = evaluator.getLearningSummary(OWNER);
+      if (summary) {
+        console.log('[Scheduler] 📊 Hourly eval summary:\n' + summary);
+      }
+    } catch (err) {
+      console.error('[Scheduler] Eval error:', err.message);
+    }
+  });
+  console.log('📊 Self-evaluation summary scheduled hourly');
 }
 
 /**

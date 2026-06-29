@@ -18,54 +18,23 @@
 //        → Executive.execute() → routes to fast/medium/deep handler
 //        → Response
 
-const { detectIntent } = require('../llm/intent');
+const { detectIntentAdvanced } = require('./intent-engine');
 const workingMemory = require('./working-memory');
+const worldModelModule = require('./world-model');
+const planner = require('./planner');
+const evaluator = require('./evaluator');
 const db = require('../db');
 const memory = require('../memory');
 const relationships = require('../memory/relationships');
 
 // ── 1. World Model ──────────────────────────────────────────────────────────
-// Tracks the user's current state — simpler and faster than full memory retrieval.
-// Updated on every message.
+// Delegated to world-model.js (Fasa 2 enhanced)
 
-const worldModel = new Map();
+const worldModel = worldModelModule;
 
-const WORLD_MODEL_DEFAULTS = {
-  status: 'unknown',          // working, busy, free, sleeping
-  currentProject: '',         // what they're building/working on
-  interests: [],              // current interests/topics
-  budget: '',                 // budget concern level
-  lastTopic: '',              // last discussed topic
-  messageCount: 0,
-  lastActive: null,
-};
-
-function getWorldModel(userId) {
-  if (!worldModel.has(userId)) {
-    worldModel.set(userId, { ...WORLD_MODEL_DEFAULTS });
-  }
-  return worldModel.get(userId);
-}
-
-function updateWorldModel(userId, updates = {}) {
-  const wm = getWorldModel(userId);
-  Object.assign(wm, updates);
-  wm.messageCount++;
-  wm.lastActive = new Date().toISOString();
-}
-
-function formatWorldModelForPrompt(userId) {
-  const wm = getWorldModel(userId);
-  const parts = [];
-
-  if (wm.status && wm.status !== 'unknown') parts.push('Status: ' + wm.status);
-  if (wm.currentProject) parts.push('Project: ' + wm.currentProject);
-  if (wm.interests.length > 0) parts.push('Interests: ' + wm.interests.slice(0, 3).join(', '));
-  if (wm.budget) parts.push('Budget: ' + wm.budget);
-  if (wm.lastTopic) parts.push('Last topic: ' + wm.lastTopic);
-
-  return parts.length > 0 ? 'USER STATE ────────────────────────\n' + parts.join('\n') : '';
-}
+function getWorldModel(userId) { return worldModel.get(userId); }
+function updateWorldModel(userId, updates) { return worldModel.update(userId, updates); }
+function formatWorldModelForPrompt(userId) { return worldModel.formatForPrompt(userId); }
 
 // ── 2. Needs Assessment ─────────────────────────────────────────────────────
 
@@ -75,8 +44,9 @@ function formatWorldModelForPrompt(userId) {
  */
 function assessNeeds(intent, userMessage) {
   const lower = userMessage.toLowerCase();
+  const category = intent.category || '';
 
-  // Default needs by tier
+  // Default needs by tier + category
   const needs = {
     memory: false,
     tools: false,
@@ -86,20 +56,21 @@ function assessNeeds(intent, userMessage) {
     followUp: false,
     workingMemory: false,
     worldModel: false,
+    domains: false,        // Fasa 3: structured domains
+    selfEval: false,       // Fasa 5: self-evaluation
   };
 
   switch (intent.tier) {
     case 'fast':
-      // Fast: nothing needed. Direct answer.
-      needs.worldModel = true; // still update world model
+      needs.worldModel = true;
       return needs;
 
     case 'medium':
       needs.memory = true;
       needs.relationships = true;
       needs.worldModel = true;
+      needs.domains = true; // include domain context
 
-      // Check for internet-implied keywords
       if (/\b(berita|news|terkini|latest|trend|cuaca|weather|saham|stock|harga|price)\b/i.test(lower)) {
         needs.internet = true;
       }
@@ -113,14 +84,21 @@ function assessNeeds(intent, userMessage) {
       needs.followUp = true;
       needs.workingMemory = true;
       needs.worldModel = true;
+      needs.domains = true;
+      needs.selfEval = true; // evaluate response quality
 
-      // Check for internet-implied keywords
       if (/\b(cari|search|google|berita|news|terkini|research|kaji|check|semak)\b/i.test(lower)) {
         needs.internet = true;
+      }
+
+      // Planning-specific
+      if (category === 'task_planning' || category === 'task_goal' || category === 'task_project') {
+        needs.planning = true;
       }
       return needs;
 
     default:
+      needs.worldModel = true;
       return needs;
   }
 }
@@ -143,37 +121,51 @@ function assessNeeds(intent, userMessage) {
  * }>}
  */
 async function decide(userId, userMessage) {
-  // ── Step 1: Detect intent ──────────────────────────────────────────────
-  const intent = detectIntent(userMessage);
+  // ── Step 1: Advanced intent detection (Fasa 1) ──────────────────────────
+  const wm = workingMemory.get(userId);
+  const context = {
+    workingMemory: wm,
+    recentMessages: [], // populated by bot if available
+  };
 
-  // ── Step 2: Check working memory — if user is mid-task, escalate to deep ──
+  const intent = detectIntentAdvanced(userMessage, context);
+
+  // ── Step 2: Context-aware escalation ────────────────────────────────────
   const wmActive = workingMemory.isActive(userId);
-  if (wmActive && intent.tier === 'medium') {
-    // User is mid-task but asking something casual? Keep medium.
-    // Only escalate if the message relates to the active task.
-    const wm = workingMemory.get(userId);
-    const taskWords = [wm.currentGoal, wm.currentProblem]
-      .filter(Boolean)
-      .flatMap(s => s.toLowerCase().split(/\s+/));
-
-    const overlap = taskWords.filter(w => userMessage.toLowerCase().includes(w)).length;
-    if (overlap >= 2) {
-      intent.tier = 'deep';
-      intent.reason = 'mid-task continuation (working memory active)';
-    }
+  if (intent.needsEscalation && intent.tier !== 'deep') {
+    intent.tier = 'deep';
+    intent.reason = intent.escalationReason || intent.reason;
   }
 
-  // ── Step 3: Assess needs ───────────────────────────────────────────────
+  // ── Step 3: Urgency override ───────────────────────────────────────────
+  if (intent.isUrgent && intent.urgencyConfidence > 0.7 && intent.tier !== 'deep') {
+    intent.tier = 'deep';
+    intent.reason = 'urgent: ' + intent.reason;
+  }
+
+  // ── Step 4: Assess needs (Fasa 2 enhanced) ─────────────────────────────
   const needs = assessNeeds(intent, userMessage);
 
-  // ── Step 4: Select provider ────────────────────────────────────────────
+  // ── Step 5: Select provider ────────────────────────────────────────────
   const provider = intent.tier === 'deep' ? 'deepseek' : 'mimo';
 
-  // ── Step 5: Touch working memory (increments counter) ──────────────────
+  // ── Step 6: Touch working memory ─────────────────────────────────────
   workingMemory.touch(userId);
 
-  // ── Step 6: Update world model (basic tracking) ────────────────────────
-  updateWorldModel(userId, { lastTopic: userMessage.slice(0, 80) });
+  // ── Step 7: Update world model (Fasa 2) ──────────────────────────────
+  const worldUpdates = {
+    lastTopic: userMessage.slice(0, 80),
+    lastMood: intent.mood,
+    lastCategory: intent.category,
+    lastLanguage: intent.language,
+  };
+  updateWorldModel(userId, worldUpdates);
+
+  // ── Step 8: Evaluate if proactive check needed (Fasa 5) ──────────────
+  let proactiveSuggestion = null;
+  if (intent.tier === 'deep' || intent.mood === 'motivated' || intent.category === 'task_goal') {
+    proactiveSuggestion = evaluator.generateProactiveSuggestion(userId, wm, intent);
+  }
 
   return {
     tier: intent.tier,
@@ -181,9 +173,13 @@ async function decide(userId, userMessage) {
     provider,
     intent,
     workingMemoryActive: wmActive,
-    workingMemoryState: wmActive ? workingMemory.get(userId) : null,
+    workingMemoryState: wmActive ? wm : null,
     worldModelState: getWorldModel(userId),
     reason: intent.reason,
+    proactiveSuggestion,
+    mood: intent.mood,
+    language: intent.language,
+    category: intent.category,
   };
 }
 
@@ -256,27 +252,33 @@ function decidePostProcessing(decision, llmResponse) {
   const actions = {
     extractFacts: false,
     extractPeople: false,
-    trackPatterns: true,       // always track
+    trackPatterns: true,
     updateWorkingMemory: false,
-    scheduleReflection: false, // check if reflection needed
+    updateDomains: false,        // Fasa 3
+    scheduleReflection: false,
+    runSelfEval: false,          // Fasa 5
+    suggestProactive: false,     // Fasa 5: proactive chat
   };
 
   switch (decision.tier) {
     case 'fast':
-      // Fast: only track patterns, nothing else
       break;
 
     case 'medium':
       actions.extractFacts = true;
       actions.extractPeople = true;
+      actions.updateDomains = true;
       break;
 
     case 'deep':
       actions.extractFacts = true;
       actions.extractPeople = true;
       actions.updateWorkingMemory = true;
+      actions.updateDomains = true;
+      actions.runSelfEval = true;        // Fasa 5
+      actions.suggestProactive = true;   // Fasa 5
 
-      // Check if we should trigger reflection (every 10 deep messages)
+      // Check if reflection should be triggered
       const wm = workingMemory.get('SYSTEM_REFLECTION_COUNTER');
       const count = (wm?.messageCount || 0) + 1;
       if (count >= 10) {
@@ -295,7 +297,11 @@ module.exports = {
   buildContext,
   decidePostProcessing,
   workingMemory,
+  worldModel,
+  planner,
+  evaluator,
   getWorldModel,
   updateWorldModel,
   formatWorldModelForPrompt,
+  detectIntentAdvanced,
 };
