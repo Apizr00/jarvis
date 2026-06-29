@@ -4,6 +4,15 @@ A self-hosted personal AI assistant that lives in your Telegram. Talk to it natu
 
 **Stack:** Node.js · PostgreSQL · Redis (optional) · DeepSeek + Xiaomi MiMo · Telegram Bot API
 
+## ✨ Highlights
+
+- **🧠 Pattern Recognition** — Dedicated non-LLM system that detects usage patterns, topic themes, behavioral trends, and time-topic correlations — all algorithmically, zero API cost.
+- **👥 Relationship Memory** — Dedicated table for people you mention. Auto-extracts names, relationships, and context from conversations so the bot knows who's who.
+- **🎤 Voice Messages** — Send a voice note, transcribed via OpenAI Whisper, processed like a text message.
+- **🌐 Web Search** — Ask about current events, stock prices, or anything real-time — summarized in your language.
+- **📊 Weekly Reviews** — Auto-generated every Sunday with stats, completed reminders, and upcoming week.
+- **🧘 Daily Reflection** — LLM-generated end-of-day summary with patterns, changes, and suggestions.
+
 ---
 
 ## 🏗️ Architecture
@@ -11,24 +20,27 @@ A self-hosted personal AI assistant that lives in your Telegram. Talk to it natu
 ```
 User
   │
-  ▼ Conversation
+  ▼ Conversation (text + voice)
   │
   ▼ Reasoning (LLM — DeepSeek / MiMo)
   │
   ├── Short-term Memory (10 recent msgs — RAM + DB persistent)
-  ├── Long-term Memory (memory_facts with confidence scoring)
-  ├── Episodic Memory (chat_history searchable)
+  ├── Long-term Memory (memory_facts with confidence scoring + conflict detection)
+  ├── Relationship Memory (people you mention — names, relationships, context)
+  ├── Episodic Memory (chat_history searchable by keyword)
   ├── Knowledge Base (notes + semantic memory search RAG)
   ├── User Profile (settings, personality, timezone, language)
-  ├── Goals & Tasks (status tracking, progress bars)
+  ├── Goals & Tasks (status tracking, progress bars, priority levels)
   │
-  ▼ Memory Retrieval (semantic search — only relevant facts sent to LLM)
+  ▼ Memory Retrieval (hybrid scoring: keyword + confidence + recency)
   │
-  ▼ Tool Calling (create_reminder, add_note, create_task, etc.)
+  ▼ Tool Calling (create_reminder, add_note, create_task, save_relationship, etc.)
   │
-  ▼ Scheduler / Actions (cron: reminders, briefing, reflection, cleanup)
+  ▼ Scheduler / Actions (cron: reminders, briefing, review, reflection, pattern analysis, cleanup)
   │
-  ▼ Reflection & Learning (daily reflection, pattern recognition, memory cleanup)
+  ▼ Pattern Recognition (dedicated non-LLM: usage, topic, behavior, trend, correlation)
+  │
+  ▼ Learning (auto-extract facts + people from every conversation)
 ```
 
 ---
@@ -36,7 +48,7 @@ User
 ## ✅ What it can do
 
 | You say...                            | Jarvis does...                                                      |
-| ------------------------------------- | ------------------------------------------------------------------- |
+| ------------------------------------- | ------------------------------------------------------------------- | ----- | -------- | ----- | ----------- |
 | "Remind me to call mum at 6pm"        | Creates a reminder, pings you with `[✅ Done] [🔁 Snooze]` buttons  |
 | "Cancel my call mum reminder"         | Cancels the matching reminder by ID                                 |
 | "Move my gym reminder to 8am"         | Updates the reminder time                                           |
@@ -53,19 +65,26 @@ User
 | "What are my goals?"                  | Shows goals with progress bars                                      |
 | "What's my day?" / `/today`           | Shows today's events + reminders + tasks                            |
 | "What do you know about me?"          | Shows stored facts with confidence scores                           |
+| "My wife Sarah is a doctor"           | Auto-extracts person into relationship memory 👥                    |
+| "Who do I know?" / `/people`          | Lists all remembered people with relationships & context            |
+| "/person Sarah"                       | Searches for a specific person by name                              |
 | "What did we talk about last week?"   | Searches past conversations (episodic memory)                       |
 | "Motivate me" / "Give me a quote"     | Fetches a motivational quote from ZenQuotes                         |
-| "Search for latest AI news"           | Performs a web search and summarizes results                        |
+| "Search for latest AI news"           | Performs a web search and summarizes results in your language       |
 | 🎤 Send a voice message               | Transcribes via Whisper AI and responds normally                    |
 | "What's the weather?"                 | Shows current weather for your configured location                  |
 | `/briefing`                           | 🌅 Morning briefing — weather, quote, today's schedule              |
 | `/review`                             | 📊 Weekly review — notes, completed tasks, upcoming week            |
 | `/reflect`                            | 🧘 Daily reflection — patterns, changes, suggestions                |
+| `/patterns`                           | 🔍 View detected behavioral patterns (usage, topics, trends)        |
+| `/patterns usage`                     | Filter patterns by type: usage                                      | topic | behavior | trend | correlation |
 | `/reminders`                          | Lists upcoming reminders with `[❌ Cancel]` buttons                 |
 | `/tasks`                              | 📋 Lists all active tasks sorted by priority                        |
 | `/goals`                              | 🎯 Shows all goals with progress bars                               |
 | `/notes`                              | Last 10 notes                                                       |
 | `/memory`                             | All stored facts about you                                          |
+| `/people`                             | 👥 All remembered people & their relationships                      |
+| `/person <name>`                      | 🔍 Search for a specific person by name                             |
 | `/history <keyword>`                  | 🔍 Search past conversations                                        |
 | `/verify`                             | ⚠️ Review & resolve conflicting facts                               |
 | `/settings`                           | View current bot name, personality, times, location                 |
@@ -86,7 +105,67 @@ All setting changes ask for **confirmation** with `[✅ Ya] [❌ Batal]` buttons
 
 ---
 
-## 📋 Requirements
+## � Pattern Recognition (Non-LLM)
+
+Jarvis has a **dedicated pattern recognition system** that runs entirely without LLM — algorithmically detecting patterns from your usage data. This means zero API cost and instant results.
+
+### 5 Pattern Categories
+
+| Category           | What it detects                                                                                                                                                                  |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 📊 **Usage**       | Peak activity hours, preferred days, weekday/weekend split, consistency, activity trends                                                                                         |
+| 💬 **Topic**       | Frequently discussed keywords, thematic groups (work, health, social, finance, tech...), co-occurring word clusters, language mix (EN/BM), message complexity                    |
+| 🔄 **Behavior**    | Reminder categories (work, health, family...), reminder time clustering, task completion rate, priority distribution, note-taking frequency, favorite features, goal achievement |
+| 📈 **Trend**       | Activity spikes/dips, engagement growth/decline, reminder adherence, task backlog, new feature adoption                                                                          |
+| 🔗 **Correlation** | Time-of-day ↔ topic correlations (e.g. "work topics discussed in mornings", "entertainment in evenings")                                                                         |
+
+### How it works
+
+- **Incremental tracking** — Every message is tracked with extracted keywords. Lightweight analysis runs every 10 messages.
+- **Daily full analysis** — Scheduled at 11 PM. Runs all detectors across 30 days of data.
+- **Confidence-scored** — Each pattern has a 0-1 confidence, displayed as a visual bar (e.g. `████░ 85%`).
+- **Self-cleaning** — Patterns expire after 7 days if not re-confirmed by new data.
+
+### Commands
+
+- `/patterns` — View all detected patterns
+- `/patterns usage|topic|behavior|trend|correlation` — Filter by type
+
+---
+
+## 👥 Relationship Memory
+
+A dedicated table for **people you mention** in conversations. Unlike facts (which are about YOU), this is about **others** — family, friends, colleagues, anyone.
+
+### Auto-Extraction
+
+Every time you chat, the LLM scans for people mentioned:
+
+- _"My wife Sarah is a doctor"_ → Extracts: Sarah, wife, works as a doctor
+- _"Meeting with boss Rahman tomorrow"_ → Extracts: Rahman, boss
+- _"Call mum later"_ → Extracts: mum, family
+
+Extracted data flows into the system prompt, so the LLM **already knows who these people are** when you reference them later.
+
+### What's stored per person
+
+| Field           | Example                                                |
+| --------------- | ------------------------------------------------------ |
+| `name`          | Sarah                                                  |
+| `relationship`  | wife                                                   |
+| `context`       | Sarah is the user's wife, she works as a doctor at HKL |
+| `confidence`    | 0.9                                                    |
+| `mention_count` | 5                                                      |
+
+### Commands
+
+- `/people` — List all remembered people with relationships
+- `/person Sarah` — Search for a specific person
+- Or naturally: _"Remember that Ali is my project manager"_ (uses `save_relationship` tool)
+
+---
+
+## �📋 Requirements
 
 - Node.js **v18+**
 - PostgreSQL **v14+** (local or remote)
@@ -335,30 +414,39 @@ jarvis/
 │   │   └── index.js      # Telegram bot, message handling, commands
 │   ├── llm/
 │   │   ├── index.js      # LLM Router (DeepSeek → MiMo fallback)
-│   │   ├── shared.js     # Shared system prompt builder
+│   │   ├── shared.js     # Shared system prompt builder + tool normalization
 │   │   ├── deepseek.js   # DeepSeek API provider (primary)
 │   │   ├── mimo.js       # Xiaomi MiMo API provider (backup)
 │   │   └── whisper.js    # OpenAI Whisper voice transcription
 │   ├── tools/
-│   │   ├── index.js      # Tool executor (reminders, events, notes, tasks, goals, etc.)
+│   │   ├── index.js      # Tool executor (reminders, events, notes, tasks, goals, config, relationships, etc.)
 │   │   ├── quote.js      # Random motivational quote fetcher (ZenQuotes)
 │   │   ├── search.js     # Web search via Tavily API
 │   │   └── weather.js    # Current weather fetcher (OpenWeatherMap)
 │   ├── memory/
-│   │   └── index.js      # Semantic search (RAG), auto-extract, confidence, reflection
+│   │   ├── index.js      # Semantic search (RAG), auto-extract facts, confidence, conflicts, reflection
+│   │   └── relationships.js  # 👥 Relationship memory — auto-extract people, search, context builder
+│   ├── patterns/         # 🔍 Dedicated non-LLM pattern recognition
+│   │   ├── index.js      # Core engine: tracking, full/incremental analysis
+│   │   ├── shared.js     # Shared utilities (keyword extraction, math, stopwords)
+│   │   └── detectors/
+│   │       ├── usage.js      # Time-based patterns (peak hours, days, consistency, trends)
+│   │       ├── topics.js     # Content patterns (keywords, themes, co-occurrence, language mix)
+│   │       ├── behavior.js   # Feature usage (reminders, tasks, goals, notes, tools)
+│   │       └── trends.js     # Changes over time (spikes, correlations, anomalies)
 │   ├── scheduler/
-│   │   └── index.js      # Cron: reminders + morning briefing + weekly review + cleanup + reflection
+│   │   └── index.js      # Cron: reminders + morning briefing + weekly review + cleanup + reflection + pattern analysis
 │   ├── api/
 │   │   ├── index.js      # REST API server (Express)
 │   │   └── status.js     # API health check for /status command
 │   ├── redis/
 │   │   └── index.js      # Redis cache layer (optional, auto-fallback)
 │   ├── db/
-│   │   └── index.js      # All PostgreSQL database queries (users, reminders, events, notes, facts, chat_history, tasks, goals, reflections, settings)
+│   │   └── index.js      # All PostgreSQL database queries (14 tables)
 │   └── utils/
 │       └── datetime.js   # Date/time formatting helpers (dayjs)
 ├── scripts/
-│   └── setup-db.js       # One-time DB table creation + migrations
+│   └── setup-db.js       # One-time DB table creation + migrations (14 tables)
 ├── test-all-features.js  # Comprehensive test suite (67 tests, 10 sections)
 ├── test-briefing.js      # Quick test script for morning briefing
 ├── .env.example          # Environment variable template

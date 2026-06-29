@@ -72,4 +72,26 @@ async function invalidateFactsCache(userId) {
   }
 }
 
-module.exports = { redis, connect, getFactsCache, setFactsCache, invalidateFactsCache };
+/**
+ * Increment the pattern tracking counter for a user.
+ * Used to throttle incremental analysis (run every 10 messages).
+ * Resets daily automatically via 24h TTL.
+ * @param {string} userId
+ * @returns {Promise<number>} the new count
+ */
+async function incrementTrackingCounter(userId) {
+  if (!connected) return 0;
+  try {
+    const key = 'jarvis:track_count:' + userId;
+    const count = await redis.incr(key);
+    // Set 24h expiry on first increment
+    if (count === 1) {
+      await redis.expire(key, 86400);
+    }
+    return count;
+  } catch {
+    return 0;
+  }
+}
+
+module.exports = { redis, connect, getFactsCache, setFactsCache, invalidateFactsCache, incrementTrackingCounter };

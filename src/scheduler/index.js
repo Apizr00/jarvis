@@ -7,6 +7,7 @@ const { dayjs, fmt } = require('../utils/datetime');
 const { escapeMd, safeSendMessage } = require('../tools');
 const { getWeatherSummary } = require('../tools/weather');
 const { getQuote } = require('../tools/quote');
+const patterns = require('../patterns');
 
 let botInstance = null;
 
@@ -15,6 +16,7 @@ let briefingTask = null;
 let reviewTask = null;
 let cleanupTask = null;
 let reflectionTask = null;
+let patternAnalysisTask = null;
 
 // Track recently fired reminder IDs to prevent re-firing within the poll window
 const recentlyFired = new Map();
@@ -97,6 +99,29 @@ async function startScheduler(bot) {
     }
   });
   console.log('🧘 Daily reflection scheduled for 10:00 PM');
+
+  // ── Pattern Analysis: 11:00 PM every day ─────────────────────────────
+  if (patternAnalysisTask) { patternAnalysisTask.stop(); patternAnalysisTask = null; }
+  patternAnalysisTask = cron.schedule('0 23 * * *', async () => {
+    try {
+      const OWNER = String(process.env.TELEGRAM_OWNER_ID);
+      const detectedPatterns = await patterns.runFullAnalysis(OWNER, { lookbackDays: 30 });
+
+      // Prune old tracking data (keep 60 days)
+      const db = require('../db');
+      const pruned = await db.pruneOldPatternTracking(OWNER, 60);
+      if (pruned > 0) {
+        console.log('[Scheduler] 🧹 Pattern tracking prune: removed ' + pruned + ' old entries');
+      }
+
+      if (detectedPatterns.length > 0) {
+        console.log('[Scheduler] 🔍 Pattern analysis: ' + detectedPatterns.length + ' patterns detected');
+      }
+    } catch (err) {
+      console.error('[Scheduler] Pattern analysis error:', err.message);
+    }
+  });
+  console.log('🔍 Pattern analysis scheduled for 11:00 PM daily');
 }
 
 /**

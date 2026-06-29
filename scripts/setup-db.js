@@ -110,6 +110,59 @@ async function setup() {
       created_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE(user_id, date)
     );
+
+    CREATE TABLE IF NOT EXISTS pattern_tracking (
+      id SERIAL PRIMARY KEY,
+      user_id TEXT REFERENCES users(id),
+      role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+      content TEXT,
+      keywords JSONB DEFAULT '[]',
+      tool_used TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pattern_tracking_user_time
+      ON pattern_tracking (user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS detected_patterns (
+      id SERIAL PRIMARY KEY,
+      user_id TEXT REFERENCES users(id),
+      pattern_type TEXT NOT NULL CHECK (pattern_type IN ('usage', 'topic', 'behavior', 'trend', 'correlation')),
+      name TEXT NOT NULL,
+      description TEXT,
+      confidence REAL DEFAULT 0.5,
+      data JSONB DEFAULT '{}',
+      active BOOLEAN DEFAULT TRUE,
+      detected_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(user_id, name)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_detected_patterns_user_active
+      ON detected_patterns (user_id, active, pattern_type);
+    CREATE INDEX IF NOT EXISTS idx_detected_patterns_updated
+      ON detected_patterns (updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS relationships (
+      id SERIAL PRIMARY KEY,
+      user_id TEXT REFERENCES users(id),
+      name TEXT NOT NULL,
+      relationship TEXT DEFAULT '',
+      context TEXT DEFAULT '',
+      notes TEXT DEFAULT '',
+      confidence REAL DEFAULT 0.5,
+      first_mentioned_at TIMESTAMPTZ DEFAULT NOW(),
+      last_mentioned_at TIMESTAMPTZ DEFAULT NOW(),
+      mention_count INTEGER DEFAULT 1,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(user_id, name)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_relationships_user_name
+      ON relationships (user_id, name);
+    CREATE INDEX IF NOT EXISTS idx_relationships_user_mentioned
+      ON relationships (user_id, last_mentioned_at DESC);
   `);
 
   // ── Migration: add recurrence column for existing databases ─────────────

@@ -5,6 +5,7 @@ const axios = require('axios');
 const db = require('../db');
 const redisCache = require('../redis');
 const memory = require('../memory');
+const relationships = require('../memory/relationships');
 const { buildSystemPrompt, normalizeLLMResponse } = require('./shared');
 
 const MIMO_BASE = (process.env.MIMO_BASE_URL || 'https://api.xiaomimimo.com').replace(/\/+$/, '');
@@ -24,7 +25,10 @@ async function chat(userId, userMessage, conversationHistory) {
   // Fetch upcoming reminders so the LLM can reference them by ID for update/cancel
   const upcomingReminders = await db.getUpcomingReminders(userId, 15);
 
-  const systemPrompt = await buildSystemPrompt(userId, facts, process.env.TIMEZONE || 'UTC', upcomingReminders);
+  // 👥 Get relevant people context
+  const peopleContext = await relationships.getPeopleContext(userId, userMessage, 5);
+
+  const systemPrompt = await buildSystemPrompt(userId, facts, process.env.TIMEZONE || 'UTC', upcomingReminders, peopleContext);
 
   const messages = [
     { role: 'system', content: systemPrompt }

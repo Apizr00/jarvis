@@ -646,6 +646,48 @@ async function executeTool(userId, toolCall) {
       return '✏️ *Goal updated!* — ' + escapeMd(goal.title) + (goal.progress ? ' (' + goal.progress + '%)' : '');
     }
 
+    // ── save_relationship ──────────────────────────────────────────────────
+    case 'save_relationship': {
+      if (!args.name) {
+        return 'I need a name to remember this person.';
+      }
+      const person = await db.upsertRelationship(userId, {
+        name: args.name,
+        relationship: args.relationship || '',
+        context: args.context || '',
+        notes: args.notes || '',
+        confidence: args.confidence || 0.8,
+      });
+
+      const relationEmoji = args.relationship
+        ? ({ wife: '💍', husband: '💍', spouse: '💍', family: '👪', friend: '🤝', colleague: '💼', boss: '👔', mentor: '🧑‍🏫' })[args.relationship.toLowerCase()]
+        : '';
+      const emoji = relationEmoji || '👤';
+
+      let reply =
+        emoji + ' *' + escapeMd(person.name) + '* remembered!\n\n';
+      if (person.relationship) {
+        reply += 'Relationship: _' + escapeMd(person.relationship) + '_\n';
+      }
+      if (person.context) {
+        reply += escapeMd(person.context) + '\n';
+      }
+
+      return {
+        type: 'result',
+        tool: 'save_relationship',
+        message: reply,
+        meta: { name: person.name, relationship: person.relationship },
+      };
+    }
+
+    // ── list_people ────────────────────────────────────────────────────────
+    case 'list_people': {
+      const { formatPeopleMessage } = require('../memory/relationships');
+      const allPeople = await db.getRelationships(userId, 20);
+      return formatPeopleMessage(allPeople, 'People You Know');
+    }
+
     default:
       return 'I tried to use a tool called "' + escapeMd(name) + '" but I don\'t know how to do that yet.';
   }

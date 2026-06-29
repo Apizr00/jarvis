@@ -764,6 +764,267 @@ async function getTasksByGoal(userId, goalId) {
   return rows;
 }
 
+/**
+ * Get all tasks (including completed/cancelled) for analysis.
+ * @param {string} userId
+ * @param {string} since - ISO timestamp
+ * @returns {Promise<Array>}
+ */
+async function getAllTasksForAnalysis(userId, since) {
+  const { rows } = await pool.query(
+    `SELECT * FROM tasks WHERE user_id = $1 AND created_at >= $2 ORDER BY created_at DESC`,
+    [String(userId), since]
+  );
+  return rows;
+}
+
+// ── Pattern Recognition ──────────────────────────────────────────────────────
+
+/**
+ * Save a tracking entry for incremental pattern detection.
+ * @param {string} userId
+ * @param {object} entry
+ * @param {string} entry.role - 'user' or 'assistant'
+ * @param {string} entry.content
+ * @param {Array} entry.keywords
+ * @param {string|null} entry.tool_used
+ * @param {string} entry.created_at
+ */
+async function savePatternTracking(userId, entry) {
+  await pool.query(
+    `INSERT INTO pattern_tracking (user_id, role, content, keywords, tool_used, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [
+      String(userId),
+      entry.role,
+      entry.content || '',
+      JSON.stringify(entry.keywords || []),
+      entry.tool_used || null,
+      entry.created_at || new Date().toISOString(),
+    ]
+  );
+}
+
+/**
+ * Get pattern tracking entries since a given date.
+ * @param {string} userId
+ * @param {string} since - ISO timestamp
+ * @param {number} [limit=1000]
+ * @returns {Promise<Array>}
+ */
+async function getPatternTracking(userId, since, limit = 1000) {
+  const { rows } = await pool.query(
+    `SELECT id, role, content, keywords, tool_used, created_at
+     FROM pattern_tracking
+     WHERE user_id = $1 AND created_at >= $2
+     ORDER BY created_at DESC
+     LIMIT $3`,
+    [String(userId), since, limit]
+  );
+  // Parse JSONB keywords field
+  return rows.map(r => ({
+    ...r,
+    keywords: typeof r.keywords === 'string' ? JSON.parse(r.keywords) : (r.keywords || []),
+  }));
+}
+
+/**
+ * Save detected patterns (upsert by user_id + name).
+ * @param {string} userId
+ * @param {Array} patterns - array of pattern objects
+ */
+async function saveDetectedPatterns(userId, patterns) {
+  for (const p of patterns) {
+    await pool.query(
+      `INSERT INTO detected_patterns (user_id, pattern_type, name, description, confidence, data, detected_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+       ON CONFLICT (user_id, name) DO UPDATE
+         SET description = $4, confidence = $5, data = $6, updated_at = NOW(), active = TRUE`,
+      [
+        String(userId),
+        p.pattern_type,
+        p.name,
+        p.description || null,
+        p.confidence || 0.5,
+        JSON.stringify(p.data || {}),
+      ]
+    );
+  }
+}
+
+/**
+ * Get detected patterns for a user.
+ * @param {string} userId
+ * @param {object} [options]
+ * @param {string} [options.type] - filter by pattern_type
+ * @param {number} [options.minConfidence] - minimum confidence
+ * @param {number} [options.limit=20]
+ * @returns {Promise<Array>}
+ */
+async function getDetectedPatterns(userId, options = {}) {
+  let query = `SELECT * FROM detected_patterns WHERE user_id = $1 AND active = TRUE`;
+  const params = [String(userId)];
+  let paramIdx = 2;
+
+  if (options.type) {
+    query += ` AND pattern_type = $` + paramIdx++;
+    params.push(options.type);
+  }
+  if (options.minConfidence !== undefined) {
+    query += ` AND confidence >= $` + paramIdx++;
+    params.push(options.minConfidence);
+  }
+
+  query += ` ORDER BY confidence DESC, updated_at DESC LIMIT $` + paramIdx;
+  params.push(options.limit || 20);
+
+  const { rows } = await pool.query(query, params);
+  return rows.map(r => ({
+    ...r,
+    data: typeof r.data === 'string' ? JSON.parse(r.data) : (r.data || {}),
+  }));
+}
+
+/**
+ * Mark patterns older than a TTL as inactive.
+ * @param {string} userId
+ * @param {number} ttlMs - time-to-live in milliseconds
+ * @returns {Promise<number>} number deactivated
+ */
+async function cleanupExpiredPatterns(userId, ttlMs) {
+  const cutoff = new Date(Date.now() - ttlMs).toISOString();
+  const { rowCount } = await pool.query(
+    `UPDATE detected_patterns SET active = FALSE
+     WHERE user_id = $1 AND updated_at < $2 AND active = TRUE`,
+    [String(userId), cutoff]
+  );
+  return rowCount;
+}
+
+/**
+ * Prune old pattern tracking data beyond retention period.
+ * @param {string} userId
+ * @param {number} [keepDays=60]
+ * @returns {Promise<number>}
+ */
+async function pruneOldPatternTracking(userId, keepDays = 60) {
+  const { rowCount } = await pool.query(
+    `DELETE FROM pattern_tracking
+     WHERE user_id = $1 AND created_at < NOW() - ($2 || ' days')::INTERVAL`,
+    [String(userId), String(keepDays)]
+  );
+  return rowCount;
+}
+
+// ── Relationships (People Memory) ────────────────────────────────────────────
+
+/**
+ * Add or update a person in the relationship memory.
+ * @param {string} userId
+ * @param {object} person
+ * @param {string} person.name - person's name
+ * @param {string} [person.relationship] - e.g. "friend", "colleague", "family", "spouse", "mentor"
+ * @param {string} [person.context] - short summary of how/where user knows them
+ * @param {string} [person.notes] - additional notes about this person
+ * @param {number} [person.confidence] - 0.0 to 1.0
+ * @returns {Promise<object>} the upserted row
+ */
+async function upsertRelationship(userId, { name, relationship, context, notes, confidence }) {
+  const { rows } = await pool.query(
+    `INSERT INTO relationships (user_id, name, relationship, context, notes, confidence, mention_count, first_mentioned_at, last_mentioned_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, 1, NOW(), NOW(), NOW())
+     ON CONFLICT (user_id, name) DO UPDATE
+       SET relationship = COALESCE($3, relationships.relationship),
+           context = COALESCE($4, relationships.context),
+           notes = CASE WHEN $5 IS NOT NULL AND $5 <> '' THEN $5 ELSE relationships.notes END,
+           confidence = COALESCE($6, relationships.confidence),
+           mention_count = relationships.mention_count + 1,
+           last_mentioned_at = NOW(),
+           updated_at = NOW()
+     RETURNING *`,
+    [String(userId), name, relationship || null, context || null, notes || null, confidence || null]
+  );
+  return rows[0];
+}
+
+/**
+ * Get all relationships for a user, sorted by most recently mentioned.
+ * @param {string} userId
+ * @param {number} [limit=50]
+ * @returns {Promise<Array>}
+ */
+async function getRelationships(userId, limit = 50) {
+  const { rows } = await pool.query(
+    `SELECT * FROM relationships
+     WHERE user_id = $1
+     ORDER BY last_mentioned_at DESC
+     LIMIT $2`,
+    [String(userId), limit]
+  );
+  return rows;
+}
+
+/**
+ * Get a specific person by name.
+ * @param {string} userId
+ * @param {string} name
+ * @returns {Promise<object|null>}
+ */
+async function getRelationshipByName(userId, name) {
+  const { rows } = await pool.query(
+    `SELECT * FROM relationships WHERE user_id = $1 AND LOWER(name) = LOWER($2)`,
+    [String(userId), name]
+  );
+  return rows.length > 0 ? rows[0] : null;
+}
+
+/**
+ * Delete a relationship entry.
+ * @param {string} userId
+ * @param {string} name
+ */
+async function deleteRelationship(userId, name) {
+  await pool.query(
+    `DELETE FROM relationships WHERE user_id = $1 AND LOWER(name) = LOWER($2)`,
+    [String(userId), name]
+  );
+}
+
+/**
+ * Search relationships by name or context.
+ * @param {string} userId
+ * @param {string} query
+ * @param {number} [limit=10]
+ * @returns {Promise<Array>}
+ */
+async function searchRelationships(userId, query, limit = 10) {
+  const { rows } = await pool.query(
+    `SELECT * FROM relationships
+     WHERE user_id = $1
+       AND (name ILIKE '%' || $2 || '%' OR relationship ILIKE '%' || $2 || '%' OR context ILIKE '%' || $2 || '%')
+     ORDER BY last_mentioned_at DESC
+     LIMIT $3`,
+    [String(userId), query, limit]
+  );
+  return rows;
+}
+
+/**
+ * Get people mentioned in a date range (for reflection/pattern analysis).
+ * @param {string} userId
+ * @param {string} since - ISO timestamp
+ * @returns {Promise<Array>}
+ */
+async function getRecentlyMentionedPeople(userId, since) {
+  const { rows } = await pool.query(
+    `SELECT * FROM relationships
+     WHERE user_id = $1 AND last_mentioned_at >= $2
+     ORDER BY last_mentioned_at DESC`,
+    [String(userId), since]
+  );
+  return rows;
+}
+
 module.exports = {
   pool,
   ensureUser,
@@ -815,4 +1076,19 @@ module.exports = {
   // Tasks & Goals
   createGoal, updateGoal, completeGoal, abandonGoal, getActiveGoals, getAllGoals,
   createTask, updateTask, startTask, completeTask, cancelTask, getTasksByStatus, getActiveTasks, getOverdueTasks, getTasksByGoal,
+  getAllTasksForAnalysis,
+  // Pattern Recognition
+  savePatternTracking,
+  getPatternTracking,
+  saveDetectedPatterns,
+  getDetectedPatterns,
+  cleanupExpiredPatterns,
+  pruneOldPatternTracking,
+  // Relationships
+  upsertRelationship,
+  getRelationships,
+  getRelationshipByName,
+  deleteRelationship,
+  searchRelationships,
+  getRecentlyMentionedPeople,
 };

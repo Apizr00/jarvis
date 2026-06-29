@@ -1,7 +1,7 @@
 // src/bot/index.js
 // Telegram bot - handles all incoming messages
 require('dotenv').config();
-const TelegramBot = require('node-telegram-bot-api');
+const { TelegramBot } = require('node-telegram-bot-api');
 const { dayjs, fmt } = require('../utils/datetime');
 const db = require('../db');
 const llm = require('../llm');
@@ -14,6 +14,8 @@ let { refreshSchedules } = require('../scheduler');
 const { transcribe, downloadVoiceFile } = require('../llm/whisper');
 const { getApiStatus, formatStatusMessage } = require('../api/status');
 const memory = require('../memory');
+const relationships = require('../memory/relationships');
+const patterns = require('../patterns');
 
 const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
 
@@ -299,6 +301,46 @@ async function createBot() {
     await safeSendMessage(bot, msg.chat.id, reply.trim());
   });
 
+  // ── /people command — view all remembered people ─────────────────────────
+  bot.onText(/\/people/, async (msg) => {
+    if (!isOwner(msg)) return;
+    await db.ensureUser(OWNER_ID, msg.from.first_name || 'Owner');
+
+    const people = await db.getRelationships(OWNER_ID, 20);
+    const formatted = relationships.formatPeopleMessage(people, 'People You Know');
+
+    try {
+      await bot.sendMessage(msg.chat.id, formatted, { parse_mode: 'Markdown' });
+    } catch {
+      await bot.sendMessage(msg.chat.id, formatted);
+    }
+  });
+
+  // ── /person command — search for a specific person ───────────────────────
+  bot.onText(/\/person(?:\s+(.+))?/, async (msg, match) => {
+    if (!isOwner(msg)) return;
+    await db.ensureUser(OWNER_ID, msg.from.first_name || 'Owner');
+
+    const query = (match[1] || '').trim();
+    if (!query) {
+      return bot.sendMessage(msg.chat.id,
+        'Usage: /person <name>\n\nExample: /person Sarah');
+    }
+
+    const results = await relationships.searchPeople(OWNER_ID, query, 5);
+    if (results.length === 0) {
+      return bot.sendMessage(msg.chat.id, '👤 *No match found* for "' + escapeMd(query) + '".\n\nTip: When you mention people in conversation, I automatically remember them.');
+    }
+
+    const formatted = relationships.formatPeopleMessage(results, 'Search: ' + query);
+
+    try {
+      await bot.sendMessage(msg.chat.id, formatted, { parse_mode: 'Markdown' });
+    } catch {
+      await bot.sendMessage(msg.chat.id, formatted);
+    }
+  });
+
   // ── /verify command — review & resolve conflicting facts ─────────────────
   bot.onText(/\/verify/, async (msg) => {
     if (!isOwner(msg)) return;
@@ -366,6 +408,47 @@ async function createBot() {
     } catch (err) {
       console.error('/reflect error:', err.message);
       await bot.sendMessage(msg.chat.id, '❌ Could not generate reflection.');
+    }
+  });
+
+  // ── /patterns command — view detected behavioral patterns ───────────────
+  bot.onText(/\/patterns(?:\s+(.+))?/, async (msg, match) => {
+    if (!isOwner(msg)) return;
+    await bot.sendChatAction(msg.chat.id, 'typing');
+
+    try {
+      const filterType = (match[1] || '').trim().toLowerCase();
+      const validTypes = ['usage', 'topic', 'behavior', 'trend', 'correlation'];
+
+      const options = {};
+      if (validTypes.includes(filterType)) {
+        options.type = filterType;
+      }
+
+      const detectedPatterns = await patterns.getPatterns(OWNER_ID, {
+        ...options,
+        minConfidence: 0.4,
+        limit: 20,
+      });
+
+      if (detectedPatterns.length === 0) {
+        const typeMsg = filterType ? ' for type "' + filterType + '"' : '';
+        return bot.sendMessage(msg.chat.id,
+          '🔍 *No patterns detected yet' + typeMsg + '.*\n\n' +
+          'Keep using me and I\'ll start noticing patterns in your behavior and conversations!\n\n' +
+          '_Patterns are analyzed daily at 11 PM. Use /patterns usage|topic|behavior|trend|correlation to filter._');
+      }
+
+      const formatted = patterns.formatPatternsMessage(detectedPatterns);
+
+      try {
+        await bot.sendMessage(msg.chat.id, formatted, { parse_mode: 'Markdown' });
+      } catch {
+        await bot.sendMessage(msg.chat.id, formatted);
+      }
+    } catch (err) {
+      console.error('/patterns error:', err.message);
+      await bot.sendMessage(msg.chat.id, '❌ Could not retrieve patterns.');
     }
   });
 
@@ -793,8 +876,11 @@ async function createBot() {
       '/tasks — List active tasks\n' +
       '/goals — View your goals & progress\n' +
       '/memory — See stored facts\n' +
+      '/people — View remembered people & relationships\n' +
+      '/person <name> — Search for a specific person\n' +
       '/verify — Review & resolve conflicting facts\n' +
       '/reflect — Generate daily reflection & insights\n' +
+      '/patterns — View detected behavioral patterns (/patterns <type>)\n' +
       '/history — Search past conversations (/history <keyword>)\n' +
       '/status — Check API connections\n' +
       '/help — This message\n' +
@@ -1065,6 +1151,13 @@ async function createBot() {
         // 🔍 Auto-extract facts from this exchange (fire-and-forget)
         memory.extractFactsFromChat(userId, text, llmResponse.content, llm.chat);
 
+        // � Auto-extract people mentioned (fire-and-forget)
+        relationships.extractPeopleFromChat(userId, text, llmResponse.content, llm.chat);
+
+        // �🔍 Track for pattern recognition (fire-and-forget)
+        patterns.trackMessage(userId, { role: 'user', content: msg.text });
+        patterns.trackMessage(userId, { role: 'assistant', content: llmResponse.content });
+
       } else if (llmResponse.type === 'tool') {
         // Execute tool
         console.log('[Bot] Executing tool:', llmResponse.name, JSON.stringify(llmResponse.args).slice(0, 200));
@@ -1105,6 +1198,11 @@ async function createBot() {
           }
           // 🔍 Auto-extract facts from this exchange (fire-and-forget)
           memory.extractFactsFromChat(userId, text, result.message, llm.chat);
+          // � Auto-extract people mentioned (fire-and-forget)
+          relationships.extractPeopleFromChat(userId, text, result.message, llm.chat);
+          // �🔍 Track for pattern recognition (fire-and-forget)
+          patterns.trackMessage(userId, { role: 'user', content: msg.text });
+          patterns.trackMessage(userId, { role: 'assistant', content: result.message });
           return; // Done — wait for user to click button or type "ya"
         }
 
@@ -1255,6 +1353,17 @@ async function createBot() {
 
         // 🔍 Auto-extract facts from this exchange (fire-and-forget)
         memory.extractFactsFromChat(userId, text, finalResult, llm.chat);
+
+        // � Auto-extract people mentioned (fire-and-forget)
+        relationships.extractPeopleFromChat(userId, text, finalResult, llm.chat);
+
+        // �🔍 Track for pattern recognition (fire-and-forget)
+        patterns.trackMessage(userId, { role: 'user', content: msg.text });
+        patterns.trackMessage(userId, {
+          role: 'assistant',
+          content: finalResult,
+          toolUsed: llmResponse.name,
+        });
 
       } else {
         console.log('[Bot] Unknown LLM response type:', llmResponse.type);

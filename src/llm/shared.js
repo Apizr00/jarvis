@@ -12,6 +12,7 @@ const KNOWN_TOOLS = [
   'get_current_time',
   'create_task', 'update_task', 'start_task', 'complete_task', 'cancel_task', 'list_tasks',
   'create_goal', 'update_goal', 'complete_goal', 'abandon_goal', 'list_goals',
+  'save_relationship', 'list_people',
 ];
 
 // Common LLM typos → correct tool name
@@ -55,6 +56,9 @@ const TOOL_ALIASES = {
   'completegoal': 'complete_goal', 'finishgoal': 'complete_goal', 'achievegoal': 'complete_goal',
   'abandongoal': 'abandon_goal', 'dropgoal': 'abandon_goal',
   'listgoals': 'list_goals', 'showgoals': 'list_goals', 'goals': 'list_goals',
+  'saverelationship': 'save_relationship', 'rememberperson': 'save_relationship',
+  'addperson': 'save_relationship', 'saveperson': 'save_relationship',
+  'listpeople': 'list_people', 'showpeople': 'list_people', 'people': 'list_people',
 };
 
 /**
@@ -119,8 +123,9 @@ function normalizeLLMResponse(parsed) {
  * @param {Array<{key:string,value:string}>} facts - user memory facts
  * @param {string} timezone
  * @param {Array<{id:number,text:string,remind_at:string,recurrence:string|null}>} [reminders] - upcoming reminders
+ * @param {string} [peopleContext] - pre-formatted people context lines (or empty string)
  */
-async function buildSystemPrompt(userId, facts, timezone, reminders) {
+async function buildSystemPrompt(userId, facts, timezone, reminders, peopleContext = '') {
   const factLines = facts.length
     ? facts.map(f => '- ' + f.key + ': ' + f.value).join('\n')
     : '(none yet)';
@@ -192,6 +197,7 @@ async function buildSystemPrompt(userId, facts, timezone, reminders) {
     personalityBlock +
     'Timezone: ' + timezone + ' | Today: ' + today + ' | Current time: ' + currentTime + '\n\n' +
     'User facts:\n' + factLines +
+    (peopleContext || '') +
     reminderLines + '\n' +
     '─────────────── ⏰ TIME ACCURACY (CRITICAL — READ TWICE) ───────────────\n' +
     'The CURRENT TIME provided above is THE ONLY reliable time reference. You have NO internal clock.\n' +
@@ -248,6 +254,8 @@ async function buildSystemPrompt(userId, facts, timezone, reminders) {
     'complete_goal → args: { goal_id }\n' +
     'abandon_goal  → args: { goal_id }\n' +
     'list_goals    → args: {}\n\n' +
+    'save_relationship → args: { name, relationship?, context?, notes? }\n' +
+    'list_people       → args: {} — list all remembered people\n\n' +
     'TASK vs REMINDER: Reminder = time-based ping ("remind me at 6pm"). Task = work item ("I need to finish report"). Goal = long-term target ("learn Rust").\n' +
     'If user says "I want to..." or "I need to..." without a specific time → use create_task, NOT create_reminder.';
 }
