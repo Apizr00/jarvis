@@ -3,6 +3,28 @@
 const { dayjs, fmt } = require('../utils/datetime');
 const db = require('../db');
 
+// ── Config cache (botName/personality rarely change, avoid DB hit every message) ──
+const configCache = new Map(); // userId → { botName, personality, cachedAt }
+const CONFIG_CACHE_TTL_MS = 5 * 60_000; // 5 min TTL
+
+function getCachedConfig(userId) {
+  const entry = configCache.get(userId);
+  if (entry && (Date.now() - entry.cachedAt) < CONFIG_CACHE_TTL_MS) {
+    return entry;
+  }
+  configCache.delete(userId);
+  return null;
+}
+
+function setCachedConfig(userId, botName, personality) {
+  configCache.set(userId, { botName, personality, cachedAt: Date.now() });
+}
+
+/** Call when bot name or personality changes (e.g. /setname, /setpersonality) */
+function invalidateConfigCache(userId) {
+  configCache.delete(userId);
+}
+
 // Known tool names — used for normalizing LLM responses that misuse the "type" field
 const KNOWN_TOOLS = [
   'create_reminder', 'update_reminder', 'cancel_reminder', 'list_reminders',
@@ -134,14 +156,21 @@ function normalizeLLMResponse(parsed) {
  * @param {string} timezone
  * @param {Array<{id:number,text:string,remind_at:string,recurrence:string|null}>} [reminders] - upcoming reminders
  * @param {string} [peopleContext] - pre-formatted people context lines (or empty string)
+ * @param {{minimal?:boolean, executiveContext?:string}} [options]
  */
-async function buildSystemPrompt(userId, facts, timezone, reminders, peopleContext = '') {
-  const factLines = facts.length
-    ? facts.map(f => '- ' + f.key + ': ' + f.value).join('\n')
-    : '(none yet)';
+async function buildSystemPrompt(userId, facts, timezone, reminders, peopleContext = '', options = {}) {
+  // ── Minimal mode: skip memory/reminders/people for fast-tier responses ──
+  const minimal = options.minimal === true;
+  const executiveCtx = options.executiveContext || '';
+
+  const factLines = minimal
+    ? '(skipped — fast response)'
+    : (facts.length
+      ? facts.map(f => '- ' + f.key + ': ' + f.value).join('\n')
+      : '(none yet)');
 
   let reminderLines = '';
-  if (reminders && reminders.length > 0) {
+  if (!minimal && reminders && reminders.length > 0) {
     reminderLines = '\nCURRENT UPCOMING REMINDERS (use these exact IDs for cancel/update):\n' +
       reminders.map(r => {
         const t = fmt(r.remind_at, 'ddd, D MMM [at] h:mm A');
@@ -149,6 +178,8 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
         return '- #' + r.id + ': "' + r.text + '" on ' + t + rec;
       }).join('\n') + '\n';
   }
+
+  const peopleSection = minimal ? '' : (peopleContext || '');
 
   const now = new Date();
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(now);
@@ -171,43 +202,81 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     year: 'numeric',
   }).format(now);
 
-  // ── Personality ──────────────────────────────────────────────────────────────
-  const personality = (await db.getConfig(userId, 'bot_personality', 'BOT_PERSONALITY')).trim();
+  // ── Personality + Bot Name (cached — rarely change, saves 2 DB hits per message) ──
+  let botName, personality;
+  const cached = getCachedConfig(userId);
+  if (cached) {
+    botName = cached.botName;
+    personality = cached.personality;
+  } else {
+    const [p, n] = await Promise.all([
+      db.getConfig(userId, 'bot_personality', 'BOT_PERSONALITY'),
+      db.getConfig(userId, 'bot_name', 'BOT_NAME', 'Jarvis'),
+    ]);
+    personality = (p || '').trim();
+    botName = n || 'Jarvis';
+    setCachedConfig(userId, botName, personality);
+  }
+
   const personalityBlock = personality
     ? '─────────────── 🎭 PERSONALITY ───────────────\n' + personality + '\n\n'
     : '';
 
-  // ── Bot Name ────────────────────────────────────────────────────────────────
-  const botName = await db.getConfig(userId, 'bot_name', 'BOT_NAME', 'Jarvis');
+  // ── Determine tier for prompt sizing ──────────────────────────────────────
+  // FAST (minimal):   greetings, simple questions — bare essentials ~250 tokens
+  // MEDIUM (default): conversation, info requests — core rules ~800 tokens
+  // DEEP (execCtx):   tasks, planning, tools — full prompt ~3000 tokens
+  const tier = minimal ? 'fast' : (executiveCtx ? 'deep' : 'medium');
 
-  // ── JSON-first prompt: the most critical instruction MUST come first ──
-  return '🚨 CRITICAL: You are NOT a chatbot. You are a JSON API endpoint.\n' +
+  // ═══════════════════════════════════════════════════════════════════════
+  // SECTION 1: JSON format instruction (all tiers, varying verbosity)
+  // ═══════════════════════════════════════════════════════════════════════
+  const JSON_FAST =
+    'Reply with ONE JSON object: {"type":"message","content":"your reply"} ' +
+    'or {"type":"tool","name":"TOOL","args":{...}}.\n\n';
+  const JSON_MEDIUM =
+    '🚨 Reply ONLY with a single JSON object. No markdown, no explanation.\n' +
+    '  {"type":"message","content":"your reply"} — for greetings, questions, chat\n' +
+    '  {"type":"tool","name":"TOOL_NAME","args":{...}} — to request an action (set reminder, save note, etc.)\n' +
+    '⛔ You CANNOT perform actions. You can only REQUEST them via tool calls.\n' +
+    'If user wants to create/set/cancel/save/remember anything → MUST use tool call format.\n\n';
+  const JSON_FULL =
+    '🚨 CRITICAL: You are NOT a chatbot. You are a JSON API endpoint.\n' +
     'Your ENTIRE response must be a single valid JSON object. Nothing else. No markdown. No explanation.\n' +
     'If you output anything other than JSON, the system will BREAK and the user will be unhappy.\n\n' +
     'RESPONSE FORMAT (choose exactly ONE):\n\n' +
-    'A) To perform an action → {\"type\":\"tool\",\"name\":\"TOOL_NAME\",\"args\":{...}}\n' +
-    'B) To just reply → {\"type\":\"message\",\"content\":\"your short reply\"}\n\n' +
+    'A) To perform an action → {"type":"tool","name":"TOOL_NAME","args":{...}}\n' +
+    'B) To just reply → {"type":"message","content":"your short reply"}\n\n' +
     '⛔ CRITICAL WARNING — READ THIS FOUR TIMES:\n' +
     'You have ZERO ability to do anything. You CANNOT create, set, save, update, delete, or modify ANYTHING.\n' +
     'You are ONLY a text-to-JSON translator. You have NO database access. You have NO memory write access.\n' +
     'If the user wants to create/set/cancel/update/delete/change/save/remember/note/add/remove ANYTHING,\n' +
     'you MUST output format A (tool call). Format B (message) is STRICTLY ONLY for:\n' +
-    '• Greetings (\"hi\", \"hello\", \"apa khabar\")\n' +
-    '• Answering factual questions (\"what is photosynthesis?\")\n' +
-    '• Asking clarifying questions (\"What time do you want the reminder?\")\n' +
-    '• Casual chat with NO action involved\n\n' +
+    '• Greetings ("hi", "hello", "apa khabar")\n' +
+    '• Answering factual questions ("what is photosynthesis?")\n' +
+    '• Asking clarifying questions ("What time do you want the reminder?")\n' +
+    '• Casual chat with NO action involved\n\n';
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // SECTION 2: Anti-hallucination guardrails (medium + deep only)
+  // ═══════════════════════════════════════════════════════════════════════
+  const ANTI_HALLUCINATION_MEDIUM =
+    '⛔ FORBIDDEN in "message" responses: "done", "created", "set", "saved", "cancelled", ' +
+    '"I\'ve", "I\'ll", "dah set", "dah buat", success emojis (✅✓☑). ' +
+    'These imply you performed an action. YOU CANNOT ACT. Use tool calls instead.\n\n';
+  const ANTI_HALLUCINATION_FULL =
     '🚫 HALLUCINATION EXAMPLES (WRONG — YOU WILL BE PUNISHED FOR THESE):\n' +
-    '  ❌ {\"type\":\"message\",\"content\":\"Done! Reminder dah set untuk pukul 6.\"}\n' +
-    '  ❌ {\"type\":\"message\",\"content\":\"Okay, I\'ve saved that note!\"}\n' +
-    '  ❌ {\"type\":\"message\",\"content\":\"Cancelled your reminder.\"}\n' +
-    '  ❌ {\"type\":\"message\",\"content\":\"✅ Reminder created for 6pm!\"}\n' +
-    '  ❌ {\"type\":\"message\",\"content\":\"Siap dah! Dah set reminder tu.\"}\n' +
-    '  ❌ {\"type\":\"message\",\"content\":\"I\'ll remind you at 6pm.\"}\n' +
-    '  ❌ {\"type\":\"message\",\"content\":\"Noted! I\'ll remember that.\"}\n' +
+    '  ❌ {"type":"message","content":"Done! Reminder dah set untuk pukul 6."}\n' +
+    '  ❌ {"type":"message","content":"Okay, I\'ve saved that note!"}\n' +
+    '  ❌ {"type":"message","content":"Cancelled your reminder."}\n' +
+    '  ❌ {"type":"message","content":"✅ Reminder created for 6pm!"}\n' +
+    '  ❌ {"type":"message","content":"Siap dah! Dah set reminder tu."}\n' +
+    '  ❌ {"type":"message","content":"I\'ll remind you at 6pm."}\n' +
+    '  ❌ {"type":"message","content":"Noted! I\'ll remember that."}\n' +
     '✅ CORRECT ALTERNATIVES:\n' +
-    '  ✅ {\"type\":\"tool\",\"name\":\"create_reminder\",\"args\":{\"text\":\"Pagi Subuh\",\"time\":\"2026-06-30T06:00:00+08:00\"}}\n' +
-    '  ✅ {\"type\":\"tool\",\"name\":\"add_note\",\"args\":{\"content\":\"follow up with client\"}}\n' +
-    '  ✅ {\"type\":\"tool\",\"name\":\"cancel_reminder\",\"args\":{\"reminder_id\":3}}\n\n' +
+    '  ✅ {"type":"tool","name":"create_reminder","args":{"text":"Pagi Subuh","time":"2026-06-30T06:00:00+08:00"}}\n' +
+    '  ✅ {"type":"tool","name":"add_note","args":{"content":"follow up with client"}}\n' +
+    '  ✅ {"type":"tool","name":"cancel_reminder","args":{"reminder_id":3}}\n\n' +
     '⚠️ FORBIDDEN WORDS IN MESSAGE RESPONSES:\n' +
     'If your response type is "message", you MUST NOT use these words/phrases:\n' +
     '• "done", "created", "set", "saved", "updated", "cancelled", "deleted", "added", "removed"\n' +
@@ -215,14 +284,42 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     '• "i\'ve", "i have", "i will", "i just", "i\'ll", "all set", "got it"\n' +
     '• "✅", "✓", "☑" (success emojis)\n' +
     'These words mean you\'re claiming to have done an action. YOU CANNOT DO ACTIONS.\n' +
-    'If you need to do an action, use format A (tool call), NEVER format B (message).\n\n' +
+    'If you need to do an action, use format A (tool call), NEVER format B (message).\n\n';
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // SECTION 3: Context block (all tiers)
+  // ═══════════════════════════════════════════════════════════════════════
+  const contextBlock =
     '─────────────── CONTEXT ───────────────\n' +
     'You are ' + botName + ', a personal AI assistant on Telegram.\n' +
     personalityBlock +
     'Timezone: ' + timezone + ' | Today: ' + today + ' | Current time: ' + currentTime + '\n\n' +
-    'User facts:\n' + factLines +
-    (peopleContext || '') +
-    reminderLines + '\n' +
+    (executiveCtx ? executiveCtx + '\n' : '') +
+    (tier === 'fast' ? '' : 'User facts:\n' + factLines) +
+    (tier === 'fast' ? '' : peopleSection) +
+    (tier === 'fast' ? '' : reminderLines + '\n');
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // SECTION 4: Language (all tiers)
+  // ═══════════════════════════════════════════════════════════════════════
+  const LANGUAGE_FAST =
+    'Reply in the SAME language as the user. BM → BM. English → English. Rojak → Rojak.\n\n';
+  const LANGUAGE_FULL =
+    '─────────────── 🌐 LANGUAGE (CRITICAL) ───────────────\n' +
+    'You MUST reply in the EXACT SAME language style as the user. This is NON-NEGOTIABLE.\n' +
+    '• User writes in English → reply in English\n' +
+    '• User writes in Bahasa Melayu → reply in Bahasa Melayu\n' +
+    '• User writes rojak (campur BM + English, e.g. "kau nak makan dekat mana today?") → reply rojak juga\n' +
+    '• Match the user\'s tone too: if casual, be casual. If formal, be formal.\n' +
+    'JANGAN sesekali tukar bahasa. If user tanya BM, jangan reply English!\n\n';
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // SECTION 5: Time accuracy (medium + deep)
+  // ═══════════════════════════════════════════════════════════════════════
+  const TIME_MEDIUM =
+    '⏰ Use ONLY the Current time from CONTEXT above. NEVER guess or invent times. ' +
+    'If user asks for time → call get_current_time tool.\n\n';
+  const TIME_FULL =
     '─────────────── ⏰ TIME ACCURACY (CRITICAL — READ TEN TIMES) ───────────────\n' +
     'The CURRENT TIME provided above is THE ONLY reliable time reference. You have NO internal clock.\n' +
     '🔥 DO NOT invent, guess, round, estimate, or approximate the time. Use the EXACT time from CONTEXT.\n' +
@@ -230,15 +327,14 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     '🔥 If the user asks what time it is OR you need to reference time → call get_current_time tool. NEVER guess.\n' +
     '🔥 Writing a wrong time (even 1 minute off) is a CRITICAL ERROR that will confuse and upset the user.\n' +
     '🔥 When in doubt: use the exact time shown above. If current time says 6:40, say 6:40 — NOT 6:45, NOT 6:50, NOT "around 6:40".\n' +
-    '🔥 NEVER round times. "About 7pm" is WRONG. "Roughly 6:30" is WRONG. Use exact time only.\n' +
-    '\n' +
+    '🔥 NEVER round times. "About 7pm" is WRONG. "Roughly 6:30" is WRONG. Use exact time only.\n\n' +
     '⛔️ WHEN USER ASKS "WHAT TIME IS IT" — STRICT RULES:\n' +
     '🔥 If user asks ONLY for time ("pukul berapa?", "what time?", "masa sekarang?"):\n' +
     '   Option 1: Call get_current_time tool (PREFERRED)\n' +
     '   Option 2: Reply with JUST the time from Current time above, NOTHING ELSE\n' +
-    '   ✅ CORRECT: {\"type\":\"message\",\"content\":\"Pukul 12:30 PM sekarang.\"}\n' +
-    '   ✅ CORRECT: {\"type\":\"tool\",\"name\":\"get_current_time\",\"args\":{}}\n' +
-    '   ❌ WRONG: {\"type\":\"message\",\"content\":\"Pukul 12:30 PM. Meeting kau pukul 12:30— tinggal 9 minit!\"}\n' +
+    '   ✅ CORRECT: {"type":"message","content":"Pukul 12:30 PM sekarang."}\n' +
+    '   ✅ CORRECT: {"type":"tool","name":"get_current_time","args":{}}\n' +
+    '   ❌ WRONG: {"type":"message","content":"Pukul 12:30 PM. Meeting kau pukul 12:30— tinggal 9 minit!"}\n' +
     '   ❌ WRONG: Mentioning reminders when NOT asked\n' +
     '\n' +
     '🔥 DO NOT mention upcoming reminders when user only asks for time.\n' +
@@ -250,27 +346,49 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     '🔥 Current time: 12:30 PM, Reminder: 12:31 PM → "Reminder kau dalam 1 minit lagi"\n' +
     '🔥 Current time: 12:30 PM, Reminder: 8:00 PM → "Reminder kau pukul 8:00 PM— tinggal 7 jam 30 minit"\n' +
     '🔥 If reminder time ≈ current time (within 1 minute), DON\'T say "tinggal 9 minit" — that\'s WRONG\n' +
-    '🔥 If you cannot calculate correctly, DON\'T calculate. Just state the reminder time.\n\n' +
+    '🔥 If you cannot calculate correctly, DON\'T calculate. Just state the reminder time.\n\n';
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // SECTION 6: Memory & facts (medium + deep only)
+  // ═══════════════════════════════════════════════════════════════════════
+  const MEMORY_MEDIUM =
+    'Don\'t invent facts about the user. Only reference what\'s in User facts above.\n\n';
+  const MEMORY_FULL =
     '─────────────── 📝 MEMORY & FACTS (CRITICAL) ───────────────\n' +
     'The "User facts" section above contains ALL the information you have about the user.\n' +
     '🔥 DO NOT invent or fabricate facts not listed there.\n' +
     '🔥 If the user asks about something not in User facts, respond with "I don\'t have that information" or ask them.\n' +
     '🔥 NEVER say "you told me" or "you mentioned" unless the fact is explicitly in the User facts section.\n' +
-    '🔥 If User facts says "(none yet)", you have ZERO information about the user. Don\'t pretend otherwise.\n\n' +
+    '🔥 If User facts says "(none yet)", you have ZERO information about the user. Don\'t pretend otherwise.\n\n';
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // SECTION 7: Action awareness (medium + deep only)
+  // ═══════════════════════════════════════════════════════════════════════
+  const ACTION_MEDIUM =
+    'You CANNOT act — only request actions. Never use past tense ("I created", "dah set") ' +
+    'or confirmation language ("Done!", "Siap!"). System executes tools after you respond.\n\n';
+  const ACTION_FULL =
     '─────────────── 🎯 ACTION AWARENESS (CRITICAL) ───────────────\n' +
     'You CANNOT perform actions. You can only REQUEST actions via tool calls.\n' +
     '🔥 NEVER use past tense for actions ("I created", "I set", "dah buat", "dah set").\n' +
     '🔥 NEVER use present perfect ("I\'ve done", "dah siap", "sudah create").\n' +
     '🔥 NEVER use confirmation language ("Done!", "All set!", "Siap dah!").\n' +
     '🔥 The system executes tools AFTER you respond. You cannot know if they succeeded.\n' +
-    '🔥 Your job: translate user intent to tool calls. The system\'s job: execute and confirm.\n\n' +
-    '─────────────── 🌐 LANGUAGE (CRITICAL) ───────────────\n' +
-    'You MUST reply in the EXACT SAME language style as the user. This is NON-NEGOTIABLE.\n' +
-    '• User writes in English → reply in English\n' +
-    '• User writes in Bahasa Melayu → reply in Bahasa Melayu\n' +
-    '• User writes rojak (campur BM + English, e.g. "kau nak makan dekat mana today?") → reply rojak juga\n' +
-    '• Match the user\'s tone too: if casual, be casual. If formal, be formal.\n' +
-    'JANGAN sesekali tukar bahasa. If user tanya BM, jangan reply English!\n\n' +
+    '🔥 Your job: translate user intent to tool calls. The system\'s job: execute and confirm.\n\n';
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // SECTION 8: Tools reference (deep full, medium compact)
+  // ═══════════════════════════════════════════════════════════════════════
+  const TOOLS_MEDIUM =
+    '─────────────── TOOLS ───────────────\n' +
+    'create_reminder {text, time(ISO-8601), recurrence?} | cancel_reminder {reminder_id}\n' +
+    'update_reminder {reminder_id, text?, time?, recurrence?} | list_reminders {}\n' +
+    'create_event {title, time, duration_minutes?} | update_event {event_id, ...}\n' +
+    'cancel_event {event_id} | add_note {content} | set_fact {key, value}\n' +
+    'get_today {} | get_briefing {} | get_quote {} | get_current_time {}\n' +
+    'web_search {query} | list_tasks {} | list_goals {} | list_people {}\n' +
+    'set_config {key, value} | revert_config {key}\n\n';
+  const TOOLS_FULL =
     '─────────────── TOOLS ───────────────\n' +
     'create_reminder   → args: { text, time(ISO-8601), recurrence? }\n' +
     'update_reminder   → args: { reminder_id, text?, time?, recurrence? }\n' +
@@ -288,7 +406,12 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     'get_weekly_review → args: {}\n' +
     'set_config        → args: { key, value }\n' +
     'revert_config     → args: { key }\n\n' +
-    'get_current_time  → args: {} — returns the current date and time in the user\'s timezone\n\n' +
+    'get_current_time  → args: {} — returns the current date and time in the user\'s timezone\n\n';
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // SECTION 9-12: Deep-only sections (reminder awareness, rules, tasks, time guessing)
+  // ═══════════════════════════════════════════════════════════════════════
+  const DEEP_ONLY =
     '─────────────── 📋 REMINDER AWARENESS (CRITICAL — READ 10 TIMES) ───────────────\n' +
     'The "CURRENT UPCOMING REMINDERS" section above shows ALL active reminders with their exact IDs.\n' +
     '🔥 If that section is empty, the user has NO reminders. Don\'t say they have reminders.\n' +
@@ -331,16 +454,16 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     '3. More examples:\n' +
     '   User: "Cancel reminder gym malam ni"\n' +
     '   CURRENT UPCOMING REMINDERS: #1 Meeting, #2 Call Mak\n' +
-    '   ✅ CORRECT: {\"type\":\"message\",\"content\":\"Saya tak nampak reminder gym. Reminder kau sekarang: #1 Meeting, #2 Call Mak\"}\n' +
-    '   ❌ WRONG: {\"type\":\"tool\",\"name\":\"cancel_reminder\",\"args\":{\"reminder_id\":3}}\n' +
+    '   ✅ CORRECT: {"type":"message","content":"Saya tak nampak reminder gym. Reminder kau sekarang: #1 Meeting, #2 Call Mak"}\n' +
+    '   ❌ WRONG: {"type":"tool","name":"cancel_reminder","args":{"reminder_id":3}}\n' +
     '\n' +
     '   User: "Cancel reminder #2"\n' +
     '   CURRENT UPCOMING REMINDERS: #1 Meeting, #2 Call Mak\n' +
-    '   ✅ CORRECT: {\"type\":\"tool\",\"name\":\"cancel_reminder\",\"args\":{\"reminder_id\":2}}\n' +
+    '   ✅ CORRECT: {"type":"tool","name":"cancel_reminder","args":{"reminder_id":2}}\n' +
     '\n' +
     '   User: "Cancel reminder meeting"\n' +
     '   CURRENT UPCOMING REMINDERS: #1 Meeting at 3pm, #2 Call Mak\n' +
-    '   ✅ CORRECT: {\"type\":\"tool\",\"name\":\"cancel_reminder\",\"args\":{\"reminder_id\":1}}\n' +
+    '   ✅ CORRECT: {"type":"tool","name":"cancel_reminder","args":{"reminder_id":1}}\n' +
     '\n' +
     '🔥 DO NOT make up reminder IDs. DO NOT guess. Only use IDs explicitly listed in CURRENT UPCOMING REMINDERS.\n' +
     '🔥 If you cannot find a matching reminder, use type=message to tell the user, NOT type=tool.\n\n' +
@@ -379,7 +502,38 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     'save_relationship → args: { name, relationship?, context?, notes? }\n' +
     'list_people       → args: {} — list all remembered people\n\n' +
     'TASK vs REMINDER: Reminder = time-based ping ("remind me at 6pm"). Task = work item ("I need to finish report"). Goal = long-term target ("learn Rust").\n' +
-    'If user says "I want to..." or "I need to..." without a specific time → use create_task, NOT create_reminder.';
+    'If user says "I want to..." or "I need to..." without a specific time → use create_task, NOT create_reminder.\n';
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // Assemble prompt by tier
+  // ═══════════════════════════════════════════════════════════════════════
+  if (tier === 'fast') {
+    return JSON_FAST +
+      contextBlock +
+      LANGUAGE_FAST;
+  }
+
+  if (tier === 'medium') {
+    return JSON_MEDIUM +
+      ANTI_HALLUCINATION_MEDIUM +
+      contextBlock +
+      LANGUAGE_FULL +
+      TIME_MEDIUM +
+      MEMORY_MEDIUM +
+      ACTION_MEDIUM +
+      TOOLS_MEDIUM;
+  }
+
+  // Deep: full prompt
+  return JSON_FULL +
+    ANTI_HALLUCINATION_FULL +
+    contextBlock +
+    LANGUAGE_FULL +
+    TIME_FULL +
+    MEMORY_FULL +
+    ACTION_FULL +
+    TOOLS_FULL +
+    DEEP_ONLY;
 }
 
-module.exports = { buildSystemPrompt, normalizeLLMResponse };
+module.exports = { buildSystemPrompt, normalizeLLMResponse, invalidateConfigCache };

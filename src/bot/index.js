@@ -16,6 +16,8 @@ const { getApiStatus, formatStatusMessage } = require('../api/status');
 const memory = require('../memory');
 const relationships = require('../memory/relationships');
 const patterns = require('../patterns');
+const executive = require('../executive');
+const { invalidateConfigCache } = require('../llm/shared');
 
 const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
 
@@ -399,7 +401,7 @@ async function createBot() {
         return;
       }
 
-      const reflection = await memory.generateDailyReflection(OWNER_ID, llm.chat);
+      const reflection = await memory.generateDailyReflection(OWNER_ID, llm.chatMimo);
       if (reflection) {
         await safeSendMessage(bot, msg.chat.id, '*🧘 Today\'s Reflection*\n\n' + reflection);
       } else {
@@ -528,6 +530,7 @@ async function createBot() {
         // Clear conversation history for name/personality changes so new style takes effect
         if (pending.key === 'bot_name' || pending.key === 'bot_personality') {
           clearHistory(userId);
+          invalidateConfigCache(userId);
         }
 
         // Refresh cron if time setting changed
@@ -1097,6 +1100,23 @@ async function createBot() {
     await bot.sendChatAction(chatId, 'typing');
 
     try {
+      // ── 🧠 Executive Decision ──────────────────────────────────────────
+      const decision = await executive.decide(userId, text);
+      console.log('[Executive] 📋 Decision: tier=' + decision.tier +
+        ' | provider=' + decision.provider +
+        ' | needs=' + JSON.stringify(decision.needs) +
+        ' | wm=' + (decision.workingMemoryActive ? 'active' : 'idle') +
+        ' | reason=' + decision.reason);
+
+      // ── Build executive context for deep tier ──────────────────────────
+      const llmOptions = {};
+      if (decision.tier === 'fast') {
+        llmOptions.minimal = true; // skip memory/reminders/people
+      } else if (decision.tier === 'deep') {
+        // Inject working memory + world model into LLM context
+        llmOptions.executiveContext = await executive.buildContext(userId, decision, text);
+      }
+
       // ── Inject pending edit context so LLM knows which item to edit ──
       const edit = getPendingEdit(userId);
       if (edit) {
@@ -1114,7 +1134,7 @@ async function createBot() {
       }
 
       const history = getHistory(userId);
-      let llmResponse = await llm.chat(userId, text, history);
+      let llmResponse = await llm.chat(userId, text, history, llmOptions);
 
       // Add user message to history
       addToHistory(userId, 'user', text);
@@ -1136,7 +1156,7 @@ async function createBot() {
         const cleanHistory = history.filter(h => h.role !== 'assistant' || !actionKeywords.test(h.content));
         cleanHistory.push({ role: 'user', content: correctionMsg });
 
-        llmResponse = await llm.chat(userId, text, cleanHistory);
+        llmResponse = await llm.chat(userId, text, cleanHistory, llmOptions);
         console.log('[Bot] Retry response type:', llmResponse.type, llmResponse.name ? '| tool=' + llmResponse.name : '');
       }
 
@@ -1159,15 +1179,27 @@ async function createBot() {
         addToHistory(userId, 'assistant', llmResponse.content);
         await safeSendMessage(bot, chatId, llmResponse.content);
 
-        // 🔍 Auto-extract facts from this exchange (fire-and-forget)
-        memory.extractFactsFromChat(userId, text, llmResponse.content, llm.chat);
+        // ── Post-processing guided by executive ──────────────────────────
+        const postActions = executive.decidePostProcessing(decision, llmResponse);
 
-        // � Auto-extract people mentioned (fire-and-forget)
-        relationships.extractPeopleFromChat(userId, text, llmResponse.content, llm.chat);
+        if (postActions.extractFacts) {
+          memory.extractFactsFromChat(userId, text, llmResponse.content, llm.chatMimo);
+        }
+        if (postActions.extractPeople) {
+          relationships.extractPeopleFromChat(userId, text, llmResponse.content, llm.chatMimo);
+        }
+        if (postActions.updateWorkingMemory) {
+          // Let the LLM extract working memory updates from this exchange
+          executive.workingMemory.update(userId, {
+            contextNotes: 'Last exchange: user asked "' + text.slice(0, 100) + '" → bot responded',
+          });
+        }
 
-        // �🔍 Track for pattern recognition (fire-and-forget)
+        // Track for pattern recognition (always)
         patterns.trackMessage(userId, { role: 'user', content: text });
         patterns.trackMessage(userId, { role: 'assistant', content: llmResponse.content });
+
+        console.log('[Executive] ✅ ' + decision.tier.toUpperCase() + ' path complete | post: facts=' + postActions.extractFacts + ' people=' + postActions.extractPeople + ' wm=' + postActions.updateWorkingMemory);
 
       } else if (llmResponse.type === 'tool') {
         // Execute tool
@@ -1209,11 +1241,21 @@ async function createBot() {
               },
             });
           }
-          // 🔍 Auto-extract facts from this exchange (fire-and-forget)
-          memory.extractFactsFromChat(userId, text, result.message, llm.chat);
-          // � Auto-extract people mentioned (fire-and-forget)
-          relationships.extractPeopleFromChat(userId, text, result.message, llm.chat);
-          // �🔍 Track for pattern recognition (fire-and-forget)
+          // ── Post-processing guided by executive ──────────────────────────
+          const postActions = executive.decidePostProcessing(decision, { type: 'message', content: result.message });
+
+          if (postActions.extractFacts) {
+            memory.extractFactsFromChat(userId, text, result.message, llm.chatMimo);
+          }
+          if (postActions.extractPeople) {
+            relationships.extractPeopleFromChat(userId, text, result.message, llm.chatMimo);
+          }
+          if (postActions.updateWorkingMemory) {
+            executive.workingMemory.update(userId, {
+              contextNotes: 'Confirm flow: ' + text.slice(0, 100),
+            });
+          }
+
           patterns.trackMessage(userId, { role: 'user', content: text });
           patterns.trackMessage(userId, { role: 'assistant', content: result.message });
           return; // Done — wait for user to click button or type "ya"
@@ -1239,7 +1281,7 @@ async function createBot() {
 
           try {
             const followupHistory = [{ role: 'user', content: followupPrompt }];
-            const followupResponse = await llm.chat(userId, noteContent, followupHistory);
+            const followupResponse = await llm.chatDeepseek(userId, noteContent, followupHistory);
             console.log('[Bot] Follow-up check result:', followupResponse.type, followupResponse.name || '');
 
             if (followupResponse.type === 'tool' && followupResponse.name === 'create_reminder') {
@@ -1273,7 +1315,7 @@ async function createBot() {
               'Respond with: {"type":"message","content":"your summary here"}';
 
             const summarizeHistory = [{ role: 'user', content: summarizePrompt }];
-            const summaryResponse = await llm.chat(userId, text, summarizeHistory);
+            const summaryResponse = await llm.chatMimo(userId, text, summarizeHistory);
             console.log('[Bot] Web search re-summary result:', summaryResponse.type, summaryResponse.content ? summaryResponse.content.slice(0, 150) : '');
 
             if (summaryResponse.type === 'message' && summaryResponse.content) {
@@ -1367,19 +1409,25 @@ async function createBot() {
           await safeSendMessage(bot, chatId, finalResult);
         }
 
-        // 🔍 Auto-extract facts from this exchange (fire-and-forget)
-        memory.extractFactsFromChat(userId, text, finalResult, llm.chat);
+        // ── Post-processing guided by executive ──────────────────────────
+        const postActions = executive.decidePostProcessing(decision, llmResponse);
 
-        // � Auto-extract people mentioned (fire-and-forget)
-        relationships.extractPeopleFromChat(userId, text, finalResult, llm.chat);
+        if (postActions.extractFacts) {
+          memory.extractFactsFromChat(userId, text, finalResult, llm.chatMimo);
+        }
+        if (postActions.extractPeople) {
+          relationships.extractPeopleFromChat(userId, text, finalResult, llm.chatMimo);
+        }
 
-        // �🔍 Track for pattern recognition (fire-and-forget)
+        // Track for pattern recognition (always)
         patterns.trackMessage(userId, { role: 'user', content: text });
         patterns.trackMessage(userId, {
           role: 'assistant',
           content: finalResult,
           toolUsed: llmResponse.name,
         });
+
+        console.log('[Executive] ✅ ' + decision.tier.toUpperCase() + ' path complete (tool=' + llmResponse.name + ') | post: facts=' + postActions.extractFacts + ' people=' + postActions.extractPeople + ' wm=' + postActions.updateWorkingMemory);
 
       } else {
         console.log('[Bot] Unknown LLM response type:', llmResponse.type);

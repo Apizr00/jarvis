@@ -14,22 +14,30 @@ const MIMO_URL = MIMO_BASE.endsWith('/v1')
   ? MIMO_BASE + '/chat/completions'
   : MIMO_BASE + '/v1/chat/completions';
 
-async function chat(userId, userMessage, conversationHistory) {
+async function chat(userId, userMessage, conversationHistory, options = {}) {
   if (!conversationHistory) conversationHistory = [];
 
-  // 🔍 Semantic search: only retrieve facts relevant to user's current message
-  let facts = await memory.searchFacts(userId, userMessage);
+  const minimal = options.minimal === true;
+  const executiveContext = options.executiveContext || '';
 
-  // Record that these facts were accessed (for importance scoring)
-  memory.recordFactAccess(userId, facts.map(f => f.key));
+  // 🔍 Semantic search (skip if minimal mode)
+  let facts = [];
+  if (!minimal) {
+    facts = await memory.searchFacts(userId, userMessage);
+    // Record that these facts were accessed (for importance scoring)
+    memory.recordFactAccess(userId, facts.map(f => f.key));
+  }
 
-  // Fetch upcoming reminders so the LLM can reference them by ID for update/cancel
-  const upcomingReminders = await db.getUpcomingReminders(userId, 15);
+  // Fetch upcoming reminders (skip if minimal mode)
+  const upcomingReminders = minimal ? [] : await db.getUpcomingReminders(userId, 15);
 
-  // 👥 Get relevant people context
-  const peopleContext = await relationships.getPeopleContext(userId, userMessage, 5);
+  // 👥 Get relevant people context (skip if minimal mode)
+  const peopleContext = minimal ? '' : await relationships.getPeopleContext(userId, userMessage, 5);
 
-  const systemPrompt = await buildSystemPrompt(userId, facts, process.env.TIMEZONE || 'UTC', upcomingReminders, peopleContext);
+  const systemPrompt = await buildSystemPrompt(
+    userId, facts, process.env.TIMEZONE || 'UTC', upcomingReminders, peopleContext,
+    { minimal, executiveContext }
+  );
 
   const messages = [
     { role: 'system', content: systemPrompt }

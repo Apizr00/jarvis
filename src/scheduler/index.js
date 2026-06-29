@@ -85,7 +85,7 @@ async function startScheduler(bot) {
       const OWNER = String(process.env.TELEGRAM_OWNER_ID);
       // Need to import llm dynamically to avoid circular dependency
       const llm = require('../llm');
-      const reflection = await memory.generateDailyReflection(OWNER, llm.chat);
+      const reflection = await memory.generateDailyReflection(OWNER, llm.chatMimo);
       if (reflection && botInstance) {
         try {
           await botInstance.sendMessage(OWNER, '*🧘 Daily Reflection*\n\n' + reflection, { parse_mode: 'Markdown' });

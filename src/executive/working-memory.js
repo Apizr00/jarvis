@@ -1,0 +1,159 @@
+// src/executive/working-memory.js
+// ── Working Memory (Brain Scratchpad) ────────────────────────────────────────
+//
+// Working memory is NOT chat history. It's the AI's "current thinking" —
+// what problem is being solved, what ideas are on the table, what was rejected.
+//
+// Analogy: If long-term memory is a library, working memory is the desk you're
+// working at right now. Small, focused, volatile.
+//
+// Structure per user:
+//   {
+//     currentGoal:     string,   // what the user is trying to achieve
+//     currentProblem:  string,   // the obstacle or question right now
+//     possibleSolutions: [],     // ideas being considered
+//     rejectedIdeas:   [],       // ideas that didn't work (avoid repeating)
+//     nextSteps:       [],       // what to do next
+//     contextNotes:    string,   // quick notes about current context
+//     lastUpdated:     Date,
+//     messageCount:    number,   // messages since last reset
+//   }
+
+const store = new Map();
+
+const MAX_SOLUTIONS = 5;
+const MAX_REJECTED = 10;
+const MAX_NEXT_STEPS = 5;
+const EXPIRE_AFTER_MS = 30 * 60 * 1000; // 30 minutes inactivity → reset
+const RESET_AFTER_MESSAGES = 20;        // reset after 20 messages
+
+/**
+ * Get working memory for a user. Creates empty if not exists.
+ */
+function get(userId) {
+  if (!store.has(userId)) {
+    store.set(userId, {
+      currentGoal: '',
+      currentProblem: '',
+      possibleSolutions: [],
+      rejectedIdeas: [],
+      nextSteps: [],
+      contextNotes: '',
+      lastUpdated: new Date(),
+      messageCount: 0,
+    });
+  }
+
+  const wm = store.get(userId);
+
+  // Check expiry
+  if (Date.now() - wm.lastUpdated.getTime() > EXPIRE_AFTER_MS) {
+    reset(userId);
+    return store.get(userId);
+  }
+
+  // Check message count reset
+  if (wm.messageCount >= RESET_AFTER_MESSAGES) {
+    reset(userId);
+    return store.get(userId);
+  }
+
+  return wm;
+}
+
+/**
+ * Reset working memory for a user.
+ */
+function reset(userId) {
+  store.set(userId, {
+    currentGoal: '',
+    currentProblem: '',
+    possibleSolutions: [],
+    rejectedIdeas: [],
+    nextSteps: [],
+    contextNotes: '',
+    lastUpdated: new Date(),
+    messageCount: 0,
+  });
+}
+
+/**
+ * Update working memory fields. Only provided fields are changed.
+ */
+function update(userId, updates = {}) {
+  const wm = get(userId);
+
+  if (updates.currentGoal !== undefined) wm.currentGoal = updates.currentGoal;
+  if (updates.currentProblem !== undefined) wm.currentProblem = updates.currentProblem;
+  if (updates.contextNotes !== undefined) wm.contextNotes = updates.contextNotes;
+
+  if (updates.addSolution && !wm.possibleSolutions.includes(updates.addSolution)) {
+    wm.possibleSolutions.unshift(updates.addSolution);
+    if (wm.possibleSolutions.length > MAX_SOLUTIONS) wm.possibleSolutions.pop();
+  }
+
+  if (updates.rejectSolution) {
+    const idx = wm.possibleSolutions.indexOf(updates.rejectSolution);
+    if (idx !== -1) {
+      wm.possibleSolutions.splice(idx, 1);
+      wm.rejectedIdeas.unshift(updates.rejectSolution);
+      if (wm.rejectedIdeas.length > MAX_REJECTED) wm.rejectedIdeas.pop();
+    }
+  }
+
+  if (updates.addNextStep && !wm.nextSteps.includes(updates.addNextStep)) {
+    wm.nextSteps.push(updates.addNextStep);
+    if (wm.nextSteps.length > MAX_NEXT_STEPS) wm.nextSteps.shift();
+  }
+
+  if (updates.completeNextStep !== undefined) {
+    wm.nextSteps = wm.nextSteps.filter(s => s !== updates.completeNextStep);
+  }
+
+  wm.lastUpdated = new Date();
+  wm.messageCount++;
+}
+
+/**
+ * Mark that a message was processed (increments counter, updates timestamp).
+ */
+function touch(userId) {
+  const wm = get(userId);
+  wm.lastUpdated = new Date();
+  wm.messageCount++;
+}
+
+/**
+ * Format working memory as a compact string for system prompt injection.
+ * Returns empty string if nothing meaningful is being tracked.
+ */
+function formatForPrompt(userId) {
+  const wm = get(userId);
+
+  const parts = [];
+  if (wm.currentGoal) parts.push('🎯 Current Goal: ' + wm.currentGoal);
+  if (wm.currentProblem) parts.push('❓ Current Problem: ' + wm.currentProblem);
+  if (wm.contextNotes) parts.push('📝 Context: ' + wm.contextNotes);
+
+  if (wm.possibleSolutions.length > 0) {
+    parts.push('💡 Possible Solutions: ' + wm.possibleSolutions.slice(0, 3).join(', '));
+  }
+  if (wm.nextSteps.length > 0) {
+    parts.push('➡️ Next Steps: ' + wm.nextSteps.join(', '));
+  }
+  if (wm.rejectedIdeas.length > 0) {
+    parts.push('🚫 Rejected: ' + wm.rejectedIdeas.slice(0, 3).join(', '));
+  }
+
+  return parts.length > 0 ? 'WORKING MEMORY ────────────────────\n' + parts.join('\n') : '';
+}
+
+/**
+ * Check if working memory has active context (user is mid-task).
+ */
+function isActive(userId) {
+  const wm = get(userId);
+  return !!(wm.currentGoal || wm.currentProblem || wm.nextSteps.length > 0);
+}
+
+module.exports = { get, update, reset, touch, formatForPrompt, isActive };

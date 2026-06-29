@@ -103,6 +103,26 @@ async function getApiStatus(bot) {
     detail: mimoKey ? 'MIMO_API_KEY set' : 'MIMO_API_KEY missing',
   });
 
+  // ── LLM Routing Health ──────────────────────────────────────────────────
+  try {
+    const { getProviderHealth } = require('../llm');
+    const health = getProviderHealth();
+    const dsHealth = health.deepseek;
+    const mimoHealth = health.mimo;
+    results.push({
+      name: 'LLM Routing',
+      icon: '🔀',
+      configured: true,
+      connected: true,
+      detail: 'DS=' + (dsHealth.inCooldown ? '🔴cooldown' : '🟢active') +
+        ' | MiMo=' + (mimoHealth.inCooldown ? '🔴cooldown' : '🟢active') +
+        ' | DS fails=' + dsHealth.failures + ', MiMo fails=' + mimoHealth.failures,
+      _isRouting: true,
+    });
+  } catch {
+    // llm module not loadable yet (cold start) — skip
+  }
+
   // ── OpenAI Whisper (Voice) ────────────────────────────────────────────────
   const oaKey = process.env.OPENAI_API_KEY;
   let oaConnected = null;
@@ -172,6 +192,13 @@ function formatStatusMessage(statuses) {
   let msg = '*🔌 Jarvis API Status*\n\n';
 
   for (const s of statuses) {
+    // Skip routing detail in normal display — show compact version
+    if (s._isRouting) {
+      msg += s.icon + ' *' + s.name + '*\n';
+      msg += '  └ ' + s.detail + '\n';
+      continue;
+    }
+
     const icon = s.icon || '•';
     const connIcon = s.connected === true ? '✅' : s.connected === false ? '❌' : '⚪';
     const connLabel = s.connected !== null
