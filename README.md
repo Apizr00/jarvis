@@ -535,18 +535,18 @@ Jarvis has a sophisticated memory architecture:
 
 ---
 
-## 💰 Running costs
+## 💰 Kos Bulanan (Running Costs)
 
-| Service                     | Cost                             |
-| --------------------------- | -------------------------------- |
-| VPS (e.g. OVHcloud)         | ~€4/month                        |
-| DeepSeek API                | ~$0.14 / 1M input tokens         |
-| Xiaomi MiMo (backup only)   | Pay-as-you-go, pennies           |
-| OpenAI Whisper (voice only) | ~$0.006/min of audio             |
-| PostgreSQL (Neon free tier) | Free (10 GB storage)             |
-| Tavily Search (web search)  | Free tier (1,000 searches/month) |
-| OpenWeatherMap (weather)    | Free tier (1,000 calls/day)      |
-| Telegram Bot API            | Free                             |
-| Redis (optional, local)     | Free                             |
+| Servis                        | Kos                                |
+| ----------------------------- | ---------------------------------- |
+| VPS (contoh: OVHcloud)        | ~RM20/bulan (~$4)                  |
+| DeepSeek API                  | ~RM0.62 / 1M input tokens (~$0.14) |
+| Xiaomi MiMo (backup sahaja)   | Pay-as-you-go, sen-sen je          |
+| OpenAI Whisper (suara sahaja) | ~RM0.03/min audio (~$0.006)        |
+| PostgreSQL (Neon free tier)   | Percuma (10 GB storage)            |
+| Tavily Search (web search)    | Free tier (1,000 carian/bulan)     |
+| OpenWeatherMap (cuaca)        | Free tier (1,000 panggilan/hari)   |
+| Telegram Bot API              | Percuma                            |
+| Redis (optional, lokal)       | Percuma                            |
 
-**Total: roughly €4–5/month** for a fully personal AI assistant.
+**Jumlah: lebih kurang RM20–25/bulan** untuk pembantu AI peribadi sepenuhnya.
