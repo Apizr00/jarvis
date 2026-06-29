@@ -7,9 +7,9 @@ const redisCache = require('../redis');
 
 /**
  * Score how relevant a fact is to a user query.
- * Uses hybrid approach: keyword matching + time-context awareness.
+ * Uses hybrid approach: keyword matching + time-context awareness + semantic similarity.
  * @param {string} query - user's message
- * @param {{key:string, value:string}} fact
+ * @param {{key:string, value:string, confidence?:number, importance?:number}} fact
  * @returns {number} relevance score (higher = more relevant)
  */
 function scoreFactRelevance(query, fact) {
@@ -18,31 +18,98 @@ function scoreFactRelevance(query, fact) {
   const v = fact.value.toLowerCase();
   let score = 0;
 
-  // Split query into individual words (filter out very short words)
-  const queryWords = q.split(/\s+/).filter(w => w.length > 1);
+  // Split query into individual words (filter out very short words and common stop words)
+  const stopWords = ['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+    'of', 'is', 'are', 'was', 'were', 'yang', 'dan', 'di', 'ke', 'dari'];
+  const queryWords = q.split(/\s+/).filter(w => w.length > 2 && !stopWords.includes(w));
+
+  // Calculate word overlap scores
+  let keyExactMatches = 0;
+  let valueExactMatches = 0;
+  let partialMatches = 0;
 
   for (const word of queryWords) {
-    // Exact word match in key → strong signal
-    if (k.includes(word)) score += 3;
-    // Exact word match in value
-    if (v.includes(word)) score += 2;
-    // Substring match (e.g. "sleep" matches "sleeping")
-    if (k.indexOf(word) !== -1) score += 2;
-    if (v.indexOf(word) !== -1) score += 1;
+    // Exact word match in key → strongest signal
+    if (k.split(/[\s_-]/).includes(word)) {
+      score += 5;
+      keyExactMatches++;
+    } else if (k.includes(word)) {
+      // Partial match in key (e.g. "sleep" matches "sleeping")
+      score += 3;
+      partialMatches++;
+    }
+
+    // Exact word match in value → strong signal
+    if (v.split(/[\s_-]/).includes(word)) {
+      score += 3;
+      valueExactMatches++;
+    } else if (v.includes(word)) {
+      // Partial match in value
+      score += 1.5;
+      partialMatches++;
+    }
+  }
+
+  // Boost if multiple words match (indicates high relevance)
+  if (keyExactMatches + valueExactMatches >= 2) {
+    score += 5;
+  }
+
+  // Check for semantic category matches
+  const categories = {
+    schedule: ['pukul', 'jam', 'masa', 'time', 'when', 'bila', 'schedule', 'jadual', 'routine', 'rutin'],
+    work: ['kerja', 'work', 'job', 'office', 'pejabat', 'meeting', 'mesyuarat', 'task', 'tugasan'],
+    personal: ['suka', 'like', 'love', 'hate', 'prefer', 'favorite', 'kegemaran', 'hobby', 'hobi'],
+    location: ['where', 'mana', 'location', 'place', 'tempat', 'live', 'duduk', 'tinggal', 'address'],
+    people: ['who', 'siapa', 'friend', 'kawan', 'family', 'keluarga', 'name', 'nama'],
+    health: ['health', 'kesihatan', 'exercise', 'senaman', 'sleep', 'tidur', 'diet', 'makan'],
+  };
+
+  for (const [category, keywords] of Object.entries(categories)) {
+    const queryInCategory = keywords.some(kw => q.includes(kw));
+    const factInCategory = keywords.some(kw => k.includes(kw) || v.includes(kw));
+
+    if (queryInCategory && factInCategory) {
+      score += 4;
+      break; // Only boost once for category match
+    }
   }
 
   // Time-related queries → boost facts likely about schedule/routine
   const timeWords = ['pukul', 'jam', 'masa', 'time', 'hari', 'day', 'minggu', 'week',
     'bulan', 'month', 'tahun', 'year', 'pagi', 'morning', 'malam', 'night',
     'tidur', 'sleep', 'bangun', 'wake', 'kerja', 'work', 'jadual', 'schedule',
-    'rutin', 'routine', 'selalu', 'always', 'biasa', 'usually', 'setiap', 'every'];
-  if (timeWords.some(tw => q.includes(tw))) {
-    // Boost facts that contain time-related values
-    if (/\d/.test(v)) score += 1; // contains numbers (likely times/dates)
+    'rutin', 'routine', 'selalu', 'always', 'biasa', 'usually', 'setiap', 'every',
+    'daily', 'weekly', 'monthly'];
+
+  const isTimeQuery = timeWords.some(tw => q.includes(tw));
+  if (isTimeQuery) {
+    // Boost facts that contain numbers (likely times/dates)
+    if (/\d/.test(v)) {
+      score += 2;
+    }
+    // Boost facts with time-related keys
+    if (timeWords.some(tw => k.includes(tw))) {
+      score += 3;
+    }
   }
 
-  // Boost recently updated facts (recency bias)
-  // (we can't check updated_at here, but we'll sort by it later)
+  // Boost recently updated/accessed facts (recency bias)
+  // Higher importance = user referenced it more → should be more relevant
+  if (fact.importance && fact.importance > 5) {
+    score += Math.min(fact.importance / 10, 3); // Cap at +3
+  }
+
+  // Boost high-confidence facts (user explicitly set them)
+  if (fact.confidence && fact.confidence >= 0.9) {
+    score += 2;
+  }
+
+  // Question detection - if user is asking a question, prioritize facts that might answer it
+  const isQuestion = /\?|what|who|when|where|why|how|apa|siapa|bila|mana|kenapa|macam mana/i.test(q);
+  if (isQuestion && (keyExactMatches > 0 || valueExactMatches > 0)) {
+    score += 3;
+  }
 
   return score;
 }

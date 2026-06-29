@@ -4,6 +4,184 @@ const db = require('../db');
 const { dayjs, fmt } = require('../utils/datetime');
 const redisCache = require('../redis');
 
+// ── Tool Parameter Validation ──────────────────────────────────────────────
+
+/**
+ * Define required and optional parameters for each tool.
+ * This ensures LLM tool calls have all necessary data before execution.
+ */
+const TOOL_SCHEMAS = {
+  create_reminder: {
+    required: ['text', 'time'],
+    optional: ['recurrence'],
+  },
+  update_reminder: {
+    required: ['reminder_id'],
+    optional: ['text', 'time', 'recurrence'],
+  },
+  cancel_reminder: {
+    required: ['reminder_id'],
+    optional: [],
+  },
+  list_reminders: {
+    required: [],
+    optional: [],
+  },
+  create_event: {
+    required: ['title', 'time'],
+    optional: ['duration_minutes'],
+  },
+  update_event: {
+    required: ['event_id'],
+    optional: ['title', 'time', 'duration_minutes'],
+  },
+  cancel_event: {
+    required: ['event_id'],
+    optional: [],
+  },
+  add_note: {
+    required: ['content'],
+    optional: [],
+  },
+  get_today: {
+    required: [],
+    optional: [],
+  },
+  get_briefing: {
+    required: [],
+    optional: [],
+  },
+  get_quote: {
+    required: [],
+    optional: [],
+  },
+  set_fact: {
+    required: ['key', 'value'],
+    optional: [],
+  },
+  web_search: {
+    required: ['query'],
+    optional: [],
+  },
+  get_weekly_review: {
+    required: [],
+    optional: [],
+  },
+  set_config: {
+    required: ['key', 'value'],
+    optional: [],
+  },
+  revert_config: {
+    required: ['key'],
+    optional: [],
+  },
+  get_current_time: {
+    required: [],
+    optional: [],
+  },
+  create_task: {
+    required: ['title'],
+    optional: ['description', 'priority', 'due_date', 'goal_id'],
+  },
+  update_task: {
+    required: ['task_id'],
+    optional: ['title', 'description', 'priority', 'due_date', 'goal_id'],
+  },
+  start_task: {
+    required: ['task_id'],
+    optional: [],
+  },
+  complete_task: {
+    required: ['task_id'],
+    optional: [],
+  },
+  cancel_task: {
+    required: ['task_id'],
+    optional: [],
+  },
+  list_tasks: {
+    required: [],
+    optional: ['status'],
+  },
+  create_goal: {
+    required: ['title'],
+    optional: ['description', 'target_date'],
+  },
+  update_goal: {
+    required: ['goal_id'],
+    optional: ['title', 'description', 'progress', 'target_date'],
+  },
+  complete_goal: {
+    required: ['goal_id'],
+    optional: [],
+  },
+  abandon_goal: {
+    required: ['goal_id'],
+    optional: [],
+  },
+  list_goals: {
+    required: [],
+    optional: [],
+  },
+  save_relationship: {
+    required: ['name'],
+    optional: ['relationship', 'context', 'notes'],
+  },
+  list_people: {
+    required: [],
+    optional: [],
+  },
+};
+
+/**
+ * Validate a tool call has all required parameters.
+ * Returns { valid: boolean, error?: string }
+ */
+function validateToolCall(toolName, args) {
+  const schema = TOOL_SCHEMAS[toolName];
+
+  if (!schema) {
+    console.warn('[Tools] ⚠️ Unknown tool:', toolName);
+    return { valid: false, error: 'Unknown tool: ' + toolName };
+  }
+
+  if (!args || typeof args !== 'object') {
+    return { valid: false, error: 'Tool "' + toolName + '" requires parameters' };
+  }
+
+  // Check all required params are present and not empty
+  const missing = [];
+  for (const param of schema.required) {
+    const value = args[param];
+    if (value === undefined || value === null || value === '') {
+      missing.push(param);
+    }
+  }
+
+  if (missing.length > 0) {
+    return {
+      valid: false,
+      error: 'Tool "' + toolName + '" is missing required parameters: ' + missing.join(', '),
+    };
+  }
+
+  // Type validation for specific parameters
+  if (args.reminder_id !== undefined && (isNaN(args.reminder_id) || args.reminder_id <= 0)) {
+    return { valid: false, error: 'Invalid reminder_id' };
+  }
+  if (args.event_id !== undefined && (isNaN(args.event_id) || args.event_id <= 0)) {
+    return { valid: false, error: 'Invalid event_id' };
+  }
+  if (args.task_id !== undefined && (isNaN(args.task_id) || args.task_id <= 0)) {
+    return { valid: false, error: 'Invalid task_id' };
+  }
+  if (args.goal_id !== undefined && (isNaN(args.goal_id) || args.goal_id <= 0)) {
+    return { valid: false, error: 'Invalid goal_id' };
+  }
+
+  return { valid: true };
+}
+
 // ── Pending config changes (confirmation flow) ─────────────────────────────
 const pendingConfigChanges = new Map();
 
@@ -144,6 +322,13 @@ function parseLocalTime(isoString) {
  */
 async function executeTool(userId, toolCall) {
   const { name, args } = toolCall;
+
+  // ✅ Validate tool call parameters before execution
+  const validation = validateToolCall(name, args);
+  if (!validation.valid) {
+    console.error('[Tools] ❌ Validation failed:', validation.error);
+    return '⚠️ ' + validation.error + '. Please check your request and try again.';
+  }
 
   switch (name) {
 
@@ -379,8 +564,26 @@ async function executeTool(userId, toolCall) {
       if (!args.reminder_id) {
         return 'Which reminder did you want to cancel? I need an ID.';
       }
+
+      // ✅ Verify reminder exists before cancelling
+      const allReminders = await db.getUpcomingReminders(userId, 50);
+      const reminder = allReminders.find(r => r.id === parseInt(args.reminder_id));
+
+      if (!reminder) {
+        // List available reminders to help user
+        if (allReminders.length === 0) {
+          return '🤷‍♂️ You don\'t have any reminders to cancel.';
+        }
+        let reply = '⚠️ I can\'t find reminder #' + args.reminder_id + '.\n\n*Your reminders:*\n\n';
+        allReminders.slice(0, 10).forEach(r => {
+          const t = fmt(r.remind_at, 'ddd, D MMM [at] h:mm A');
+          reply += '• #' + r.id + ': ' + escapeMd(r.text) + ' — ' + t + '\n';
+        });
+        return reply.trim();
+      }
+
       await db.cancelReminder(args.reminder_id);
-      return '❌ *Cancelled* — reminder #' + args.reminder_id + ' has been removed.';
+      return '❌ *Cancelled* — reminder #' + args.reminder_id + ' (' + escapeMd(reminder.text) + ') has been removed.';
     }
 
     // ── update_reminder ─────────────────────────────────────────────────────

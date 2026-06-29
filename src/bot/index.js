@@ -1140,6 +1140,17 @@ async function createBot() {
         console.log('[Bot] Retry response type:', llmResponse.type, llmResponse.name ? '| tool=' + llmResponse.name : '');
       }
 
+      // ── Intercept: LLM fabricated a reminder list instead of calling tool ──
+      // If LLM returns a message that looks like a formatted reminder list,
+      // replace it with the actual tool call to get correct times from DB.
+      if (llmResponse.type === 'message') {
+        const fakeListPattern = /upcoming\s*reminders|⏰.*reminder|reminder.*#\d+|•.*#\d+.*—/i;
+        if (fakeListPattern.test(llmResponse.content)) {
+          console.log('[Bot] ⚠️ LLM hallucinated reminder list! Replacing with real list_reminders tool call.');
+          llmResponse = { type: 'tool', name: 'list_reminders', args: {} };
+        }
+      }
+
       if (llmResponse.type === 'message') {
         // Plain response — WARNING: no DB action occurs here
         // ⏰ Guard: fix any hallucinated time before sending

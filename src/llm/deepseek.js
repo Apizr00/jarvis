@@ -7,6 +7,7 @@ const redisCache = require('../redis');
 const memory = require('../memory');
 const relationships = require('../memory/relationships');
 const { buildSystemPrompt, normalizeLLMResponse } = require('./shared');
+const validator = require('./validator');
 
 const DEEPSEEK_URL = (process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com') + '/v1/chat/completions';
 
@@ -59,6 +60,35 @@ async function chat(userId, userMessage, conversationHistory) {
     const parsed = JSON.parse(cleaned);
     const normalized = normalizeLLMResponse(parsed);
     if (normalized) {
+      // ✅ Validate cancel_reminder calls against actual reminders
+      if (normalized.type === 'tool' && normalized.name === 'cancel_reminder') {
+        const cancelValidation = validator.validateCancelReminder(normalized, upcomingReminders, userMessage);
+        if (!cancelValidation.isValid) {
+          console.warn('[DeepSeek] ⛔️ Blocked invalid cancel_reminder:', cancelValidation.error);
+          return {
+            type: 'message',
+            content: cancelValidation.suggestion || 'I couldn\'t find that reminder.',
+          };
+        }
+      }
+
+      // ✅ Validate the response for hallucinations
+      const validation = validator.validateLLMResponse(normalized, {
+        timezone: process.env.TIMEZONE || 'UTC',
+        userFacts: facts,
+      });
+
+      if (!validation.isValid && normalized.type === 'message') {
+        console.warn('[DeepSeek] ⚠️ Hallucination detected:', validation.issues.join('; '));
+        // Override with a safe clarifying question
+        const fallback = validator.generateFallbackResponse(userMessage);
+        return { type: 'message', content: fallback };
+      }
+
+      if (validation.issues.length > 0) {
+        console.log('[DeepSeek] Validation issues (non-critical):', validation.issues.join('; '));
+      }
+
       console.log('[DeepSeek] Parsed OK (type=' + normalized.type + (normalized.name ? ', name=' + normalized.name : '') + ')');
       return normalized;
     }
@@ -73,6 +103,34 @@ async function chat(userId, userMessage, conversationHistory) {
         const extracted = JSON.parse(jsonMatch[0]);
         const normalized = normalizeLLMResponse(extracted);
         if (normalized) {
+          // ✅ Validate cancel_reminder calls against actual reminders
+          if (normalized.type === 'tool' && normalized.name === 'cancel_reminder') {
+            const cancelValidation = validator.validateCancelReminder(normalized, upcomingReminders, userMessage);
+            if (!cancelValidation.isValid) {
+              console.warn('[DeepSeek] ⛔️ Blocked invalid cancel_reminder:', cancelValidation.error);
+              return {
+                type: 'message',
+                content: cancelValidation.suggestion || 'I couldn\'t find that reminder.',
+              };
+            }
+          }
+
+          // ✅ Validate the response
+          const validation = validator.validateLLMResponse(normalized, {
+            timezone: process.env.TIMEZONE || 'UTC',
+            userFacts: facts,
+          });
+
+          if (!validation.isValid && normalized.type === 'message') {
+            console.warn('[DeepSeek] ⚠️ Hallucination detected:', validation.issues.join('; '));
+            const fallback = validator.generateFallbackResponse(userMessage);
+            return { type: 'message', content: fallback };
+          }
+
+          if (validation.issues.length > 0) {
+            console.log('[DeepSeek] Validation issues (non-critical):', validation.issues.join('; '));
+          }
+
           console.log('[DeepSeek] Regex-extracted JSON OK (type=' + normalized.type + (normalized.name ? ', name=' + normalized.name : '') + ')');
           return normalized;
         }
