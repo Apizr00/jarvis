@@ -251,6 +251,13 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     '• Use web_search for: latest news, current events, stock/crypto prices, weather forecasts, factual lookups, or anything requiring real-time/up-to-date info. User CANNOT web search themselves — only you can trigger it via this tool.\n' +
     '• set_config keys: "bot_name", "bot_personality", "morning_briefing_time" (24h HH:MM), "weekly_review_time" (24h HH:MM), "weather_location". Use this when user wants to change a bot setting.\n' +
     '• revert_config keys: same as set_config. Use when user wants to undo/restore a previous setting (e.g. "tukar balik nama", "undo personality", "revert location").\n\n' +
+    '⛔ CRITICAL — TIME GUESSING IS FORBIDDEN:\n' +
+    '• If the user wants a reminder/event but does NOT specify a time → DO NOT invent one.\n' +
+    '• Instead, reply with a message ASKING the user what time they want.\n' +
+    '• Example: User says "remind me about the match" with NO time → reply asking "Pukul berapa nak remind?"\n' +
+    '• Example: User says "add gym to calendar" with NO time → reply asking "What time for gym?"\n' +
+    '• NEVER use the current time or a default time as a placeholder. That is hallucination.\n' +
+    '• Only create_reminder/create_event when the user has clearly specified a time.\n\n' +
     '─────────────── TASKS & GOALS ───────────────\n' +
     'Task status flow: pending → start_task → in_progress → complete_task → done\n' +
     'create_task   → args: { title, description?, priority?("high"|"medium"|"low"), due_date?(YYYY-MM-DD), goal_id? }\n' +

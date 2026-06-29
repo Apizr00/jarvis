@@ -1175,6 +1175,8 @@ async function createBot() {
 
         // ── Confirmation flow: if tool returned {type:'confirm', message} ──
         if (result && typeof result === 'object' && result.type === 'confirm') {
+          // ⏰ Guard: fix any hallucinated times in the confirm message
+          result.message = fixHallucinatedTime(result.message);
           addToHistory(userId, 'assistant', result.message);
           try {
             await bot.sendMessage(chatId, result.message, {
@@ -1288,7 +1290,10 @@ async function createBot() {
         const followupText = followupResult
           ? (typeof followupResult === 'object' && followupResult.message ? followupResult.message : followupResult)
           : null;
-        const finalResult = followupText ? resultText + '\n\n' + followupText : resultText;
+        let finalResult = followupText ? resultText + '\n\n' + followupText : resultText;
+
+        // ⏰ Guard: fix any hallucinated times in tool result before sending
+        finalResult = fixHallucinatedTime(finalResult);
 
         addToHistory(userId, 'assistant', finalResult);
 

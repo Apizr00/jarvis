@@ -7,6 +7,36 @@ const redisCache = require('../redis');
 // ── Pending config changes (confirmation flow) ─────────────────────────────
 const pendingConfigChanges = new Map();
 
+// ── Dedup guard for set_fact ──────────────────────────────────────────────
+// Prevents identical (key, value) from being set twice within a short window.
+// Legitimate updates (same key, DIFFERENT value) always pass through.
+const recentSetFacts = new Map(); // key: `${userId}::${key}`, value: { value, timestamp }
+
+function isDuplicateSetFact(userId, key, value) {
+  const entryKey = userId + '::' + key;
+  const recent = recentSetFacts.get(entryKey);
+  if (!recent) return false;
+
+  // Same value within 5 seconds → duplicate
+  if (recent.value === value && Date.now() - recent.timestamp < 5000) {
+    return true;
+  }
+  return false;
+}
+
+function trackSetFact(userId, key, value) {
+  const entryKey = userId + '::' + key;
+  recentSetFacts.set(entryKey, { value, timestamp: Date.now() });
+
+  // Auto-cleanup after 10 seconds
+  setTimeout(() => {
+    const current = recentSetFacts.get(entryKey);
+    if (current && current.value === value) {
+      recentSetFacts.delete(entryKey);
+    }
+  }, 10000);
+}
+
 /**
  * Store a pending config change that requires confirmation.
  * @param {string} userId
@@ -307,8 +337,19 @@ async function executeTool(userId, toolCall) {
       if (!args.key || !args.value) {
         return 'I need both a key and value to remember that.';
       }
+
+      // 🛡️ Dedup guard: skip if identical (key, value) was just set
+      if (isDuplicateSetFact(userId, args.key, args.value)) {
+        console.log('[Tools] ⏭️  Skipping duplicate set_fact: ' + args.key + ' → ' + args.value);
+        // Return same format so the bot doesn't break, but don't hit DB again
+        const reply = '🧠 *Remembered!*\n\n' + escapeMd(args.key) + ' → ' + escapeMd(args.value);
+        return { type: 'result', tool: 'set_fact', message: reply, meta: { key: args.key, value: args.value } };
+      }
+
+      trackSetFact(userId, args.key, args.value);
       await db.setFact(userId, args.key, args.value);
       redisCache.invalidateFactsCache(userId);
+
       const reply = '🧠 *Remembered!*\n\n' + escapeMd(args.key) + ' → ' + escapeMd(args.value);
       return {
         type: 'result',
