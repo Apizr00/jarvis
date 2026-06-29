@@ -1292,9 +1292,9 @@ async function createBot() {
           : null;
         let finalResult = followupText ? resultText + '\n\n' + followupText : resultText;
 
-        // ⏰ Guard: fix any hallucinated times in tool result before sending
-        finalResult = fixHallucinatedTime(finalResult);
-
+        // ⏰ NOTE: Do NOT run fixHallucinatedTime on tool results.
+        // Tool results contain accurate times from the DB (reminders, events, etc.).
+        // fixHallucinatedTime would incorrectly replace those times with the current time.
         addToHistory(userId, 'assistant', finalResult);
 
         // Determine inline keyboard based on tool type
