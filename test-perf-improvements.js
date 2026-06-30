@@ -225,6 +225,45 @@ test('#7: llm/index.js computes dynamic maxTokens', () => {
   if (!code.includes('maxTokens = 400')) throw new Error('Missing medium-tier maxTokens=400');
 });
 
+test('#8: deepseek.js exports chatStream function', () => {
+  const deepseek = require('./src/llm/deepseek');
+  if (typeof deepseek.chatStream !== 'function') throw new Error('Missing chatStream export');
+});
+
+test('#8: mimo.js exports chatStream function', () => {
+  const mimo = require('./src/llm/mimo');
+  if (typeof mimo.chatStream !== 'function') throw new Error('Missing chatStream export');
+});
+
+test('#8: llm/index.js exports chatStream function', () => {
+  const llm = require('./src/llm');
+  if (typeof llm.chatStream !== 'function') throw new Error('Missing chatStream in router');
+});
+
+test('#8: deepseek.js chatStream uses stream:true', () => {
+  const code = fs.readFileSync('./src/llm/deepseek.js', 'utf8');
+  if (!code.includes('stream: true')) throw new Error('Missing stream:true in DeepSeek API call');
+  if (!code.includes('responseType: \'stream\'')) throw new Error('Missing responseType:stream');
+});
+
+test('#8: mimo.js chatStream uses stream:true', () => {
+  const code = fs.readFileSync('./src/llm/mimo.js', 'utf8');
+  if (!code.includes('stream: true')) throw new Error('Missing stream:true in MiMo API call');
+  if (!code.includes('responseType: \'stream\'')) throw new Error('Missing responseType:stream');
+});
+
+test('#8: bot/index.js uses chatStream for medium/deep tiers', () => {
+  const code = fs.readFileSync('./src/bot/index.js', 'utf8');
+  if (!code.includes('chatStream')) throw new Error('Missing chatStream call');
+  if (!code.includes('decision.tier === \'fast\'')) throw new Error('Missing tier check for streaming');
+});
+
+test('#8: bot/index.js has streaming editMessageText logic', () => {
+  const code = fs.readFileSync('./src/bot/index.js', 'utf8');
+  if (!code.includes('editMessageText')) throw new Error('Missing editMessageText for streaming');
+  if (!code.includes('streamMsg')) throw new Error('Missing streamMsg tracking');
+});
+
 // ═════════════════════════════════════════════════════════════════
 // RESULT
 // ═════════════════════════════════════════════════════════════════

@@ -179,4 +179,132 @@ async function chat(userId, userMessage, conversationHistory, options = {}, pref
   }
 }
 
-module.exports = { chat };
+/**
+ * Streaming version — calls onChunk(displayText) progressively as tokens arrive.
+ * Only extracts displayable content for message-type responses.
+ * For tool calls, buffers silently and returns the parsed result.
+ */
+async function chatStream(userId, userMessage, conversationHistory, options = {}, prefetched = null, onChunk) {
+  if (!conversationHistory) conversationHistory = [];
+  if (typeof onChunk !== 'function') onChunk = () => { };
+
+  const minimal = options.minimal === true;
+  const executiveContext = options.executiveContext || '';
+
+  let facts, upcomingReminders, peopleContext;
+  if (prefetched) {
+    ({ facts, upcomingReminders, peopleContext } = prefetched);
+  } else if (!minimal) {
+    [facts, upcomingReminders, peopleContext] = await Promise.all([
+      memory.searchFacts(userId, userMessage),
+      db.getUpcomingReminders(userId, 15),
+      relationships.getPeopleContext(userId, userMessage, 5),
+    ]);
+    memory.recordFactAccess(userId, facts.map(f => f.key));
+  } else {
+    facts = [];
+    upcomingReminders = [];
+    peopleContext = '';
+  }
+
+  const systemPrompt = await buildSystemPrompt(
+    userId, facts, process.env.TIMEZONE || 'UTC', upcomingReminders, peopleContext,
+    { minimal, executiveContext }
+  );
+
+  const messages = [
+    { role: 'system', content: systemPrompt }
+  ].concat(conversationHistory).concat([
+    { role: 'user', content: userMessage }
+  ]);
+
+  const response = await axios.post(
+    MIMO_URL,
+    {
+      model: process.env.MIMO_MODEL || 'mimo-v2.5-pro',
+      messages: messages,
+      max_tokens: options.maxTokens || 800,
+      temperature: 0.3,
+      stream: true,
+    },
+    {
+      headers: {
+        'Authorization': 'Bearer ' + process.env.MIMO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      timeout: 30000,
+      responseType: 'stream',
+    }
+  );
+
+  let rawText = '';
+  let isMessage = null;
+  const MESSAGE_PREFIX = '{"type":"message","content":"';
+
+  await new Promise((resolve, reject) => {
+    let buffer = '';
+
+    response.data.on('data', (chunk) => {
+      buffer += chunk.toString();
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ') || line === 'data: [DONE]') continue;
+
+        try {
+          const json = JSON.parse(line.slice(6));
+          const delta = json.choices?.[0]?.delta?.content;
+          if (!delta) continue;
+
+          rawText += delta;
+
+          if (isMessage === null && rawText.length > 10) {
+            isMessage = rawText.trimStart().startsWith(MESSAGE_PREFIX);
+          }
+
+          if (isMessage === true && onChunk) {
+            let display = rawText;
+            display = display.replace(/^\s*\{"type":"message","content":"/, '');
+            if (display.endsWith('"}') && rawText.endsWith('"}')) {
+              display = display.slice(0, -2);
+            }
+            onChunk(display);
+          }
+        } catch { /* skip malformed SSE chunks */ }
+      }
+    });
+
+    response.data.on('end', resolve);
+    response.data.on('error', reject);
+  });
+
+  console.log('[MiMo] Stream complete (' + rawText.length + ' chars):', rawText.slice(0, 200));
+
+  try {
+    const cleaned = rawText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
+    const parsed = JSON.parse(cleaned);
+    const normalized = normalizeLLMResponse(parsed);
+    if (normalized) {
+      if (normalized.type === 'tool' && normalized.name === 'cancel_reminder') {
+        const cancelValidation = validator.validateCancelReminder(normalized, upcomingReminders, userMessage);
+        if (!cancelValidation.isValid) {
+          return { type: 'message', content: cancelValidation.suggestion || "I couldn't find that reminder." };
+        }
+      }
+      if (!minimal) {
+        const validation = validator.validateLLMResponse(normalized, { timezone: process.env.TIMEZONE || 'UTC', userFacts: facts, upcomingReminders });
+        if (!validation.isValid && normalized.type === 'message') {
+          if (validation.forceToolCall) return { type: 'tool', name: 'list_reminders', args: {} };
+          return { type: 'message', content: validator.generateFallbackResponse(userMessage) };
+        }
+      }
+      return normalized;
+    }
+    return { type: 'message', content: rawText };
+  } catch {
+    return { type: 'message', content: rawText };
+  }
+}
+
+module.exports = { chat, chatStream };

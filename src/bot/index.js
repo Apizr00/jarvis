@@ -1334,38 +1334,55 @@ async function createBot() {
 
       const history = getHistory(userId);
 
-      // 🔥 If LLM takes > 3s, show "Sedang berfikir..." interim message
+      // 🔥 Streaming for medium/deep — tokens appear progressively in Telegram
+      // Fast tier uses quick non-streaming + Promise.race interim message
       let thinkingMsg = null;
       let thinkingTimer = null;
-
-      const llmPromise = llm.chat(userId, text, history, llmOptions);
-      const timeoutPromise = new Promise((resolve) => {
-        thinkingTimer = setTimeout(async () => {
-          try {
-            thinkingMsg = await bot.sendMessage(chatId, '🤔 *Sedang berfikir…*', { parse_mode: 'Markdown' });
-          } catch { /* ignore — bot might be blocked */ }
-          resolve('timeout');
-        }, 3000);
-      });
-
       let llmResponse;
-      const raceResult = await Promise.race([llmPromise, timeoutPromise]);
 
-      if (raceResult === 'timeout') {
-        // Interim message sent — now wait for the actual LLM response
-        llmResponse = await llmPromise;
+      if (decision.tier === 'fast') {
+        // ── Fast tier: non-streaming (already quick, < 1s typically) ─────
+        const llmPromise = llm.chat(userId, text, history, llmOptions);
+        const timeoutPromise = new Promise((resolve) => {
+          thinkingTimer = setTimeout(async () => {
+            try {
+              thinkingMsg = await bot.sendMessage(chatId, '🤔 *Sedang berfikir…*', { parse_mode: 'Markdown' });
+            } catch { /* ignore */ }
+            resolve('timeout');
+          }, 3000);
+        });
+
+        const raceResult = await Promise.race([llmPromise, timeoutPromise]);
+        if (raceResult === 'timeout') {
+          llmResponse = await llmPromise;
+        } else {
+          clearTimeout(thinkingTimer);
+          llmResponse = raceResult;
+        }
+        if (thinkingMsg) {
+          try { await bot.deleteMessage(chatId, thinkingMsg.message_id); } catch { }
+        }
       } else {
-        // LLM responded quickly — cancel the pending timer
-        clearTimeout(thinkingTimer);
-        llmResponse = raceResult;
-      }
+        // ── Medium/Deep tier: STREAMING — first token appears in ~200ms ─
+        let streamMsg = null;
 
-      // Clean up interim "thinking" message if it was sent
-      if (thinkingMsg) {
-        try {
-          await bot.deleteMessage(chatId, thinkingMsg.message_id);
-        } catch {
-          // Delete may fail if message was already removed — harmless
+        llmResponse = await llm.chatStream(userId, text, history, llmOptions, async (displayText) => {
+          try {
+            if (!streamMsg) {
+              streamMsg = await bot.sendMessage(chatId, displayText);
+            } else {
+              await bot.editMessageText(displayText, { chat_id: chatId, message_id: streamMsg.message_id });
+            }
+          } catch {
+            // Edit may fail if message was deleted — harmless, next chunk will create new
+            streamMsg = null;
+          }
+        });
+
+        // If tool call: delete the streaming placeholder (showed raw JSON fragments)
+        if (llmResponse.type === 'tool' && streamMsg) {
+          try { await bot.deleteMessage(chatId, streamMsg.message_id); } catch { }
+          streamMsg = null;
         }
       }
 

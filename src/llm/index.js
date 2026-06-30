@@ -212,6 +212,60 @@ function getProviderHealth() {
 
 // ── Convenience wrappers ────────────────────────────────────────────────────
 
+/**
+ * Streaming chat — progressively calls onChunk(displayText) as LLM generates tokens.
+ * Falls back to non-streaming chat() if provider doesn't support streaming.
+ *
+ * @param {string} userId
+ * @param {string} userMessage
+ * @param {Array} conversationHistory
+ * @param {{provider?:string, minimal?:boolean, executiveContext?:string}} options
+ * @param {function} onChunk - callback receiving incremental display text
+ * @returns {Promise<{type:string, content?:string, name?:string, args?:object, _provider?:string}>}
+ */
+async function chatStream(userId, userMessage, conversationHistory, options = {}, onChunk) {
+  const { primary, reason } = selectProvider(userMessage, options);
+
+  console.log('[LLM] 🌊 Streaming: ' + primary + ' (reason: ' + reason + ')' +
+    (options.minimal ? ' [minimal]' : '') +
+    (options.executiveContext ? ' [exec]' : ''));
+
+  const context = await prepareContext(userId, userMessage, options);
+
+  const providerOpts = {
+    minimal: options.minimal,
+    executiveContext: options.executiveContext,
+    maxTokens: options.minimal ? 150 : (options.executiveContext ? 800 : 400),
+  };
+
+  const providerFn = primary === 'deepseek' ? deepseek.chatStream : mimo.chatStream;
+
+  try {
+    const result = await providerFn(userId, userMessage, conversationHistory, providerOpts, context, onChunk);
+    result._provider = primary;
+    recordSuccess(primary);
+    return result;
+  } catch (err) {
+    console.warn('[LLM] ⚠️  ' + primary + ' stream failed (' + err.message + '), trying fallback...');
+    recordFailure(primary);
+
+    // Fall back to non-streaming
+    const fallback = primary === 'deepseek' ? 'mimo' : 'deepseek';
+    try {
+      const fallbackFn = fallback === 'deepseek' ? deepseek.chat : mimo.chat;
+      const result = await fallbackFn(userId, userMessage, conversationHistory, providerOpts, context);
+      result._provider = fallback;
+      console.log('[LLM] ✅ ' + fallback + ' fallback succeeded');
+      recordSuccess(fallback);
+      return result;
+    } catch (fallbackErr) {
+      console.error('[LLM] ❌ Both providers failed:', fallbackErr.message);
+      recordFailure(fallback);
+      throw new Error('All LLM providers are unavailable.');
+    }
+  }
+}
+
 /** Force MiMo (for extraction, reflection, casual tasks). Falls back to DeepSeek. */
 async function chatMimo(userId, userMessage, conversationHistory) {
   return chat(userId, userMessage, conversationHistory, { provider: 'mimo' });
@@ -222,4 +276,4 @@ async function chatDeepseek(userId, userMessage, conversationHistory) {
   return chat(userId, userMessage, conversationHistory, { provider: 'deepseek' });
 }
 
-module.exports = { chat, chatMimo, chatDeepseek, detectIntent, getProviderHealth };
+module.exports = { chat, chatStream, chatMimo, chatDeepseek, detectIntent, getProviderHealth };
