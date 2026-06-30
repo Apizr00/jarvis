@@ -23,6 +23,9 @@ const workingMemory = require('./working-memory');
 const worldModelModule = require('./world-model');
 const planner = require('./planner');
 const evaluator = require('./evaluator');
+const stateMachine = require('./state-machine');
+const lifecycle = require('./lifecycle');
+const trace = require('../utils/trace');
 const db = require('../db');
 const memory = require('../memory');
 const relationships = require('../memory/relationships');
@@ -110,6 +113,7 @@ function assessNeeds(intent, userMessage) {
  *
  * @param {string} userId
  * @param {string} userMessage
+ * @param {object} [sm] - optional StateMachine instance for tracing
  * @returns {Promise<{
  *   tier: 'fast'|'medium'|'deep',
  *   needs: object,
@@ -120,8 +124,9 @@ function assessNeeds(intent, userMessage) {
  *   reason: string
  * }>}
  */
-async function decide(userId, userMessage) {
+async function decide(userId, userMessage, sm) {
   // ── Step 1: Advanced intent detection (Fasa 1) ──────────────────────────
+  const intentSpan = trace.startSpan('intent_detection', { userId });
   const wm = workingMemory.get(userId);
   const context = {
     workingMemory: wm,
@@ -129,6 +134,18 @@ async function decide(userId, userMessage) {
   };
 
   const intent = detectIntentAdvanced(userMessage, context);
+  intentSpan.end({ tier: intent.tier, category: intent.category, mood: intent.mood });
+
+  // ── State machine transition ──────────────────────────────────────────
+  if (sm) {
+    sm.transition(stateMachine.STATES.INTENT_DETECTED, {
+      tier: intent.tier,
+      category: intent.category,
+      mood: intent.mood,
+      confidence: intent.confidence,
+      reason: intent.reason,
+    });
+  }
 
   // ── Step 2: Context-aware escalation ────────────────────────────────────
   const wmActive = workingMemory.isActive(userId);
@@ -192,9 +209,10 @@ async function decide(userId, userMessage) {
  * @param {string} userId
  * @param {object} decision - from decide()
  * @param {string} userMessage - current user message
+ * @param {object} [sm] - optional StateMachine instance for tracing
  * @returns {Promise<string>} context block to inject
  */
-async function buildContext(userId, decision, userMessage) {
+async function buildContext(userId, decision, userMessage, sm) {
   const blocks = [];
 
   // ── Working Memory ─────────────────────────────────────────────────────
@@ -211,13 +229,33 @@ async function buildContext(userId, decision, userMessage) {
 
   // ── Memory Facts ───────────────────────────────────────────────────────
   if (decision.needs.memory) {
+    const memSpan = trace.startSpan('memory_load', { userId });
     const facts = await memory.searchFacts(userId, userMessage);
     memory.recordFactAccess(userId, facts.map(f => f.key));
 
+    // Log memory access for observability
+    trace.logMemoryAccess(userId, facts.map(f => f.key), facts.length);
+
     if (facts.length > 0) {
-      const factsBlock = 'MEMORY FACTS ──────────────────────\n' +
-        facts.map(f => '• ' + f.key + ': ' + f.value).join('\n');
+      // ── Fact Lock: classify facts into tiers ──────────────────────────
+      let factsBlock;
+      try {
+        const validator = require('../llm/validator');
+        const { factLockPrompt } = validator.buildFactLockContext(facts);
+        if (factLockPrompt) {
+          factsBlock = 'USER FACTS (Fact-Locked) ──────────\n' + factLockPrompt;
+        } else {
+          factsBlock = 'USER FACTS ──────────────────────\n' +
+            facts.map(f => '• ' + f.key + ': ' + f.value).join('\n');
+        }
+      } catch {
+        factsBlock = 'USER FACTS ──────────────────────\n' +
+          facts.map(f => '• ' + f.key + ': ' + f.value).join('\n');
+      }
       blocks.push(factsBlock);
+      memSpan.end({ factCount: facts.length, tiered: true });
+    } else {
+      memSpan.end({ factCount: 0 });
     }
   }
 
@@ -237,6 +275,14 @@ async function buildContext(userId, decision, userMessage) {
         upcomingReminders.map(r => '• #' + r.id + ': ' + r.text + ' at ' + r.remind_at).join('\n');
       blocks.push(reminderBlock);
     }
+  }
+
+  // ── State machine transition ──────────────────────────────────────────
+  if (sm) {
+    sm.transition(stateMachine.STATES.MEMORY_LOADED, {
+      sectionsLoaded: blocks.length,
+      needsMet: Object.entries(decision.needs).filter(([, v]) => v).map(([k]) => k),
+    });
   }
 
   return blocks.join('\n\n');
@@ -290,6 +336,55 @@ function decidePostProcessing(decision, llmResponse) {
   return actions;
 }
 
+// ── 6. Pipeline Factory ─────────────────────────────────────────────────────
+
+/**
+ * Create a new execution pipeline with state machine and tracing.
+ * Call this at the start of every message processing cycle.
+ *
+ * @param {string} userId
+ * @param {string} userMessage
+ * @returns {{sm: object, traceId: string}}
+ */
+function createPipeline(userId, userMessage) {
+  const sm = stateMachine.create(userId, userMessage);
+  trace.setTraceId(sm.traceId);
+  return { sm, traceId: sm.traceId };
+}
+
+/**
+ * Transition to tools_executed state (called after tool execution).
+ * @param {object} sm - StateMachine instance
+ * @param {object} [meta] - metadata about tool execution
+ */
+function transitionToolsExecuted(sm, meta = {}) {
+  if (sm) {
+    sm.transition(stateMachine.STATES.TOOLS_EXECUTED, meta);
+  }
+}
+
+/**
+ * Transition to response_evaluated state (called after evaluation).
+ * @param {object} sm - StateMachine instance
+ * @param {object} [meta] - metadata about evaluation
+ */
+function transitionResponseEvaluated(sm, meta = {}) {
+  if (sm) {
+    sm.transition(stateMachine.STATES.RESPONSE_EVALUATED, meta);
+  }
+}
+
+/**
+ * Finish the pipeline successfully.
+ * @param {object} sm - StateMachine instance
+ * @param {object} [meta] - final metadata
+ */
+function finishPipeline(sm, meta = {}) {
+  if (sm) {
+    sm.finish(stateMachine.STATES.COMPLETED, meta);
+  }
+}
+
 // ── Exports ─────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -300,8 +395,15 @@ module.exports = {
   worldModel,
   planner,
   evaluator,
+  lifecycle,
   getWorldModel,
   updateWorldModel,
   formatWorldModelForPrompt,
   detectIntentAdvanced,
+  // State machine & observability
+  stateMachine,
+  createPipeline,
+  transitionToolsExecuted,
+  transitionResponseEvaluated,
+  finishPipeline,
 };

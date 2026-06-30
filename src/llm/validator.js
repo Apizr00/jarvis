@@ -655,6 +655,246 @@ function validateCancelReminder(toolCall, reminders, userMessage) {
   return { isValid: true };
 }
 
+// ── Fact Lock System ────────────────────────────────────────────────────────
+// Classifies facts into three confidence tiers:
+//   - verified:   backed by explicit user statement or tool execution
+//   - inferred:   deduced from patterns, context, or related facts
+//   - uncertain:  guessed, assumed, or low-confidence extraction
+//
+// The LLM is only allowed to ASSERT verified facts.
+// Inferred facts must be hedged ("you might prefer...").
+// Uncertain facts must be presented as questions ("do you...?").
+
+const FACT_TIERS = Object.freeze({
+  VERIFIED: 'verified',
+  INFERRED: 'inferred',
+  UNCERTAIN: 'uncertain',
+});
+
+/**
+ * Classify a fact into a confidence tier based on its metadata.
+ * 
+ * @param {object} fact - { key, value, confidence?, importance?, source?, created_at?, mention_count? }
+ * @returns {{tier: 'verified'|'inferred'|'uncertain', score: number, reason: string}}
+ */
+function classifyFact(fact) {
+  let score = 0;
+  const reasons = [];
+
+  // ── Factor 1: Explicit confidence score ──────────────────────────────
+  if (typeof fact.confidence === 'number') {
+    score += fact.confidence * 40; // 0-40 points from confidence
+    if (fact.confidence >= 0.9) reasons.push('high explicit confidence (' + fact.confidence + ')');
+    else if (fact.confidence >= 0.7) reasons.push('moderate explicit confidence (' + fact.confidence + ')');
+    else reasons.push('low explicit confidence (' + fact.confidence + ')');
+  } else {
+    score += 20; // default moderate confidence
+    reasons.push('no explicit confidence score');
+  }
+
+  // ── Factor 2: Mention count (repeated mentions = more reliable) ──────
+  const mentions = fact.mention_count || 1;
+  if (mentions >= 5) {
+    score += 25;
+    reasons.push('mentioned ' + mentions + ' times');
+  } else if (mentions >= 3) {
+    score += 15;
+    reasons.push('mentioned ' + mentions + ' times');
+  } else if (mentions >= 2) {
+    score += 8;
+    reasons.push('mentioned ' + mentions + ' times');
+  } else {
+    score += 3;
+    reasons.push('mentioned only once');
+  }
+
+  // ── Factor 3: Source of the fact ─────────────────────────────────────
+  const source = (fact.source || '').toLowerCase();
+  if (source === 'user_explicit') {
+    score += 30;
+    reasons.push('explicitly stated by user');
+  } else if (source === 'user_implied') {
+    score += 10;
+    reasons.push('implied by user');
+  } else if (source === 'extracted') {
+    score += 15;
+    reasons.push('LLM-extracted from conversation');
+  } else if (source === 'inferred') {
+    score += 5;
+    reasons.push('inferred from patterns');
+  } else if (source === 'tool') {
+    score += 30;
+    reasons.push('set via tool call');
+  } else {
+    score += 10;
+    reasons.push('unknown source');
+  }
+
+  // ── Factor 4: Recency (newer facts = more reliable) ──────────────────
+  if (fact.created_at) {
+    const ageMs = Date.now() - new Date(fact.created_at).getTime();
+    const ageDays = ageMs / (24 * 60 * 60 * 1000);
+    if (ageDays < 1) {
+      score += 15;
+      reasons.push('created today');
+    } else if (ageDays < 7) {
+      score += 10;
+      reasons.push('created within a week');
+    } else if (ageDays < 30) {
+      score += 5;
+      reasons.push('created within a month');
+    } else {
+      score += 1;
+      reasons.push('older than a month');
+    }
+  }
+
+  // ── Factor 5: Importance (more important = user cares more → likely more accurate) ──
+  if (typeof fact.importance === 'number') {
+    score += fact.importance * 10; // 0-10 points from importance
+  }
+
+  // ── Determine tier ───────────────────────────────────────────────────
+  let tier;
+  if (score >= 75) {
+    tier = FACT_TIERS.VERIFIED;
+  } else if (score >= 40) {
+    tier = FACT_TIERS.INFERRED;
+  } else {
+    tier = FACT_TIERS.UNCERTAIN;
+  }
+
+  return {
+    tier,
+    score: Math.round(score),
+    reason: reasons.join('; '),
+  };
+}
+
+/**
+ * Get the assertion level for a fact — how the bot should express this fact.
+ * Returns phrasing guidance for the LLM.
+ * 
+ * @param {object} fact - the memory fact
+ * @returns {{level: 'assert'|'hedge'|'question', guidance: string}}
+ */
+function getAssertionLevel(fact) {
+  const { tier, score } = classifyFact(fact);
+
+  switch (tier) {
+    case FACT_TIERS.VERIFIED:
+      return {
+        level: 'assert',
+        guidance: 'You can confidently state this fact. Use definitive language: "Your ' + fact.key + ' is ' + fact.value + '."',
+      };
+    case FACT_TIERS.INFERRED:
+      return {
+        level: 'hedge',
+        guidance: 'Hedge this fact. Use cautious language: "Based on what you\'ve shared, ' + fact.key + ' seems to be ' + fact.value + '" or "You might prefer ' + fact.value + '."',
+      };
+    case FACT_TIERS.UNCERTAIN:
+    default:
+      return {
+        level: 'question',
+        guidance: 'Do NOT assert this fact. Present it as a question: "Is your ' + fact.key + ' ' + fact.value + '?" or "I\'m not sure — do you ' + fact.key + ' ' + fact.value + '?"',
+      };
+  }
+}
+
+/**
+ * Tag facts with their tier and generate a fact-lock summary for the system prompt.
+ * 
+ * @param {Array<object>} facts - array of memory facts
+ * @returns {{verifiedFacts: Array, inferredFacts: Array, uncertainFacts: Array, factLockPrompt: string}}
+ */
+function buildFactLockContext(facts = []) {
+  const verifiedFacts = [];
+  const inferredFacts = [];
+  const uncertainFacts = [];
+
+  for (const fact of facts) {
+    const { tier } = classifyFact(fact);
+    switch (tier) {
+      case FACT_TIERS.VERIFIED:
+        verifiedFacts.push(fact);
+        break;
+      case FACT_TIERS.INFERRED:
+        inferredFacts.push(fact);
+        break;
+      case FACT_TIERS.UNCERTAIN:
+        uncertainFacts.push(fact);
+        break;
+    }
+  }
+
+  let prompt = '';
+
+  if (verifiedFacts.length > 0) {
+    prompt += '✅ VERIFIED FACTS (you can ASSERT these confidently):\n';
+    prompt += verifiedFacts.map(f => '  • ' + f.key + ': ' + f.value).join('\n') + '\n\n';
+  }
+
+  if (inferredFacts.length > 0) {
+    prompt += '⚠️ INFERRED FACTS (you MUST HEDGE these — use "might", "seems", "based on patterns"):\n';
+    prompt += inferredFacts.map(f => '  • ' + f.key + ': ' + f.value).join('\n') + '\n\n';
+  }
+
+  if (uncertainFacts.length > 0) {
+    prompt += '❓ UNCERTAIN FACTS (you MUST present as QUESTIONS — "do you...?", "is your...?"):\n';
+    prompt += uncertainFacts.map(f => '  • ' + f.key + ': ' + f.value).join('\n') + '\n\n';
+  }
+
+  return { verifiedFacts, inferredFacts, uncertainFacts, factLockPrompt: prompt };
+}
+
+/**
+ * Resolve conflicts between two facts with the same key.
+ * Uses confidence + recency + source to determine which fact to keep.
+ * 
+ * @param {object} existing - the existing fact in memory
+ * @param {object} incoming - the new/incoming fact
+ * @returns {{keep: 'existing'|'incoming', reason: string, mergedValue?: string}}
+ */
+function resolveFactConflict(existing, incoming) {
+  const existingClass = classifyFact(existing);
+  const incomingClass = classifyFact(incoming);
+
+  // If incoming has much higher score → replace
+  if (incomingClass.score >= existingClass.score + 15) {
+    return {
+      keep: 'incoming',
+      reason: 'Incoming fact has significantly higher confidence (' +
+        incomingClass.score + ' vs ' + existingClass.score + '): ' + incomingClass.reason,
+    };
+  }
+
+  // If existing has much higher score → keep
+  if (existingClass.score >= incomingClass.score + 15) {
+    return {
+      keep: 'existing',
+      reason: 'Existing fact has significantly higher confidence (' +
+        existingClass.score + ' vs ' + incomingClass.score + '): ' + existingClass.reason,
+    };
+  }
+
+  // If scores are close → prefer more recent
+  const existingAge = existing.created_at ? Date.now() - new Date(existing.created_at).getTime() : Infinity;
+  const incomingAge = incoming.created_at ? Date.now() - new Date(incoming.created_at).getTime() : Infinity;
+
+  if (incomingAge < existingAge) {
+    return {
+      keep: 'incoming',
+      reason: 'Similar confidence but incoming is more recent (by ' +
+        Math.round((existingAge - incomingAge) / (24 * 60 * 60 * 1000)) + ' days)',
+    };
+  }
+
+  return {
+    keep: 'existing',
+    reason: 'Similar confidence and existing is more recent or same age',
+  };
+}
+
 module.exports = {
   detectActionHallucination,
   detectTimeHallucination,
@@ -663,4 +903,10 @@ module.exports = {
   validateLLMResponse,
   generateFallbackResponse,
   validateCancelReminder,
+  // Fact Lock System
+  FACT_TIERS,
+  classifyFact,
+  getAssertionLevel,
+  buildFactLockContext,
+  resolveFactConflict,
 };

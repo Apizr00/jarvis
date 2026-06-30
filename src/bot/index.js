@@ -18,6 +18,9 @@ const relationships = require('../memory/relationships');
 const domains = require('../memory/domains');
 const patterns = require('../patterns');
 const executive = require('../executive');
+const stateMachine = require('../executive/state-machine');
+const lifecycle = require('../executive/lifecycle');
+const trace = require('../utils/trace');
 const { invalidateConfigCache } = require('../llm/shared');
 
 const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
@@ -1320,19 +1323,91 @@ async function createBot() {
     }
   });
 
+  // ── /why command — explain the bot's last decision ────────────────────────
+  bot.onText(/\/why/, async (msg) => {
+    if (!isOwner(msg)) return;
+    await bot.sendChatAction(msg.chat.id, 'typing');
+    try {
+      const explanation = stateMachine.formatWhy(OWNER_ID);
+      await safeSendMessage(bot, msg.chat.id, explanation);
+    } catch (err) {
+      console.error('/why error:', err.message);
+      await bot.sendMessage(msg.chat.id, '❌ Could not retrieve execution trace.');
+    }
+  });
+
+  // ── /trace command — show last execution trace with full observability ────
+  bot.onText(/\/trace(?:\s+(\d+))?/, async (msg, match) => {
+    if (!isOwner(msg)) return;
+    await bot.sendChatAction(msg.chat.id, 'typing');
+    try {
+      const count = match && match[1] ? Math.min(parseInt(match[1], 10), 10) : 3;
+      const traces = stateMachine.getRecentTraces(OWNER_ID, count);
+
+      if (traces.length === 0) {
+        return bot.sendMessage(msg.chat.id, '🤷 No execution traces found. Send me a message first!');
+      }
+
+      let report = '🔍 **Last ' + traces.length + ' Execution Traces**\n\n';
+      for (const t of traces) {
+        report += '`' + t.traceId + '` — ' + (t.durationMs || '?') + 'ms — **' + t.finalState + '**\n';
+        report += '  User: ' + (t.userMessage || '(none)').slice(0, 60) + '\n';
+        report += '  Phases: ' + t.transitions.map(tr => tr.from + '→' + tr.to).join(', ') + '\n\n';
+      }
+
+      // Add latency stats
+      const latencyStats = trace.getLatencyStats(OWNER_ID);
+      if (Object.keys(latencyStats).length > 0) {
+        report += '📊 **Avg Latency per Phase:**\n';
+        for (const [phase, stats] of Object.entries(latencyStats)) {
+          report += '  ' + phase + ': avg=' + stats.avgMs + 'ms, p95=' + stats.p95Ms + 'ms (n=' + stats.count + ')\n';
+        }
+      }
+
+      await safeSendMessage(bot, msg.chat.id, report);
+    } catch (err) {
+      console.error('/trace error:', err.message);
+      await bot.sendMessage(msg.chat.id, '❌ Could not retrieve traces.');
+    }
+  });
+
+  // ── /lifecycle command — show conversation phase & engagement ────────────
+  bot.onText(/\/lifecycle/, async (msg) => {
+    if (!isOwner(msg)) return;
+    await bot.sendChatAction(msg.chat.id, 'typing');
+    try {
+      const report = lifecycle.formatLifecycle(OWNER_ID);
+      await safeSendMessage(bot, msg.chat.id, report);
+    } catch (err) {
+      console.error('/lifecycle error:', err.message);
+      await bot.sendMessage(msg.chat.id, '❌ Could not retrieve lifecycle info.');
+    }
+  });
+
   // ── Shared text processing (used by both text and voice messages) ─────────
   async function processUserText(bot, chatId, userId, userName, text) {
     await db.ensureUser(userId, userName);
     await bot.sendChatAction(chatId, 'typing');
 
+    // ── � Lifecycle: track conversation phase ───────────────────────────
+    const phaseInfo = lifecycle.onMessageReceived(userId);
+    if (phaseInfo.transitioned) {
+      console.log('[Lifecycle] Phase: ' + phaseInfo.previousPhase + ' → ' + phaseInfo.phase);
+    }
+
+    // ── �🔍 Create execution pipeline (state machine + tracing) ─────────────
+    const { sm, traceId } = executive.createPipeline(userId, text);
+    let errorOccurred = false;
+
     try {
       // ── 🧠 Executive Decision ──────────────────────────────────────────
-      const decision = await executive.decide(userId, text);
+      const decision = await executive.decide(userId, text, sm);
       console.log('[Executive] 📋 Decision: tier=' + decision.tier +
         ' | provider=' + decision.provider +
         ' | needs=' + JSON.stringify(decision.needs) +
         ' | wm=' + (decision.workingMemoryActive ? 'active' : 'idle') +
-        ' | reason=' + decision.reason);
+        ' | reason=' + decision.reason +
+        ' | trace=' + traceId);
 
       // ── Build executive context for deep tier ──────────────────────────
       const llmOptions = {};
@@ -1340,7 +1415,7 @@ async function createBot() {
         llmOptions.minimal = true; // skip memory/reminders/people
       } else if (decision.tier === 'deep') {
         // Inject working memory + world model into LLM context
-        llmOptions.executiveContext = await executive.buildContext(userId, decision, text);
+        llmOptions.executiveContext = await executive.buildContext(userId, decision, text, sm);
       }
 
       // ── Inject pending edit context so LLM knows which item to edit ──
@@ -1543,6 +1618,13 @@ async function createBot() {
             category: decision.category,
             quality: quality.score,
           });
+
+          // ── State machine: response evaluated ──────────────────────────
+          executive.transitionResponseEvaluated(sm, {
+            qualityScore: quality.score,
+            issues: quality.issues,
+          });
+
           if (quality.score < 60) {
             console.log('[Evaluator] ⚠️ Low quality response (score=' + quality.score + '): ' + quality.issues.join('; '));
           }
@@ -1562,16 +1644,28 @@ async function createBot() {
         // Execute tool
         console.log('[Bot] Executing tool:', llmResponse.name, JSON.stringify(llmResponse.args).slice(0, 200));
         let result;
+        const toolStartMs = Date.now();
         try {
           result = await tools.executeTool(userId, {
             name: llmResponse.name,
             args: llmResponse.args,
           });
+          const toolDurationMs = Date.now() - toolStartMs;
           console.log('[Bot] Tool result:', typeof result === 'object' ? (result.type || 'object') : result.slice(0, 150));
+
+          // Log tool call for observability
+          trace.logToolCall(llmResponse.name, llmResponse.args, result, toolDurationMs);
         } catch (toolErr) {
           console.error('[Bot] Tool execution error:', toolErr.message);
+          trace.logToolCall(llmResponse.name, llmResponse.args, { error: toolErr.message }, Date.now() - toolStartMs);
           result = 'I tried to do that but ran into a problem. Please try again.';
         }
+
+        // ── State machine: tools executed ────────────────────────────────
+        executive.transitionToolsExecuted(sm, {
+          toolName: llmResponse.name,
+          toolSuccess: !(result && result.error),
+        });
 
         // ── Confirmation flow: if tool returned {type:'confirm', message} ──
         if (result && typeof result === 'object' && result.type === 'confirm') {
@@ -1632,6 +1726,14 @@ async function createBot() {
 
           patterns.trackMessage(userId, { role: 'user', content: text });
           patterns.trackMessage(userId, { role: 'assistant', content: result.message });
+
+          // ── 🏁 Finish pipeline (confirm flow exits early) ──────────────
+          executive.finishPipeline(sm, {
+            tier: decision.tier,
+            provider: decision.provider,
+            responseType: 'confirm',
+          });
+
           return; // Done — wait for user to click button or type "ya"
         }
 
@@ -1827,8 +1929,21 @@ async function createBot() {
         await bot.sendMessage(chatId, 'Something went wrong. Try again?');
       }
 
+      // ── 🏁 Finish pipeline successfully ──────────────────────────────────
+      executive.finishPipeline(sm, {
+        tier: decision.tier,
+        provider: decision.provider,
+        responseType: llmResponse.type,
+      });
+
     } catch (err) {
       console.error('Message handler error:', err.message);
+
+      // ── Record error in state machine ───────────────────────────────────
+      if (sm && !errorOccurred) {
+        sm.error(err);
+      }
+
       let errorMsg = 'Something went wrong. ';
       if (err.response && err.response.status === 401) {
         errorMsg += 'Check your API key.';

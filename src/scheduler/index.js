@@ -8,6 +8,7 @@ const { escapeMd, safeSendMessage } = require('../tools');
 const { getWeatherSummary } = require('../tools/weather');
 const { getQuote } = require('../tools/quote');
 const patterns = require('../patterns');
+const lifecycle = require('../executive/lifecycle');
 
 let botInstance = null;
 
@@ -71,6 +72,11 @@ async function startScheduler(bot) {
       const prunedChats = await memory.pruneOldHistory(OWNER, 90);
       if (prunedChats > 0) {
         console.log('[Scheduler] 💬 Chat history prune: removed ' + prunedChats + ' old messages');
+      }
+      // Evaluate lifecycle idle transitions
+      const result = lifecycle.evaluateIdle(OWNER);
+      if (result.transitioned) {
+        console.log('[Scheduler] 🔄 Lifecycle phase changed to: ' + result.phase);
       }
     } catch (err) {
       console.error('[Scheduler] Cleanup error:', err.message);

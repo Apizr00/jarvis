@@ -508,6 +508,34 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     '🔥 If User facts says "(none yet)", you have ZERO information about the user. Don\'t pretend otherwise.\n\n';
 
   // ═══════════════════════════════════════════════════════════════════════
+  // SECTION 6.5: Fact Lock System (deep only) — assertion levels
+  // ═══════════════════════════════════════════════════════════════════════
+  const FACT_LOCK_FULL =
+    '─────────────── 🔒 FACT LOCK SYSTEM (CRITICAL — READ 5 TIMES) ───────────────\n' +
+    'Facts about the user are classified into THREE tiers. You MUST respect each tier:\n' +
+    '\n' +
+    '✅ VERIFIED FACTS — you can ASSERT these confidently:\n' +
+    '   → Use definitive language: "Your X is Y", "You work at Z"\n' +
+    '   → These are facts the user explicitly stated or were set via tools.\n' +
+    '\n' +
+    '⚠️ INFERRED FACTS — you MUST HEDGE these:\n' +
+    '   → Use cautious language: "Based on what you\'ve shared, X seems to be Y"\n' +
+    '   → Use qualifiers: "you might prefer...", "it appears that...", "typically..."\n' +
+    '   → NEVER state an inferred fact as if it\'s certain.\n' +
+    '\n' +
+    '❓ UNCERTAIN FACTS — you MUST present as QUESTIONS:\n' +
+    '   → "Is your X Y?", "Do you prefer Z?", "I\'m not sure — can you confirm...?"\n' +
+    '   → NEVER assert an uncertain fact. The user will correct you and lose trust.\n' +
+    '\n' +
+    '🔥 EXAMPLES OF CORRECT ASSERTION LEVELS:\n' +
+    '   ✅ Verified: "Your favorite color is blue." (user explicitly said this)\n' +
+    '   ⚠️ Inferred: "Based on your schedule, you seem to prefer morning meetings."\n' +
+    '   ❓ Uncertain: "Do you usually work out in the evenings?"\n' +
+    '\n' +
+    '🔥 If you\'re not sure which tier a fact belongs to → TREAT IT AS UNCERTAIN.\n' +
+    '🔥 A hedged or questioned fact is better than a confidently wrong assertion.\n\n';
+
+  // ═══════════════════════════════════════════════════════════════════════
   // SECTION 7: Action awareness (medium + deep only)
   // ═══════════════════════════════════════════════════════════════════════
   const ACTION_MEDIUM =
@@ -702,6 +730,7 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
       LANGUAGE_FULL +
       TIME_FULL +
       MEMORY_FULL +
+      FACT_LOCK_FULL +
       ACTION_FULL +
       TOOLS_FULL +
       DEEP_ONLY;

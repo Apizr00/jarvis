@@ -703,6 +703,310 @@ async function getReflections(userId, limit = 7) {
   return db.getRecentReflections(userId, limit);
 }
 
+// ── 7. Memory Write Strategy ───────────────────────────────────────────────
+
+/**
+ * Score a fact for STORAGE importance at write time.
+ * Different from retrieval relevance — this decides whether to KEEP the fact.
+ * Uses: key category weight + confidence + value richness + domain signals.
+ *
+ * @param {{key:string, value:string, confidence?:number}} fact
+ * @returns {{score: number, tier: 'critical'|'important'|'normal'|'transient', reason: string}}
+ */
+function scoreFactForStorage(fact) {
+  let score = 0;
+  const reasons = [];
+
+  const key = (fact.key || '').toLowerCase();
+  const value = (fact.value || '');
+  const confidence = fact.confidence || 0.7;
+
+  // ── Key category signals ────────────────────────────────────────────
+  const CRITICAL_KEYS = [
+    'name', 'nama', 'full_name', 'location', 'lokasi', 'timezone',
+    'language', 'bahasa', 'occupation', 'pekerjaan', 'job',
+    'diet', 'allergy', 'alergi', 'religion', 'agama',
+    'wife', 'husband', 'isteri', 'suami', 'spouse', 'pasangan',
+    'parent', 'ibu', 'ayah', 'mother', 'father',
+    'birthday', 'birth_date', 'tarikh_lahir',
+    'personality', 'personaliti',
+  ];
+  const IMPORTANT_KEYS = [
+    'sleep', 'tidur', 'wake', 'bangun', 'routine', 'rutin',
+    'schedule', 'jadual', 'work_hours', 'office', 'pejabat',
+    'hobby', 'hobi', 'interest', 'minat', 'goal', 'matlamat',
+    'phone', 'telefon', 'email', 'contact', 'address', 'alamat',
+    'preference', 'keutamaan', 'prefer',
+  ];
+
+  if (CRITICAL_KEYS.some(k => key.includes(k))) {
+    score += 40;
+    reasons.push('critical key category');
+  } else if (IMPORTANT_KEYS.some(k => key.includes(k))) {
+    score += 25;
+    reasons.push('important key category');
+  } else {
+    score += 10;
+  }
+
+  // ── Confidence weighting ────────────────────────────────────────────
+  if (confidence >= 0.9) {
+    score += 20;
+    reasons.push('high confidence');
+  } else if (confidence >= 0.7) {
+    score += 12;
+    reasons.push('moderate confidence');
+  } else if (confidence >= 0.5) {
+    score += 6;
+    reasons.push('low confidence');
+  } else {
+    score += 2;
+    reasons.push('very low confidence');
+  }
+
+  // ── Value richness ──────────────────────────────────────────────────
+  if (value.length >= 20) {
+    score += 8;
+    reasons.push('rich value');
+  } else if (value.length >= 5) {
+    score += 4;
+  } else {
+    score -= 2;
+    reasons.push('thin value');
+  }
+
+  // ── Time-sensitivity penalty ────────────────────────────────────────
+  // Facts with dates/times in them are likely transient
+  if (/\d{4}-\d{2}-\d{2}/.test(value) || /\d{1,2}[:.]\d{2}/.test(value)) {
+    score -= 8;
+    reasons.push('contains time/date (transient)');
+  }
+
+  // ── Key signals transience ──────────────────────────────────────────
+  const transientKeys = [
+    'lunch', 'makan', 'dinner', 'breakfast', 'sarapan',
+    'today', 'hari_ini', 'semalam', 'yesterday', 'esok', 'tomorrow',
+    'mood', 'feeling', 'rasa', 'plan_today', 'rancang_hari_ini',
+    'watch', 'tonton', 'movie', 'filem',
+  ];
+  if (transientKeys.some(k => key.includes(k))) {
+    score -= 15;
+    reasons.push('transient key — likely outdated soon');
+  }
+
+  // ── Determine tier ──────────────────────────────────────────────────
+  let tier;
+  if (score >= 55) tier = 'critical';
+  else if (score >= 35) tier = 'important';
+  else if (score >= 15) tier = 'normal';
+  else tier = 'transient';
+
+  return { score, tier, reason: reasons.join('; ') };
+}
+
+/**
+ * Calculate a memory decay weight using exponential decay.
+ * weight = importance × e^(-λ × ageInDays)
+ *
+ * λ (decay rate) varies by tier:
+ *   - critical:  λ = 0.001  (half-life ~693 days)
+ *   - important: λ = 0.005  (half-life ~139 days)
+ *   - normal:    λ = 0.015  (half-life ~46 days)
+ *   - transient: λ = 0.050  (half-life ~14 days)
+ *
+ * @param {object} fact - memory fact with importance, updated_at, tier
+ * @param {{key:string, value:string, importance?:number, updated_at?:string, tier?:string}} fact
+ * @returns {{weight: number, decayed: boolean, effectiveImportance: number}}
+ */
+function memoryDecayWeight(fact) {
+  const importance = fact.importance || 5;
+  const tier = fact.tier || 'normal';
+
+  // Decay rate (λ) by tier
+  const lambda = {
+    critical: 0.001,
+    important: 0.005,
+    normal: 0.015,
+    transient: 0.050,
+  }[tier] || 0.015;
+
+  // Age in days
+  const updatedAt = fact.updated_at ? new Date(fact.updated_at) : new Date();
+  const ageDays = (Date.now() - updatedAt.getTime()) / (1000 * 60 * 60 * 24);
+
+  // Exponential decay: weight = importance × e^(-λ × age)
+  const weight = importance * Math.exp(-lambda * ageDays);
+
+  // Effective importance (rounded to 1 decimal)
+  const effectiveImportance = Math.round(weight * 10) / 10;
+
+  // Consider "decayed" if weight has dropped by more than 30%
+  const decayed = weight < importance * 0.7;
+
+  return { weight, decayed, effectiveImportance };
+}
+
+/**
+ * Compress old/similar facts into summarized versions.
+ * For facts older than threshold, if multiple facts share a category,
+ * merge them into a single summarized fact.
+ *
+ * @param {string} userId
+ * @param {number} [olderThanDays=60] — only compress facts older than this
+ * @returns {Promise<{compressed: number, message: string}>}
+ */
+async function compressOldFacts(userId, olderThanDays = 60) {
+  const allFacts = await db.getAllFacts(userId);
+  const cutoff = Date.now() - olderThanDays * 24 * 60 * 60 * 1000;
+
+  // Find old facts
+  const oldFacts = allFacts.filter(f => {
+    const updatedAt = f.updated_at ? new Date(f.updated_at).getTime() : 0;
+    return updatedAt < cutoff;
+  });
+
+  if (oldFacts.length < 3) {
+    return { compressed: 0, message: 'Not enough old facts to compress' };
+  }
+
+  // Group by key prefix (category)
+  const groups = {};
+  for (const fact of oldFacts) {
+    const prefix = fact.key.split('_')[0] || 'misc';
+    if (!groups[prefix]) groups[prefix] = [];
+    groups[prefix].push(fact);
+  }
+
+  let compressed = 0;
+
+  // For groups with 2+ facts, merge them
+  for (const [prefix, facts] of Object.entries(groups)) {
+    if (facts.length < 2) continue;
+
+    // Create a compressed summary
+    const values = facts.map(f => f.value).join(' | ');
+    const compressedKey = prefix + '_summary';
+    const compressedValue = '[Compressed ' + facts.length + ' facts]: ' + values.slice(0, 500);
+
+    // Save compressed version
+    await db.setFact(userId, compressedKey, compressedValue);
+    await db.updateFactConfidence(userId, compressedKey, 0.6); // lower confidence for compressed
+
+    // Delete original old facts
+    for (const fact of facts) {
+      // Don't delete critical facts even if old
+      const storageScore = scoreFactForStorage(fact);
+      if (storageScore.tier === 'critical') continue;
+
+      await db.deleteFact(userId, fact.key);
+      compressed++;
+    }
+
+    if (compressed > 0) {
+      console.log('[Memory] 🗜️ Compressed ' + facts.length + ' old ' + prefix + ' facts into ' + compressedKey);
+    }
+  }
+
+  if (compressed > 0) {
+    redisCache.invalidateFactsCache(userId);
+  }
+
+  return {
+    compressed,
+    message: compressed > 0
+      ? 'Compressed ' + compressed + ' old fact(s) into summaries'
+      : 'No facts needed compression',
+  };
+}
+
+/**
+ * Smart fact write with strategy:
+ * 1. Score the incoming fact for storage importance
+ * 2. Check for existing fact with same key
+ * 3. Resolve conflicts using validator's conflict resolution
+ * 4. Apply decay to existing fact if overwriting
+ * 5. Tag fact with fact-lock tier (verified/inferred/uncertain)
+ *
+ * @param {string} userId
+ * @param {string} key
+ * @param {string} value
+ * @param {object} [options]
+ * @param {number} [options.confidence=0.7]
+ * @param {string} [options.source='conversation'] - 'explicit'|'conversation'|'inferred'
+ * @returns {Promise<{action: 'created'|'updated'|'conflict'|'skipped', reason: string}>}
+ */
+async function writeFactWithStrategy(userId, key, value, options = {}) {
+  const confidence = options.confidence || 0.7;
+  const source = options.source || 'conversation';
+
+  // Normalize key
+  const normalizedKey = key.toLowerCase().trim().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+
+  // Score for storage
+  const storageScore = scoreFactForStorage({ key: normalizedKey, value, confidence });
+
+  // Skip transient facts with very low scores
+  if (storageScore.tier === 'transient' && storageScore.score < 10) {
+    console.log('[Memory] ⏭️ Skipping transient fact: ' + normalizedKey + ' (score: ' + storageScore.score + ')');
+    return { action: 'skipped', reason: 'Transient fact with low storage score: ' + storageScore.reason };
+  }
+
+  // Check for existing fact
+  const allFacts = await db.getAllFacts(userId);
+  const existing = allFacts.find(f => f.key === normalizedKey);
+
+  if (!existing) {
+    // New fact — store with storage tier metadata
+    await db.setFact(userId, normalizedKey, value);
+    await db.updateFactConfidence(userId, normalizedKey, confidence);
+
+    // Store importance and tier metadata
+    try {
+      await db.pool.query(
+        `UPDATE memory_facts SET importance = $3 WHERE user_id = $1 AND key = $2`,
+        [String(userId), normalizedKey, storageScore.score]
+      );
+    } catch { /* column might not exist yet */ }
+
+    console.log('[Memory] ✅ New fact stored: ' + normalizedKey + ' (tier: ' + storageScore.tier + ', score: ' + storageScore.score + ')');
+    redisCache.invalidateFactsCache(userId);
+    return { action: 'created', reason: 'New ' + storageScore.tier + ' fact: ' + storageScore.reason };
+  }
+
+  // Existing fact — check if value changed
+  if (existing.value === value) {
+    // Same value — boost confidence
+    const newConf = Math.min(1.0, (existing.confidence || 0.7) + 0.1);
+    await db.updateFactConfidence(userId, normalizedKey, newConf);
+    return { action: 'updated', reason: 'Re-confirmed — confidence boosted to ' + newConf.toFixed(2) };
+  }
+
+  // Value changed — conflict resolution using validator
+  const validator = require('../llm/validator');
+  const resolution = validator.resolveFactConflict(existing, {
+    key: normalizedKey,
+    value,
+    confidence,
+    created_at: new Date().toISOString(),
+  });
+
+  if (resolution.keep === 'incoming') {
+    await db.setFact(userId, normalizedKey, value);
+    await db.updateFactConfidence(userId, normalizedKey, confidence);
+    console.log('[Memory] ⚠️ Conflict resolved — new value accepted: ' + normalizedKey + ' → ' + value);
+    redisCache.invalidateFactsCache(userId);
+    return { action: 'updated', reason: resolution.reason };
+  }
+
+  // Keep existing — flag conflict for review
+  try {
+    await db.flagFactConflict(userId, normalizedKey, value);
+  } catch { /* may not support conflict flagging */ }
+
+  console.log('[Memory] ⚠️ Conflict — kept existing: ' + normalizedKey + ' (new value ignored: ' + value.slice(0, 50) + ')');
+  return { action: 'conflict', reason: resolution.reason };
+}
+
 module.exports = {
   searchFacts,
   extractFactsFromChat,
@@ -722,4 +1026,9 @@ module.exports = {
   // Daily reflection
   generateDailyReflection,
   getReflections,
+  // Memory Write Strategy (Fasa 2 upgrade)
+  scoreFactForStorage,
+  memoryDecayWeight,
+  compressOldFacts,
+  writeFactWithStrategy,
 };
