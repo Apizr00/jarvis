@@ -29,6 +29,10 @@ const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
 function fixHallucinatedTime(text) {
   if (typeof text !== 'string' || text.length === 0) return text;
 
+  // ⚡ Early exit: skip if no digits or time keywords — avoids expensive regex
+  if (!/\d/.test(text)) return text;
+  if (!/(pukul|jam|[.:]\d|pagi|petang|malam|am|pm|tengah)/i.test(text)) return text;
+
   const tz = process.env.TIMEZONE || 'UTC';
   const now = new Date();
 
@@ -1329,7 +1333,41 @@ async function createBot() {
       }
 
       const history = getHistory(userId);
-      let llmResponse = await llm.chat(userId, text, history, llmOptions);
+
+      // 🔥 If LLM takes > 3s, show "Sedang berfikir..." interim message
+      let thinkingMsg = null;
+      let thinkingTimer = null;
+
+      const llmPromise = llm.chat(userId, text, history, llmOptions);
+      const timeoutPromise = new Promise((resolve) => {
+        thinkingTimer = setTimeout(async () => {
+          try {
+            thinkingMsg = await bot.sendMessage(chatId, '🤔 *Sedang berfikir…*', { parse_mode: 'Markdown' });
+          } catch { /* ignore — bot might be blocked */ }
+          resolve('timeout');
+        }, 3000);
+      });
+
+      let llmResponse;
+      const raceResult = await Promise.race([llmPromise, timeoutPromise]);
+
+      if (raceResult === 'timeout') {
+        // Interim message sent — now wait for the actual LLM response
+        llmResponse = await llmPromise;
+      } else {
+        // LLM responded quickly — cancel the pending timer
+        clearTimeout(thinkingTimer);
+        llmResponse = raceResult;
+      }
+
+      // Clean up interim "thinking" message if it was sent
+      if (thinkingMsg) {
+        try {
+          await bot.deleteMessage(chatId, thinkingMsg.message_id);
+        } catch {
+          // Delete may fail if message was already removed — harmless
+        }
+      }
 
       // Add user message to history
       addToHistory(userId, 'user', text);

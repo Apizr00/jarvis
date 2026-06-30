@@ -13,6 +13,9 @@
 const deepseek = require('./deepseek');
 const mimo = require('./mimo');
 const { detectIntent } = require('./intent');
+const db = require('../db');
+const memory = require('../memory');
+const relationships = require('../memory/relationships');
 
 // ── Provider Health Tracking ────────────────────────────────────────────────
 // Track recent failures so we can temporarily deprioritize a flaky provider.
@@ -110,6 +113,32 @@ function selectProvider(userMessage, options = {}) {
 }
 
 /**
+ * Pre-fetch context (facts, reminders, people) ONCE for both providers.
+ * Runs DB calls in parallel for speed. Skips when minimal mode is active.
+ *
+ * @param {string} userId
+ * @param {string} userMessage
+ * @param {{minimal?: boolean}} options
+ * @returns {{facts:Array, upcomingReminders:Array, peopleContext:string}}
+ */
+async function prepareContext(userId, userMessage, options = {}) {
+  if (options.minimal) {
+    return { facts: [], upcomingReminders: [], peopleContext: '' };
+  }
+
+  const [facts, upcomingReminders, peopleContext] = await Promise.all([
+    memory.searchFacts(userId, userMessage),
+    db.getUpcomingReminders(userId, 15),
+    relationships.getPeopleContext(userId, userMessage, 5),
+  ]);
+
+  // Record fact access for importance scoring
+  memory.recordFactAccess(userId, facts.map(f => f.key));
+
+  return { facts, upcomingReminders, peopleContext };
+}
+
+/**
  * Chat with the LLM.
  * Supports provider selection with automatic fallback.
  *
@@ -127,13 +156,27 @@ async function chat(userId, userMessage, conversationHistory, options = {}) {
     (options.minimal ? ' [minimal]' : '') +
     (options.executiveContext ? ' [exec]' : ''));
 
+  // 🔥 Pre-fetch context ONCE (parallel DB calls) — shared by both providers
+  const context = await prepareContext(userId, userMessage, options);
+
+  // ⚡ Dynamic max_tokens by intent tier — smaller = faster LLM response
+  let maxTokens = 800; // default deep
+  if (options.minimal) {
+    maxTokens = 150; // fast tier: greetings, simple Qs
+  } else if (!options.executiveContext) {
+    maxTokens = 400; // medium tier: conversation
+  }
+
+  const providerOpts = {
+    minimal: options.minimal,
+    executiveContext: options.executiveContext,
+    maxTokens,
+  };
+
   // ── Try primary provider ─────────────────────────────────────────────────
   try {
     const providerFn = primary === 'deepseek' ? deepseek.chat : mimo.chat;
-    const result = await providerFn(userId, userMessage, conversationHistory, {
-      minimal: options.minimal,
-      executiveContext: options.executiveContext,
-    });
+    const result = await providerFn(userId, userMessage, conversationHistory, providerOpts, context);
     result._provider = primary;
     recordSuccess(primary);
     return result;
@@ -142,13 +185,10 @@ async function chat(userId, userMessage, conversationHistory, options = {}) {
     recordFailure(primary);
   }
 
-  // ── Try fallback provider ────────────────────────────────────────────────
+  // ── Try fallback provider (reuses same pre-fetched context!) ───────────
   try {
     const fallbackFn = fallback === 'deepseek' ? deepseek.chat : mimo.chat;
-    const result = await fallbackFn(userId, userMessage, conversationHistory, {
-      minimal: options.minimal,
-      executiveContext: options.executiveContext,
-    });
+    const result = await fallbackFn(userId, userMessage, conversationHistory, providerOpts, context);
     result._provider = fallback;
     console.log('[LLM] ✅ ' + fallback + ' fallback succeeded');
     recordSuccess(fallback);

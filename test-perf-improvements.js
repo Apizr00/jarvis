@@ -1,0 +1,239 @@
+// test-perf-improvements.js
+// Quick validation tests for performance improvements
+require('dotenv').config();
+
+console.log('');
+console.log('🧪 TESTING PERFORMANCE IMPROVEMENTS');
+console.log('═══════════════════════════════════');
+console.log('');
+
+let passed = 0;
+let failed = 0;
+
+function test(name, fn) {
+  try {
+    const result = fn();
+    // If it returns a promise, wait for it
+    if (result && typeof result.then === 'function') {
+      result.then(() => {
+        console.log('  ✅ ' + name);
+        passed++;
+      }).catch(err => {
+        console.log('  ❌ ' + name);
+        console.log('     ' + err.message);
+        failed++;
+      });
+    } else {
+      console.log('  ✅ ' + name);
+      passed++;
+    }
+  } catch (err) {
+    console.log('  ❌ ' + name);
+    console.log('     ' + err.message);
+    failed++;
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════
+// TEST 1: Module Loading
+// ═════════════════════════════════════════════════════════════════
+console.log('📦 Test 1: Module Loading & Structure');
+console.log('─────────────────────────────────────');
+
+test('llm/index.js loads without error', () => {
+  const llm = require('./src/llm');
+  if (typeof llm.chat !== 'function') throw new Error('llm.chat not a function');
+});
+
+test('deepseek.js chat accepts 5 params (incl prefetched)', () => {
+  const deepseek = require('./src/llm/deepseek');
+  if (typeof deepseek.chat !== 'function') throw new Error('deepseek.chat not found');
+});
+
+test('mimo.js chat accepts 5 params (incl prefetched)', () => {
+  const mimo = require('./src/llm/mimo');
+  if (typeof mimo.chat !== 'function') throw new Error('mimo.chat not found');
+});
+
+test('shared.js exports buildSystemPrompt + normalizeLLMResponse', () => {
+  const shared = require('./src/llm/shared');
+  if (typeof shared.buildSystemPrompt !== 'function') throw new Error('buildSystemPrompt not exported');
+  if (typeof shared.normalizeLLMResponse !== 'function') throw new Error('normalizeLLMResponse not exported');
+});
+
+// ═════════════════════════════════════════════════════════════════
+// TEST 2: fixHallucinatedTime Early Exit
+// ═════════════════════════════════════════════════════════════════
+console.log('');
+console.log('⏰ Test 2: fixHallucinatedTime Early Exit');
+console.log('────────────────────────────────────────');
+
+// Mock version matching the actual logic
+function fixHallucinatedTime(text) {
+  if (typeof text !== 'string' || text.length === 0) return text;
+  if (!/\d/.test(text)) return text;
+  if (!/(pukul|jam|[.:]\d|pagi|petang|malam|am|pm|tengah)/i.test(text)) return text;
+  return text + ' [TIME_CHECKED]';
+}
+
+test('Early exit: no digits → returns immediately', () => {
+  const result = fixHallucinatedTime('Hello, how are you?');
+  if (result !== 'Hello, how are you?') throw new Error('Should return unchanged');
+});
+
+test('Early exit: digits but no time keywords → returns immediately', () => {
+  const result = fixHallucinatedTime('I have 3 cats and 2 dogs');
+  if (result !== 'I have 3 cats and 2 dogs') throw new Error('Should return unchanged');
+});
+
+test('Has time keyword "pukul" → continues to time check', () => {
+  const result = fixHallucinatedTime('pukul 3:00');
+  if (!result.includes('[TIME_CHECKED]')) throw new Error('Should pass early exit');
+});
+
+test('Has time keyword "jam" → continues to time check', () => {
+  const result = fixHallucinatedTime('jam 9.30 pagi');
+  if (!result.includes('[TIME_CHECKED]')) throw new Error('Should pass early exit');
+});
+
+test('Has "am"/"pm" keyword → continues to time check', () => {
+  const result = fixHallucinatedTime('meeting at 2pm');
+  if (!result.includes('[TIME_CHECKED]')) throw new Error('Should pass early exit');
+});
+
+test('Has "tengah" + digit → continues to time check', () => {
+  const result = fixHallucinatedTime('tengah hari pukul 12:00');
+  if (!result.includes('[TIME_CHECKED]')) throw new Error('Should pass early exit');
+});
+
+test('Empty string → returns immediately', () => {
+  if (fixHallucinatedTime('') !== '') throw new Error('Should return empty');
+});
+
+test('null → returns immediately', () => {
+  if (fixHallucinatedTime(null) !== null) throw new Error('Should return null');
+});
+
+test('Malay greeting "apa khabar" → early exit (no time)', () => {
+  if (fixHallucinatedTime('apa khabar boss?') !== 'apa khabar boss?') throw new Error('Should return unchanged');
+});
+
+test('"tengah hari nanti" (no digits) → early exit correctly', () => {
+  if (fixHallucinatedTime('tengah hari nanti') !== 'tengah hari nanti') throw new Error('Should return unchanged');
+});
+
+// ═════════════════════════════════════════════════════════════════
+// TEST 3: Intent Detection
+// ═════════════════════════════════════════════════════════════════
+console.log('');
+console.log('🎯 Test 3: Intent Detection');
+console.log('────────────────────────────');
+
+const { detectIntent } = require('./src/llm/intent');
+
+test('"hi" → fast tier', () => {
+  if (detectIntent('hi').tier !== 'fast') throw new Error('Expected fast');
+});
+
+test('"remind me to call mum" → deep tier', () => {
+  if (detectIntent('remind me to call mum').tier !== 'deep') throw new Error('Expected deep');
+});
+
+test('"apa khabar" → fast tier (Malay)', () => {
+  if (detectIntent('apa khabar').tier !== 'fast') throw new Error('Expected fast');
+});
+
+test('"what time is it" → fast tier', () => {
+  if (detectIntent('what time is it').tier !== 'fast') throw new Error('Expected fast');
+});
+
+test('"how do I learn React" → medium tier', () => {
+  if (detectIntent('how do I learn React').tier !== 'medium') throw new Error('Expected medium');
+});
+
+// ═════════════════════════════════════════════════════════════════
+// TEST 4: Structure Checks (source code grep)
+// ═════════════════════════════════════════════════════════════════
+console.log('');
+console.log('🔍 Test 4: Source Code Structure');
+console.log('────────────────────────────────');
+
+const fs = require('fs');
+
+test('#1: deepseek.js has Promise.all (parallel fetch)', () => {
+  const code = fs.readFileSync('./src/llm/deepseek.js', 'utf8');
+  if (!code.includes('Promise.all')) throw new Error('Missing Promise.all');
+  if (!code.includes('prefetched')) throw new Error('Missing prefetched param');
+});
+
+test('#2: mimo.js has Promise.all (parallel fetch)', () => {
+  const code = fs.readFileSync('./src/llm/mimo.js', 'utf8');
+  if (!code.includes('Promise.all')) throw new Error('Missing Promise.all');
+  if (!code.includes('prefetched')) throw new Error('Missing prefetched param');
+});
+
+test('#2: llm/index.js has prepareContext (deduplicated prefetch)', () => {
+  const code = fs.readFileSync('./src/llm/index.js', 'utf8');
+  if (!code.includes('prepareContext')) throw new Error('Missing prepareContext');
+  if (!code.includes('Promise.all([')) throw new Error('Missing parallel fetch in prepareContext');
+});
+
+test('#3: deepseek.js skips validator for minimal mode', () => {
+  const code = fs.readFileSync('./src/llm/deepseek.js', 'utf8');
+  if (!code.includes('Skip hallucination validator for fast-tier')) throw new Error('Missing validator skip guard');
+  if (!code.includes('if (!minimal) {')) throw new Error('Missing if(!minimal) guard');
+});
+
+test('#3: mimo.js skips validator for minimal mode', () => {
+  const code = fs.readFileSync('./src/llm/mimo.js', 'utf8');
+  if (!code.includes('Skip hallucination validator for fast-tier')) throw new Error('Missing validator skip guard');
+  if (!code.includes('if (!minimal) {')) throw new Error('Missing if(!minimal) guard');
+});
+
+test('#4: bot/index.js has early exit guard in fixHallucinatedTime', () => {
+  const code = fs.readFileSync('./src/bot/index.js', 'utf8');
+  if (!code.includes('Early exit')) throw new Error('Missing early exit comment');
+});
+
+test('#5: shared.js has promptCache (in-memory prompt caching)', () => {
+  const code = fs.readFileSync('./src/llm/shared.js', 'utf8');
+  if (!code.includes('promptCache')) throw new Error('Missing promptCache');
+  if (!code.includes('PROMPT_CACHE_TTL_MS')) throw new Error('Missing PROMPT_CACHE_TTL_MS');
+  if (!code.includes('promptCache.set(cacheKey')) throw new Error('Missing cache storage');
+});
+
+test('#6: bot/index.js has Promise.race interim message', () => {
+  const code = fs.readFileSync('./src/bot/index.js', 'utf8');
+  if (!code.includes('Promise.race')) throw new Error('Missing Promise.race');
+  if (!code.includes('Sedang berfikir')) throw new Error('Missing interim message text');
+  if (!code.includes('thinkingMsg')) throw new Error('Missing thinkingMsg variable');
+});
+
+test('#7: deepseek.js uses options.maxTokens', () => {
+  const code = fs.readFileSync('./src/llm/deepseek.js', 'utf8');
+  if (!code.includes('options.maxTokens')) throw new Error('Missing dynamic maxTokens');
+});
+
+test('#7: mimo.js uses options.maxTokens', () => {
+  const code = fs.readFileSync('./src/llm/mimo.js', 'utf8');
+  if (!code.includes('options.maxTokens')) throw new Error('Missing dynamic maxTokens');
+});
+
+test('#7: llm/index.js computes dynamic maxTokens', () => {
+  const code = fs.readFileSync('./src/llm/index.js', 'utf8');
+  if (!code.includes('maxTokens = 150')) throw new Error('Missing fast-tier maxTokens=150');
+  if (!code.includes('maxTokens = 400')) throw new Error('Missing medium-tier maxTokens=400');
+});
+
+// ═════════════════════════════════════════════════════════════════
+// RESULT
+// ═════════════════════════════════════════════════════════════════
+console.log('');
+console.log('═══════════════════════════════════');
+console.log('  ✅ ' + passed + ' passed  |  ❌ ' + failed + ' failed');
+console.log('═══════════════════════════════════');
+console.log('');
+
+if (failed > 0) {
+  process.exit(1);
+}

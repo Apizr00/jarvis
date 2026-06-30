@@ -7,6 +7,10 @@ const db = require('../db');
 const configCache = new Map(); // userId → { botName, personality, cachedAt }
 const CONFIG_CACHE_TTL_MS = 5 * 60_000; // 5 min TTL
 
+// ── System Prompt cache (short TTL — helps burst messages, invalidates on time change) ──
+const promptCache = new Map(); // cacheKey → { prompt, cachedAt }
+const PROMPT_CACHE_TTL_MS = 15_000; // 15 seconds — short enough to catch minute changes
+
 function getCachedConfig(userId) {
   const entry = configCache.get(userId);
   if (entry && (Date.now() - entry.cachedAt) < CONFIG_CACHE_TTL_MS) {
@@ -163,6 +167,18 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
   const minimal = options.minimal === true;
   const executiveCtx = options.executiveContext || '';
 
+  // ── Determine tier for prompt sizing ──────────────────────────────────────
+  const tier = minimal ? 'fast' : (executiveCtx ? 'deep' : 'medium');
+
+  // 🔥 In-memory prompt cache: burst messages within 15s reuse the same prompt
+  // Cache key: userId + tier + 15-second time bucket
+  const timeBucket = Math.floor(Date.now() / 15000);
+  const cacheKey = userId + '|' + tier + '|' + timeBucket;
+  const cachedPrompt = promptCache.get(cacheKey);
+  if (cachedPrompt && (Date.now() - cachedPrompt.cachedAt) < PROMPT_CACHE_TTL_MS) {
+    return cachedPrompt.prompt;
+  }
+
   const factLines = minimal
     ? '(skipped — fast response)'
     : (facts.length
@@ -221,12 +237,6 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
   const personalityBlock = personality
     ? '─────────────── 🎭 PERSONALITY ───────────────\n' + personality + '\n\n'
     : '';
-
-  // ── Determine tier for prompt sizing ──────────────────────────────────────
-  // FAST (minimal):   greetings, simple questions — bare essentials ~250 tokens
-  // MEDIUM (default): conversation, info requests — core rules ~800 tokens
-  // DEEP (execCtx):   tasks, planning, tools — full prompt ~3000 tokens
-  const tier = minimal ? 'fast' : (executiveCtx ? 'deep' : 'medium');
 
   // ═══════════════════════════════════════════════════════════════════════
   // SECTION 1: JSON format instruction (all tiers, varying verbosity)
@@ -547,14 +557,13 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
   // ═══════════════════════════════════════════════════════════════════════
   // Assemble prompt by tier
   // ═══════════════════════════════════════════════════════════════════════
+  let prompt;
   if (tier === 'fast') {
-    return JSON_FAST +
+    prompt = JSON_FAST +
       contextBlock +
       LANGUAGE_FAST;
-  }
-
-  if (tier === 'medium') {
-    return JSON_MEDIUM +
+  } else if (tier === 'medium') {
+    prompt = JSON_MEDIUM +
       ANTI_HALLUCINATION_MEDIUM +
       contextBlock +
       LANGUAGE_FULL +
@@ -562,18 +571,23 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
       MEMORY_MEDIUM +
       ACTION_MEDIUM +
       TOOLS_MEDIUM;
+  } else {
+    // Deep: full prompt
+    prompt = JSON_FULL +
+      ANTI_HALLUCINATION_FULL +
+      contextBlock +
+      LANGUAGE_FULL +
+      TIME_FULL +
+      MEMORY_FULL +
+      ACTION_FULL +
+      TOOLS_FULL +
+      DEEP_ONLY;
   }
 
-  // Deep: full prompt
-  return JSON_FULL +
-    ANTI_HALLUCINATION_FULL +
-    contextBlock +
-    LANGUAGE_FULL +
-    TIME_FULL +
-    MEMORY_FULL +
-    ACTION_FULL +
-    TOOLS_FULL +
-    DEEP_ONLY;
+  // 🔥 Cache the assembled prompt (15s TTL for burst messages)
+  promptCache.set(cacheKey, { prompt, cachedAt: Date.now() });
+
+  return prompt;
 }
 
 module.exports = { buildSystemPrompt, normalizeLLMResponse, invalidateConfigCache };
