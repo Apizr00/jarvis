@@ -1,94 +1,116 @@
 # 🤖 Jarvis — Personal AI Assistant for Telegram
 
-A self-hosted personal AI assistant that lives in your Telegram. Talk to it naturally — set reminders, schedule events, save notes, manage tasks & goals, and let it remember things about you. Wakes you up with a morning briefing complete with weather and a motivational quote. All interactions come with **inline keyboard buttons** for quick actions.
+A self-hosted AI assistant that lives in your Telegram. Talk naturally — reminders, calendar, notes, tasks, goals, web search, voice messages, and **proactive check-ins**. Powered by a **5-layer executive architecture** for intelligent, context-aware responses.
 
-**Stack:** Node.js · PostgreSQL · Redis (optional) · DeepSeek + Xiaomi MiMo · Telegram Bot API
-
-## ✨ Highlights
-
-- **🧠 Pattern Recognition** — Dedicated non-LLM system that detects usage patterns, topic themes, behavioral trends, and time-topic correlations — all algorithmically, zero API cost.
-- **👥 Relationship Memory** — Dedicated table for people you mention. Auto-extracts names, relationships, and context from conversations so the bot knows who's who.
-- **🎤 Voice Messages** — Send a voice note, transcribed via OpenAI Whisper, processed like a text message.
-- **🌐 Web Search** — Ask about current events, stock prices, or anything real-time — summarized in your language.
-- **📊 Weekly Reviews** — Auto-generated every Sunday with stats, completed reminders, and upcoming week.
-- **🧘 Daily Reflection** — LLM-generated end-of-day summary with patterns, changes, and suggestions.
+**Stack:** Node.js · PostgreSQL · Redis (optional) · DeepSeek + MiMo · Telegram Bot API
 
 ---
 
-## 🏗️ Architecture
+## 🧠 Architecture (5 Fasa)
 
 ```
-User
-  │
-  ▼ Conversation (text + voice)
-  │
-  ▼ Reasoning (LLM — DeepSeek / MiMo)
-  │
-  ├── Short-term Memory (10 recent msgs — RAM + DB persistent)
-  ├── Long-term Memory (memory_facts with confidence scoring + conflict detection)
-  ├── Relationship Memory (people you mention — names, relationships, context)
-  ├── Episodic Memory (chat_history searchable by keyword)
-  ├── Knowledge Base (notes + semantic memory search RAG)
-  ├── User Profile (settings, personality, timezone, language)
-  ├── Goals & Tasks (status tracking, progress bars, priority levels)
-  │
-  ▼ Memory Retrieval (hybrid scoring: keyword + confidence + recency)
-  │
-  ▼ Tool Calling (create_reminder, add_note, create_task, save_relationship, etc.)
-  │
-  ▼ Scheduler / Actions (cron: reminders, briefing, review, reflection, pattern analysis, cleanup)
-  │
-  ▼ Pattern Recognition (dedicated non-LLM: usage, topic, behavior, trend, correlation)
-  │
-  ▼ Learning (auto-extract facts + people from every conversation)
+User Message
+    │
+    ▼
+┌─────────────────────────────────────────────┐
+│  FASA 1: Executive + Intent Detection        │
+│  Mood, urgency, language, category detection │
+│  12 intent categories with confidence score  │
+└──────────────────┬──────────────────────────┘
+                   ▼
+┌─────────────────────────────────────────────┐
+│  FASA 2: Working Memory + World Model        │
+│  User state, active domain, time patterns    │
+│  Auto-derives: status, domain, energy level  │
+└──────────────────┬──────────────────────────┘
+                   ▼
+┌─────────────────────────────────────────────┐
+│  FASA 3: Structured Memory Domains           │
+│  8 domains: personal, work, health,          │
+│  learning, social, finance, schedule, goals  │
+│  Cross-domain relationships tracked          │
+└──────────────────┬──────────────────────────┘
+                   ▼
+┌─────────────────────────────────────────────┐
+│  FASA 4: Planning Layer                      │
+│  Task decomposition, step dependencies,      │
+│  progress tracking, stalled plan detection   │
+│  Next-best-action suggestions                │
+└──────────────────┬──────────────────────────┘
+                   ▼
+┌─────────────────────────────────────────────┐
+│  FASA 5: Self Evaluation + Proactive Chat    │
+│  Response quality scoring, learning tracker, │
+│  Auto check-ins (morning/evening/goal nudge) │
+│  Fast reflection after deep interactions     │
+└──────────────────┬──────────────────────────┘
+                   ▼
+              LLM Response
+         (DeepSeek / MiMo fallback)
 ```
+
+---
+
+## ✨ Highlights
+
+- **🧠 5-Fasa Executive Architecture** — Layered intelligence: intent → world model → domains → planning → self-eval + proactive
+- **📊 Pattern Recognition** — Dedicated non-LLM system detecting usage, topics, behavior, trends, correlations — zero API cost
+- **👥 Relationship Memory** — Auto-extracts names, relationships, context from conversations
+- **🎤 Voice Messages** — Transcribed via OpenAI Whisper, processed like text
+- **🌐 Web Search** — Real-time info summarized in your language (BM/EN/Rojak)
+- **📋 Planning Layer** — Break goals into steps with dependencies and progress tracking
+- **💬 Proactive Chat** — Bot initiates conversation based on time, goals, mood patterns
+- **📈 Self Evaluation** — Bot scores its own responses and learns over time
+- **🧘 Daily Reflection** — LLM-generated end-of-day summary with patterns and suggestions
 
 ---
 
 ## ✅ What it can do
 
-| You say...                            | Jarvis does...                                                      |
-| ------------------------------------- | ------------------------------------------------------------------- |
-| "Remind me to call mum at 6pm"        | Creates a reminder, pings you with `[✅ Done] [🔁 Snooze]` buttons  |
-| "Cancel my call mum reminder"         | Cancels the matching reminder by ID                                 |
-| "Move my gym reminder to 8am"         | Updates the reminder time                                           |
-| "Remind me to stretch every day"      | Creates a recurring daily reminder                                  |
-| "Add gym to calendar tomorrow 7am"    | Saves an event with `[✏️ Edit] [❌ Cancel]` buttons                 |
-| "Note: look into React Native"        | Saves a note with `[❌ Delete]` button                              |
-| "Remember I sleep at 1am"             | Stores a memory fact with confidence scoring + `[❌ Forget]` button |
-| "I need to finish the report"         | Creates a task with priority & status tracking                      |
-| "Start working on the report"         | Moves task to _In Progress_                                         |
-| "Done with report"                    | Marks task as _Done_ 🎉                                             |
-| "I want to learn Rust"                | Creates a goal with progress tracking                               |
-| "My goal is to lose 5kg by September" | Sets goal with target date + 0-100% progress bar                    |
-| "What tasks do I have?"               | Lists all active tasks sorted by priority                           |
-| "What are my goals?"                  | Shows goals with progress bars                                      |
-| "What's my day?" / `/today`           | Shows today's events + reminders + tasks                            |
-| "What do you know about me?"          | Shows stored facts with confidence scores                           |
-| "My wife Sarah is a doctor"           | Auto-extracts person into relationship memory 👥                    |
-| "Who do I know?" / `/people`          | Lists all remembered people with relationships & context            |
-| "/person Sarah"                       | Searches for a specific person by name                              |
-| "What did we talk about last week?"   | Searches past conversations (episodic memory)                       |
-| "Motivate me" / "Give me a quote"     | Fetches a motivational quote from ZenQuotes                         |
-| "Search for latest AI news"           | Performs a web search and summarizes results in your language       |
-| 🎤 Send a voice message               | Transcribes via Whisper AI and responds normally                    |
-| "What's the weather?"                 | Shows current weather for your configured location                  |
-| `/briefing`                           | 🌅 Morning briefing — weather, quote, today's schedule              |
-| `/review`                             | 📊 Weekly review — notes, completed tasks, upcoming week            |
-| `/reflect`                            | 🧘 Daily reflection — patterns, changes, suggestions                |
-| `/patterns`                           | 🔍 View detected behavioral patterns (usage, topics, trends)        |
-| `/patterns usage`                     | Filter patterns by type: usage, topic, behavior, trend, correlation |
-| `/reminders`                          | Lists upcoming reminders with `[❌ Cancel]` buttons                 |
-| `/tasks`                              | 📋 Lists all active tasks sorted by priority                        |
-| `/goals`                              | 🎯 Shows all goals with progress bars                               |
-| `/notes`                              | Last 10 notes                                                       |
-| `/memory`                             | All stored facts about you                                          |
-| `/people`                             | 👥 All remembered people & their relationships                      |
-| `/person <name>`                      | 🔍 Search for a specific person by name                             |
-| `/history <keyword>`                  | 🔍 Search past conversations                                        |
-| `/verify`                             | ⚠️ Review & resolve conflicting facts                               |
-| `/settings`                           | View current bot name, personality, times, location                 |
-| `/status`                             | Check API connections (DeepSeek, MiMo, Whisper, Redis, etc.)        |
+| You say...                         | Jarvis does...                                                      |
+| ---------------------------------- | ------------------------------------------------------------------- |
+| "Remind me to call mum at 6pm"     | Creates a reminder, pings you with `[✅ Done] [🔁 Snooze]` buttons  |
+| "Cancel my call mum reminder"      | Cancels the matching reminder by ID                                 |
+| "Remind me to stretch every day"   | Creates a recurring daily reminder                                  |
+| "Add gym to calendar tomorrow 7am" | Saves an event with `[✏️ Edit] [❌ Cancel]` buttons                 |
+| "Note: look into React Native"     | Saves a note with `[❌ Delete]` button                              |
+| "Remember I sleep at 1am"          | Stores a memory fact with confidence scoring + `[❌ Forget]` button |
+| "I need to finish the report"      | Creates a task with priority & status tracking                      |
+| "Done with report"                 | Marks task as _Done_ 🎉                                             |
+| "I want to learn Rust"             | Creates a goal with progress tracking                               |
+| "Plan: learn Python in 2 weeks"    | **Fasa 4:** Breaks into steps with dependencies                     |
+| "What's my plan progress?"         | Shows active plan with completion % and next step                   |
+| "What domain am I in?"             | **Fasa 3:** Shows active memory domain (work/health/learning...)    |
+| "How am I doing?"                  | **Fasa 5:** Bot self-evaluates and shows interaction stats          |
+| _(Bot initiates)_                  | **Fasa 5:** Proactive morning/evening check-ins, goal nudges        |
+| "What tasks do I have?"            | Lists all active tasks sorted by priority                           |
+| "What are my goals?"               | Shows goals with progress bars                                      |
+| "What's my day?" / `/today`        | Shows today's events + reminders + tasks                            |
+| "What do you know about me?"       | Shows stored facts with confidence scores                           |
+| "My wife Sarah is a doctor"        | Auto-extracts person into relationship memory 👥                    |
+| "Search for latest AI news"        | Performs a web search and summarizes results in your language       |
+| 🎤 Send a voice message            | Transcribes via Whisper AI and responds normally                    |
+| "What's the weather?"              | Shows current weather for your configured location                  |
+| `/briefing`                        | 🌅 Morning briefing — weather, quote, today's schedule              |
+| `/review`                          | 📊 Weekly review — notes, completed tasks, upcoming week            |
+| `/reflect`                         | 🧘 Daily reflection — patterns, changes, suggestions                |
+| `/patterns`                        | 🔍 View detected behavioral patterns (usage, topics, trends)        |
+| `/reminders`                       | Lists upcoming reminders with `[❌ Cancel]` buttons                 |
+| `/tasks`                           | 📋 Lists all active tasks sorted by priority                        |
+| `/goals`                           | 🎯 Shows all goals with progress bars                               |
+| `/notes`                           | Last 10 notes                                                       |
+| `/memory`                          | All stored facts about you                                          |
+| `/people`                          | 👥 All remembered people & their relationships                      |
+| `/person <name>`                   | 🔍 Search for a specific person by name                             |
+| `/history <keyword>`               | 🔍 Search past conversations                                        |
+| `/verify`                          | ⚠️ Review & resolve conflicting facts                               |
+| `/plan`                            | **Fasa 4:** Active plans with steps, progress, next action          |
+| `/domains`                         | **Fasa 3:** Memory organized by 8 domains (work, health, etc.)      |
+| `/evaluate`                        | **Fasa 5:** Self-evaluation stats & learning summary                |
+| `/proactive`                       | **Fasa 5:** Trigger a proactive suggestion (check-in, nudge)        |
+| `/state`                           | **All Fasa:** Full bot state report (world model + plans + stats)   |
+| `/settings`                        | View current bot name, personality, times, location                 |
+| `/status`                          | Check API connections (DeepSeek, MiMo, Whisper, Redis, etc.)        |
 
 ### ⚙️ Settings you can change
 
@@ -409,52 +431,83 @@ User message
 
 ---
 
+## 🧠 The 5 Fasa — How it Thinks
+
+| Fasa  | Layer                        | What it does                                                                                                                                                                                          |
+| ----- | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1** | Intent Detection             | Classifies every message into 12 categories with confidence. Detects mood (happy/sad/tired/anxious/motivated), urgency level, and language (BM/EN/Rojak). Routes to fast/medium/deep processing tier. |
+| **2** | Working Memory + World Model | Tracks active goals, possible solutions, rejected ideas. Derives user status from time of day (sleeping/working/free). Detects which life domain is active (work/health/learning...).                 |
+| **3** | Memory Domains               | Organizes all stored facts into 8 structured domains. Detects cross-domain relationships (e.g., work→schedule, health→work). Builds domain-aware context for better LLM responses.                    |
+| **4** | Planning Layer               | Breaks complex goals into steps with dependencies. Tracks progress 0-100%. Detects stalled plans (>12h inactive). Suggests next-best-action based on priority and readiness.                          |
+| **5** | Self Evaluation + Proactive  | Scores every response for quality (length, hallucination, actionability). Records interaction stats. Initiates conversation: morning check-in, evening reflection, goal nudges, mood support.         |
+
+### Proactive Check-in Examples
+
+| Trigger              | Bot says                                         |
+| -------------------- | ------------------------------------------------ |
+| 7-9 AM               | ☀️ "Selamat pagi! Ada plan untuk hari ni?"       |
+| 8-10 PM              | 🌙 "Dah malam! Nak reflection atau plan esok?"   |
+| Stalled plan >12h    | ⏰ "Plan ni dah 12 jam tak update. Nak sambung?" |
+| Goal progress <50%   | 📋 "Quick check-in on your goal..."              |
+| Mood: tired detected | 😴 "Nampak macam penat. Jangan lupa rehat!"      |
+| Weekend morning      | 🎉 "Weekend! Ada plan best ke?"                  |
+
+---
+
 ## 🗂️ Project Structure
 
 ```
 jarvis/
 ├── src/
-│   ├── index.js          # Entry point — boots everything
+│   ├── index.js              # Entry point — boots bot, API, scheduler
 │   ├── bot/
-│   │   └── index.js      # Telegram bot, message handling, commands
+│   │   └── index.js           # Telegram bot — all commands + message processing
+│   ├── executive/             # 🧠 5-Fasa Executive Architecture
+│   │   ├── index.js           # Controller — orchestrates all 5 Fasa
+│   │   ├── intent-engine.js   # Fasa 1: Advanced intent + mood + urgency + language
+│   │   ├── working-memory.js  # Fasa 2: Brain scratchpad (goal, solutions, steps)
+│   │   ├── world-model.js     # Fasa 2: User state (status, domain, time patterns)
+│   │   ├── planner.js         # Fasa 4: Task decomposition + dependencies + progress
+│   │   ├── evaluator.js       # Fasa 5: Response quality scoring + learning tracker
+│   │   └── proactive.js       # Fasa 5: Auto check-ins + smart nudges
 │   ├── llm/
-│   │   ├── index.js      # LLM Router (DeepSeek → MiMo fallback)
-│   │   ├── shared.js     # Shared system prompt builder + tool normalization
-│   │   ├── deepseek.js   # DeepSeek API provider (primary)
-│   │   ├── mimo.js       # Xiaomi MiMo API provider (backup)
-│   │   └── whisper.js    # OpenAI Whisper voice transcription
-│   ├── tools/
-│   │   ├── index.js      # Tool executor (reminders, events, notes, tasks, goals, config, relationships, etc.)
-│   │   ├── quote.js      # Random motivational quote fetcher (ZenQuotes)
-│   │   ├── search.js     # Web search via Tavily API
-│   │   └── weather.js    # Current weather fetcher (OpenWeatherMap)
+│   │   ├── index.js           # LLM Router (DeepSeek ←→ MiMo auto-fallback)
+│   │   ├── shared.js          # System prompt builder + tool normalization
+│   │   ├── deepseek.js        # DeepSeek API provider (primary)
+│   │   ├── mimo.js            # Xiaomi MiMo API provider (backup)
+│   │   ├── intent.js          # Legacy fast keyword-based intent detection
+│   │   ├── validator.js       # Anti-hallucination response validator
+│   │   └── whisper.js         # OpenAI Whisper voice transcription
 │   ├── memory/
-│   │   ├── index.js      # Semantic search (RAG), auto-extract facts, confidence, conflicts, reflection
-│   │   └── relationships.js  # 👥 Relationship memory — auto-extract people, search, context builder
-│   ├── patterns/         # 🔍 Dedicated non-LLM pattern recognition
-│   │   ├── index.js      # Core engine: tracking, full/incremental analysis
-│   │   ├── shared.js     # Shared utilities (keyword extraction, math, stopwords)
-│   │   └── detectors/
-│   │       ├── usage.js      # Time-based patterns (peak hours, days, consistency, trends)
-│   │       ├── topics.js     # Content patterns (keywords, themes, co-occurrence, language mix)
-│   │       ├── behavior.js   # Feature usage (reminders, tasks, goals, notes, tools)
-│   │       └── trends.js     # Changes over time (spikes, correlations, anomalies)
+│   │   ├── index.js           # Semantic search (RAG) + auto-extract facts
+│   │   ├── domains.js         # Fasa 3: 8 structured memory domains + relationships
+│   │   └── relationships.js   # 👥 People memory — auto-extract + search
+│   ├── tools/
+│   │   ├── index.js           # Tool executor — 20+ tools + param validation
+│   │   ├── quote.js           # Motivational quotes (ZenQuotes)
+│   │   ├── search.js          # Web search via Tavily API
+│   │   └── weather.js         # Weather fetcher (OpenWeatherMap)
+│   ├── patterns/              # 🔍 Non-LLM pattern recognition
+│   │   ├── index.js           # Core: tracking, full/incremental analysis
+│   │   ├── shared.js          # Keyword extraction, math utils
+│   │   └── detectors/         # usage.js, topics.js, behavior.js, trends.js
 │   ├── scheduler/
-│   │   └── index.js      # Cron: reminders + morning briefing + weekly review + cleanup + reflection + pattern analysis
+│   │   └── index.js           # Cron: reminders + briefing + review + patterns + proactive + eval
 │   ├── api/
-│   │   ├── index.js      # REST API server (Express)
-│   │   └── status.js     # API health check for /status command
+│   │   ├── index.js           # REST API server (Express)
+│   │   └── status.js          # API health check formatter
 │   ├── redis/
-│   │   └── index.js      # Redis cache layer (optional, auto-fallback)
+│   │   └── index.js           # Redis cache layer (optional)
 │   ├── db/
-│   │   └── index.js      # All PostgreSQL database queries (14 tables)
+│   │   └── index.js           # All PostgreSQL queries (14 tables)
 │   └── utils/
-│       └── datetime.js   # Date/time formatting helpers (dayjs)
+│       └── datetime.js        # Date/time helpers (dayjs)
 ├── scripts/
-│   └── setup-db.js       # One-time DB table creation + migrations (14 tables)
-├── test-all-features.js  # Comprehensive test suite (67 tests, 10 sections)
-├── test-briefing.js      # Quick test script for morning briefing
-├── .env.example          # Environment variable template
+│   └── setup-db.js            # One-time DB table creation + migrations
+├── test-all-phases.js         # 🧪 46 tests — all 5 Fasa modules
+├── test-all-features.js       # 🧪 67 tests — full feature coverage
+├── test-briefing.js           # Quick morning briefing test
+├── .env.example               # Environment variable template
 ├── package.json
 └── README.md
 ```
@@ -463,10 +516,10 @@ jarvis/
 
 ## 🧪 Testing
 
-Run the comprehensive test suite to verify all features work:
-
 ```bash
-node test-all-features.js
+node test-all-phases.js    # 46 tests — all 5 Fasa modules
+node test-all-features.js  # 67 tests — full feature coverage
+node test-briefing.js      # Quick morning briefing test
 ```
 
 Tests cover 10 sections — semantic search, auto-extract, confidence scoring, conflict resolution, importance scoring, chat history, episodic memory, daily reflection, tasks & goals, and memory cleanup — **67+ assertions** with zero API calls needed.
@@ -589,42 +642,6 @@ Jarvis has a sophisticated memory architecture:
 | **Memory Cleanup**        | Daily 3AM job: removes low-importance stale facts, prunes chat > 90 days   |
 | **Daily Reflection**      | 10PM: LLM analyzes the day, detects patterns, notes changes, suggests      |
 | **Importance Scoring**    | Facts rated 1-10 based on key category, access frequency, recency          |
-
----
-
-## 🚀 Roadmap
-
-### ✅ Fasa 1 (MVP) — 100% Complete
-
-- ✅ LLM (DeepSeek + MiMo fallback)
-- ✅ Short-term memory (persistent chat history)
-- ✅ Long-term memory (facts with confidence)
-- ✅ Tool calling (15+ tools)
-- ✅ Reminders (one-shot + recurring + snooze)
-- ✅ Notes
-- ✅ Calendar / Events
-- ✅ Morning briefing + weekly review
-- ✅ Web search + weather + quotes
-- ✅ Voice messages (Whisper transcription)
-
-### ✅ Fasa 2 — 100% Complete
-
-- ✅ Episodic memory (`/history`, chat search)
-- ✅ Knowledge base (semantic memory search RAG)
-- ✅ Daily reflection (`/reflect` + auto 10PM)
-- ✅ Task management (status tracking, priority, inline buttons)
-- ✅ Goal management (progress tracking, target dates)
-- ✅ Pattern recognition (dedicated non-LLM: usage, topic, behavior, trend, correlation)
-- ✅ Relationship memory (dedicated table for people you mention)
-
-### ⬜ Fasa 3 — Future
-
-- ⬜ Document input (PDF, images, location)
-- ⬜ Habit tracking with streaks
-- ⬜ Expense tracking
-- ⬜ Voice reply (TTS)
-- ⬜ Multi-user support
-- ⬜ Web dashboard
 
 ---
 

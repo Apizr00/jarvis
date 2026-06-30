@@ -1,10 +1,51 @@
 # Anti-Hallucination Improvements - Summary
 
-## Problem
+## Latest Update (29 Jun 2026): Reminder Time Fabrication Fix
 
-Your bot was experiencing hallucination issues where it would provide incorrect information, claim to have performed actions it didn't actually do, or reference times/facts incorrectly.
+### Problem Fixed
 
-## Solutions Implemented
+The bot was **fabricating reminder times** in message responses. For example:
+
+- ❌ "#4 - Netherlands vs Morocco — pukul 6:36 am" when actual time was 8:00 PM
+- ❌ "#5 - Makan malam — pukul 6:36 pm" when actual time was 8:00 PM
+- ❌ Bot would say "pukul 6:38 pm" when corrected, still wrong
+
+### Root Cause
+
+The LLM was mentioning reminders with fabricated IDs and times in plain `message` type responses (instead of calling the `list_reminders` tool). The existing `fixHallucinatedTime()` only checked against **current time**, not against **stored reminder times** in the database.
+
+### Solutions Implemented (v2)
+
+#### 1. **Reminder Fabrication Detection** (`src/llm/validator.js`)
+
+- New `detectReminderFabrication()` function cross-references mentioned reminder IDs/times with actual DB records
+- Catches: wrong times, wrong text, nonexistent IDs
+- When detected → forces `list_reminders` tool call to get accurate data
+
+#### 2. **Enhanced Fake List Detection** (`src/bot/index.js`)
+
+- Expanded regex to catch more hallucinated reminder list formats
+- Now detects: `#4 - Text — pukul X:XX`, multiple `#ID` mentions, numbered lists
+- Automatically replaces with `list_reminders` tool call
+
+#### 3. **Stronger System Prompt Rules** (`src/llm/shared.js`)
+
+- Added explicit anti-fabrication section with examples of WRONG vs CORRECT
+- "6:36 is almost never a real reminder time — users set round times like 6:00, 8:00"
+- "If two reminders have the same fabricated time, you are 100% hallucinating"
+- Reminder times in the list are already correct AM/PM — don't change them
+
+#### 4. **Force Tool Call on Fabrication** (`src/llm/deepseek.js`, `src/llm/mimo.js`)
+
+- When reminder fabrication detected → returns `list_reminders` tool call instead of message
+- Ensures user always sees accurate, DB-verified times
+
+#### 5. **Improved Fallback Logic** (`src/llm/validator.js`)
+
+- `generateFallbackResponse()` now recognizes reminder-related queries
+- Triggers proper tool call chain for accurate results
+
+## Previous Solutions (v1)
 
 ### 1. **Response Validation Layer** (`src/llm/validator.js`)
 

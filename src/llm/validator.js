@@ -3,44 +3,64 @@
 const { dayjs, fmt } = require('../utils/datetime');
 
 /**
- * Action verbs that indicate the bot claims to have done something.
- * If these appear in a "message" type response, it's likely a hallucination.
+ * Action verbs that STRONGLY indicate the bot claims to have done something.
+ * These are verbs used in PAST TENSE or PERFECT form claiming completion.
+ * We deliberately EXCLUDE present/future tense and common conversational uses.
  */
 const ACTION_VERBS = [
-  // English
-  'created', 'create', 'added', 'add', 'set', 'saved', 'saved', 'updated', 'update',
-  'cancelled', 'cancel', 'deleted', 'delete', 'removed', 'remove', 'changed', 'change',
-  'scheduled', 'schedule', 'reminded', 'remind', 'noted', 'note', 'recorded', 'record',
-  'done', 'completed', 'finished', 'executed', 'performed', 'activated', 'enabled',
-  'modified', 'edited', 'configured', 'stored', 'registered', 'cleared',
-  // Malay/Indonesian
+  // English — only past tense / perfect forms that claim completion
+  "i've created", "i've set", "i've saved", "i've added", "i've updated",
+  "i've cancelled", "i've deleted", "i've removed", "i've changed", "i've recorded",
+  "i have created", "i have set", "i have saved", "i have added",
+  "i have cancelled", "i have deleted", "i have noted",
+  "i will remind", "i will create", "i will set", "i will save",
+  "i'll remind", "i'll create", "i'll set", "i'll save",
+  "reminder set", "reminder created", "reminder saved",
+  "event created", "event added", "event set",
+  "note saved", "note added", "note recorded",
+  "task created", "task added",
+  "goal created", "goal set",
+  "all set!", "got it!",
+  // Malay/Indonesian — past tense claims
   'dah set', 'dah create', 'dah tambah', 'dah save', 'dah update', 'dah cancel',
-  'dah delete', 'dah buang', 'dah tukar', 'dah ubah', 'dah buat', 'dah rekod',
-  'dah simpan', 'dah jadual', 'dah schedule', 'sudah set', 'sudah create',
-  'sudah tambah', 'sudah save', 'sudah cancel', 'sudah delete', 'sudah tukar',
-  'telah set', 'telah create', 'telah tambah', 'telah save', 'telah cancel',
-  'akan set', 'akan create', 'akan tambah', // "will set" - also a hallucination
-  'setkan', 'tambahkan', 'simpankan', 'recordkan', 'cancelkan', 'deletekan',
+  'dah delete', 'dah buang', 'dah tukar', 'dah ubah', 'dah rekod',
+  'dah simpan', 'dah jadual', 'dah schedule', 'dah siap', 'dah settle',
+  'sudah set', 'sudah create', 'sudah tambah', 'sudah save', 'sudah cancel',
+  'sudah delete', 'sudah tukar', 'telah set', 'telah create', 'telah tambah',
+  'telah save', 'telah cancel', 'akan set', 'akan create', 'akan tambah',
+  'akan ingatkan', 'siap dah', 'okay dah', 'setkan', 'tambahkan',
+  'simpankan', 'recordkan', 'cancelkan', 'deletekan',
 ];
 
 /**
- * Phrases that indicate confirmation of an action.
+ * Phrases that indicate confirmation of an action the bot claims to have done.
  * These are red flags in a message-type response.
+ * Narrowed to only include CLEAR completion/confirmation claims.
  */
 const CONFIRMATION_PHRASES = [
-  // English
-  "i've", "i have", "i just", "i will", "done!", "all set", "got it",
-  "reminder set", "reminder created", "event added", "event created",
-  "note saved", "saved your", "updated your", "cancelled your",
-  "deleted your", "removed your", "changed your", "scheduled for",
-  // Malay
+  // English — only clear action completion claims
+  "i've created", "i've set", "i've saved", "i've added",
+  "i've cancelled", "i've deleted", "i've updated",
+  "i have created", "i have set", "i have saved",
+  "i just created", "i just set", "i just saved",
+  "reminder set!", "reminder created!", "reminder saved!",
+  "event added!", "event created!",
+  "note saved!", "note added!",
+  "task created!", "goal created!",
+  "done! reminder", "done! event", "done! note",
+  "created your", "saved your", "updated your",
+  "cancelled your", "deleted your", "removed your",
+  "changed your", "scheduled for you",
+  // Malay — only clear completion claims
   "dah siap", "dah settle", "dah okay", "okay dah", "siap dah",
   "reminder dah set", "reminder dah create", "event dah tambah",
   "note dah save", "dah save note", "dah cancel reminder",
+  "dah set reminder", "dah create reminder", "dah tambah event",
 ];
 
 /**
  * Detect if a message-type LLM response contains hallucinated action claims.
+ * Now with stricter thresholds to avoid false positives on normal conversation.
  * 
  * @param {string} content - the LLM's message content
  * @returns {{isHallucination: boolean, reason?: string, confidence: number}}
@@ -53,49 +73,68 @@ function detectActionHallucination(content) {
   const lower = content.toLowerCase();
   let confidence = 0;
   let reasons = [];
+  let categoriesHit = 0; // Require at least 2 categories for a hit
 
-  // Check for action verbs
+  // Category 1: Action verbs (past tense / completion claims)
+  let verbHit = false;
   for (const verb of ACTION_VERBS) {
     if (lower.includes(verb)) {
-      confidence += 0.3;
+      confidence += 0.4;
       reasons.push('contains action verb: "' + verb + '"');
-      if (confidence >= 0.9) break;
+      verbHit = true;
+      break; // One verb is enough — prevent stacking from similar words
     }
   }
+  if (verbHit) categoriesHit++;
 
-  // Check for confirmation phrases
+  // Category 2: Confirmation phrases
+  let phraseHit = false;
   for (const phrase of CONFIRMATION_PHRASES) {
     if (lower.includes(phrase)) {
-      confidence += 0.5;
+      confidence += 0.4;
       reasons.push('contains confirmation phrase: "' + phrase + '"');
-      if (confidence >= 0.9) break;
+      phraseHit = true;
+      break;
+    }
+  }
+  if (phraseHit) categoriesHit++;
+
+  // Category 3: Starts with confirmation emoji/word AND followed by action context
+  const startMatch = content.trim().match(/^(✅|✓|☑|🎉)/);
+  if (startMatch) {
+    // Only flag if there's also action-related content after the emoji
+    const afterEmoji = content.trim().slice(startMatch[0].length).toLowerCase();
+    const hasActionAfterEmoji = ACTION_VERBS.some(v => afterEmoji.includes(v)) ||
+      CONFIRMATION_PHRASES.some(p => afterEmoji.includes(p));
+    if (hasActionAfterEmoji) {
+      confidence += 0.3;
+      reasons.push('starts with confirmation emoji + action language');
+      categoriesHit++;
     }
   }
 
-  // Check for common patterns like "✅" or "done" at start
-  if (/^(✅|✓|☑|🎉|done|okay|ok|siap|settle)/i.test(content.trim())) {
-    confidence += 0.4;
-    reasons.push('starts with confirmation emoji/word');
-  }
-
-  // Check for object references like "reminder", "event", "task" combined with action verbs
-  const objectWords = ['reminder', 'event', 'task', 'note', 'goal', 'alarm', 'notification'];
-  for (const obj of objectWords) {
-    if (lower.includes(obj)) {
-      // If object word is near an action verb, high confidence hallucination
-      const hasActionNearby = ACTION_VERBS.some(verb => {
-        const objIndex = lower.indexOf(obj);
-        const verbIndex = lower.indexOf(verb);
-        return Math.abs(objIndex - verbIndex) < 50; // within 50 chars
-      });
-      if (hasActionNearby) {
-        confidence += 0.3;
-        reasons.push('object word "' + obj + '" near action verb');
+  // Category 4: Object word near an action verb (but only if verb/phrase already found)
+  if (verbHit || phraseHit) {
+    const objectWords = ['reminder', 'event', 'task', 'note', 'goal', 'alarm', 'notification'];
+    for (const obj of objectWords) {
+      if (lower.includes(obj)) {
+        const hasActionNearby = ACTION_VERBS.some(verb => {
+          const objIndex = lower.indexOf(obj);
+          const verbIndex = lower.indexOf(verb);
+          return verbIndex !== -1 && Math.abs(objIndex - verbIndex) < 50;
+        });
+        if (hasActionNearby) {
+          confidence += 0.2;
+          reasons.push('object word "' + obj + '" near action verb');
+          categoriesHit++;
+          break;
+        }
       }
     }
   }
 
-  const isHallucination = confidence >= 0.7;
+  // Require at least 2 categories AND confidence >= 0.7 to flag as hallucination
+  const isHallucination = categoriesHit >= 2 && confidence >= 0.7;
 
   return {
     isHallucination,
@@ -282,12 +321,163 @@ function detectFactHallucination(content, userFacts = []) {
 }
 
 /**
- * Validate an LLM response for hallucinations.
- * 
- * @param {{type: string, content?: string, name?: string, args?: object}} llmResponse
- * @param {object} context - { timezone, userFacts }
- * @returns {{isValid: boolean, issues: Array<string>, correctedResponse?: object}}
+ * Helper: check a single mentioned reminder against DB records.
  */
+function checkReminderMatch(mentionedId, mentionedText, mentionedTime, mentionedPeriod, upcomingReminders, fabricatedReminders) {
+  const actualReminder = upcomingReminders.find(r => r.id === mentionedId);
+
+  if (actualReminder) {
+    if (mentionedTime) {
+      const actualDate = new Date(actualReminder.remind_at);
+      const actualHour = actualDate.getHours();
+      const actualMinute = actualDate.getMinutes();
+
+      const timeParts = mentionedTime.split(/[:.]/);
+      let mHour = parseInt(timeParts[0], 10);
+      const mMinute = parseInt(timeParts[1], 10);
+
+      if (/(pm|petang|malam)/i.test(mentionedPeriod)) {
+        if (mHour !== 12) mHour += 12;
+      } else if (/(am|pagi)/i.test(mentionedPeriod)) {
+        if (mHour === 12) mHour = 0;
+      }
+
+      const timeMatches = mHour === actualHour && Math.abs(mMinute - actualMinute) <= 1;
+
+      if (!timeMatches) {
+        fabricatedReminders.push(
+          '#' + mentionedId + ' "' + actualReminder.text + '" — ' +
+          'LLM said ' + mentionedTime + ' ' + (mentionedPeriod || '') +
+          ' but actual is ' + String(actualHour).padStart(2, '0') + ':' + String(actualMinute).padStart(2, '0')
+        );
+      }
+    }
+
+    const textWords = mentionedText.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+    const actualTextLower = actualReminder.text.toLowerCase();
+    const textOverlap = textWords.filter(w => actualTextLower.includes(w)).length;
+    if (textWords.length >= 2 && textOverlap === 0) {
+      fabricatedReminders.push(
+        '#' + mentionedId + ' — LLM said "' + mentionedText.slice(0, 40) +
+        '" but actual text is "' + actualReminder.text + '"'
+      );
+    }
+  } else {
+    fabricatedReminders.push(
+      '#' + mentionedId + ' — this reminder ID does NOT exist in the database'
+    );
+  }
+}
+
+/**
+ * Detect if LLM is fabricating reminder times (mentioning reminder IDs/texts
+ * with times that don't match the actual DB reminders).
+ * 
+ * This is different from detectTimeHallucination — that checks against CURRENT time.
+ * This checks against STORED reminder times in the database.
+ * 
+ * @param {string} content - the message content
+ * @param {Array<{id:number, text:string, remind_at:string}>} upcomingReminders - actual reminders from DB
+ * @returns {{hasFabrication: boolean, fabricatedReminders: Array<string>}}
+ */
+function detectReminderFabrication(content, upcomingReminders = []) {
+  if (!content || typeof content !== 'string' || upcomingReminders.length === 0) {
+    return { hasFabrication: false, fabricatedReminders: [] };
+  }
+
+  const fabricatedReminders = [];
+
+  // ── Pattern A: "#ID - Text — time" format ─────────────────────────────
+  // E.g., "#4 - Netherlands vs Morocco — pukul 6:36 am"
+  const idPattern = /#(\d+)\s*[-–—]\s*(.+?)(?:\s*[-–—]\s*(?:pukul|jam|at)\s*(\d{1,2}[:.]\d{2})\s*(am|pm|pagi|petang|malam)?)?(?:\n|$)/gi;
+
+  let match;
+  while ((match = idPattern.exec(content)) !== null) {
+    const mentionedId = parseInt(match[1], 10);
+    const mentionedText = (match[2] || '').trim();
+    const mentionedTime = match[3] || null;
+    const mentionedPeriod = (match[4] || '').toLowerCase();
+
+    checkReminderMatch(mentionedId, mentionedText, mentionedTime, mentionedPeriod, upcomingReminders, fabricatedReminders);
+  }
+
+  // ── Pattern B: Numbered list "1. Text — Date, Time" format ────────────
+  // E.g., "1. Makan Malam — 29 Jun 2026, 7:15 pm"
+  // This catches the LLM fabricating lists without using #IDs
+  const numberedPattern = /(?:^|\n)\s*(\d+)\.\s+(.+?)\s*[-–—]\s*.+?(\d{1,2})[:.](\d{2})\s*(am|pm|AM|PM)/gi;
+
+  while ((match = numberedPattern.exec(content)) !== null) {
+    const mentionedText = (match[2] || '').trim();
+    const mentionedHour = parseInt(match[3], 10);
+    const mentionedMinute = parseInt(match[4], 10);
+    const mentionedPeriod = (match[5] || '').toLowerCase();
+
+    // Find matching reminder in DB by text similarity
+    const textLower = mentionedText.toLowerCase();
+    const bestMatch = upcomingReminders.find(r => {
+      const rLower = r.text.toLowerCase();
+      // Check for significant word overlap
+      const words = textLower.split(/\s+/).filter(w => w.length > 2);
+      const matchCount = words.filter(w => rLower.includes(w)).length;
+      return matchCount >= Math.min(2, words.length); // at least 2 words or all if <2
+    });
+
+    if (bestMatch) {
+      const actualDate = new Date(bestMatch.remind_at);
+      const actualHour = actualDate.getHours();
+      const actualMinute = actualDate.getMinutes();
+
+      // Convert mentioned to 24h
+      let m24h = mentionedHour;
+      if (/(pm)/i.test(mentionedPeriod) && mentionedHour !== 12) m24h += 12;
+      if (/(am)/i.test(mentionedPeriod) && mentionedHour === 12) m24h = 0;
+
+      const timeMatches = m24h === actualHour && Math.abs(mentionedMinute - actualMinute) <= 1;
+
+      if (!timeMatches) {
+        fabricatedReminders.push(
+          '"' + bestMatch.text + '" — LLM said ' + mentionedHour + ':' +
+          String(mentionedMinute).padStart(2, '0') + ' ' + mentionedPeriod +
+          ' but actual is ' + String(actualHour).padStart(2, '0') + ':' +
+          String(actualMinute).padStart(2, '0')
+        );
+      }
+    } else {
+      // No matching reminder found — could be fabricated text
+      // Only flag if the message clearly looks like it's listing reminders
+      const lines = content.split('\n').filter(l => /\d+\.\s+.+[-–—].+/.test(l));
+      if (lines.length >= 2) {
+        fabricatedReminders.push(
+          'Fabricated reminder list: "' + mentionedText.slice(0, 40) +
+          '" doesn\'t match any actual reminder'
+        );
+      }
+    }
+  }
+
+  // Also detect patterns like "#4 and #5" without explicit times but clearly fabricated
+  // ONLY if the content also mentions reminder/time-related words (context check)
+  if (fabricatedReminders.length === 0) {
+    const hasReminderContext = /reminder|peringatan|ingatkan|pukul|jam|\btime\b|schedule|jadual|event/i.test(content);
+    if (hasReminderContext) {
+      const allHashIds = [...content.matchAll(/#(\d+)/g)].map(m => parseInt(m[1], 10));
+      const existingIds = new Set(upcomingReminders.map(r => r.id));
+      const nonexistentIds = allHashIds.filter(id => !existingIds.has(id));
+
+      // Only flag if 2+ nonexistent IDs (single mismatch could be innocent)
+      if (nonexistentIds.length >= 2) {
+        fabricatedReminders.push(
+          'Mentioned reminder IDs that don\'t exist: ' + nonexistentIds.map(id => '#' + id).join(', ')
+        );
+      }
+    }
+  }
+
+  return {
+    hasFabrication: fabricatedReminders.length > 0,
+    fabricatedReminders,
+  };
+}
 function validateLLMResponse(llmResponse, context = {}) {
   const issues = [];
   let isValid = true;
@@ -304,7 +494,7 @@ function validateLLMResponse(llmResponse, context = {}) {
       isValid = false;
     }
 
-    // Check for time hallucinations
+    // Check for time hallucinations (against current time)
     if (context.timezone) {
       const timeCheck = detectTimeHallucination(content, context.timezone);
       if (timeCheck.hasTimeHallucination) {
@@ -321,6 +511,15 @@ function validateLLMResponse(llmResponse, context = {}) {
           issues.push('Time hallucination detected: ' + timeCheck.wrongTimes.join(', '));
           // Don't mark as invalid for minor time differences (will be auto-fixed)
         }
+      }
+    }
+
+    // 🔥 Check for REMINDER FABRICATION — LLM making up reminder times/texts
+    if (context.upcomingReminders && context.upcomingReminders.length > 0) {
+      const reminderCheck = detectReminderFabrication(content, context.upcomingReminders);
+      if (reminderCheck.hasFabrication) {
+        issues.push('CRITICAL reminder fabrication: ' + reminderCheck.fabricatedReminders.join('; '));
+        isValid = false; // BLOCK fabricated reminder info
       }
     }
 
@@ -346,7 +545,12 @@ function validateLLMResponse(llmResponse, context = {}) {
     }
   }
 
-  return { isValid, issues };
+  // If reminder fabrication detected, suggest forcing list_reminders tool
+  const forceToolCall = !isValid && issues.some(i => i.includes('reminder fabrication'))
+    ? { name: 'list_reminders', args: {} }
+    : null;
+
+  return { isValid, issues, forceToolCall };
 }
 
 /**
@@ -358,26 +562,33 @@ function validateLLMResponse(llmResponse, context = {}) {
 function generateFallbackResponse(userMessage) {
   const lower = userMessage.toLowerCase();
 
+  // If asking about reminders/reminder times → trigger list_reminders
+  // Narrowed: only match when user is clearly asking about reminder-related things
+  if (lower.includes('remind') || lower.includes('peringatan') || lower.includes('ingatkan') ||
+    (lower.includes('#') && /\d+/.test(lower))) {
+    return 'Let me check your reminders for accurate times...';
+  }
+
   // If asking about time
-  if (lower.includes('pukul') || lower.includes('jam') || lower.includes('time') ||
-    lower.includes('berapa') && (lower.includes('sekarang') || lower.includes('now'))) {
-    // Return simple time response without extras
+  if ((lower.includes('pukul') || lower.includes('jam') || lower.includes('time')) &&
+    (lower.includes('berapa') || lower.includes('sekarang') || lower.includes('now') || lower.includes('what'))) {
     const now = new Date();
     const tz = process.env.TIMEZONE || 'UTC';
     const hour = parseInt(new Intl.DateTimeFormat('en', { timeZone: tz, hour: 'numeric', hour12: false }).format(now), 10);
     const minute = parseInt(new Intl.DateTimeFormat('en', { timeZone: tz, minute: '2-digit' }).format(now), 10);
     const period = hour >= 12 ? 'PM' : 'AM';
     const hour12 = hour % 12 === 0 ? 12 : hour % 12;
+    const minStr = minute.toString().padStart(2, '0');
 
-    if (lower.includes('bahasa') || lower.includes('pukul') || lower.includes('jam')) {
-      return 'Pukul ' + hour12 + ':' + minute.toString().padStart(2, '0') + ' ' + period + ' sekarang.';
+    if (lower.includes('pukul') || lower.includes('jam')) {
+      return 'Pukul ' + hour12 + ':' + minStr + ' ' + period + ' sekarang.';
     }
-    return 'It\'s ' + hour12 + ':' + minute.toString().padStart(2, '0') + ' ' + period + ' now.';
+    return 'It\'s ' + hour12 + ':' + minStr + ' ' + period + ' now.';
   }
 
   // If trying to create/set something
-  if (lower.includes('remind') || lower.includes('set') || lower.includes('create') ||
-    lower.includes('add') || lower.includes('ingatkan') || lower.includes('buat')) {
+  if (lower.includes('remind') || lower.includes('ingatkan') ||
+    (lower.includes('set') && (lower.includes('reminder') || lower.includes('event') || lower.includes('task')))) {
     return 'I need to confirm a few details first. What would you like me to do?';
   }
 
@@ -448,6 +659,7 @@ module.exports = {
   detectActionHallucination,
   detectTimeHallucination,
   detectFactHallucination,
+  detectReminderFabrication,
   validateLLMResponse,
   generateFallbackResponse,
   validateCancelReminder,

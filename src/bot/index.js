@@ -15,6 +15,7 @@ const { transcribe, downloadVoiceFile } = require('../llm/whisper');
 const { getApiStatus, formatStatusMessage } = require('../api/status');
 const memory = require('../memory');
 const relationships = require('../memory/relationships');
+const domains = require('../memory/domains');
 const patterns = require('../patterns');
 const executive = require('../executive');
 const { invalidateConfigCache } = require('../llm/shared');
@@ -468,6 +469,200 @@ async function createBot() {
     await db.ensureUser(OWNER_ID, msg.from.first_name || 'Owner');
     const result = await tools.executeTool(OWNER_ID, { name: 'list_goals', args: {} });
     await safeSendMessage(bot, msg.chat.id, typeof result === 'object' ? result.message : result);
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  // ── FASA 1-5: New Intelligent Commands ─────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════
+
+  // ── /plan command — view active plans (Fasa 4) ──────────────────────────
+  bot.onText(/\/plan(?:\s+(.+))?/, async (msg, match) => {
+    if (!isOwner(msg)) return;
+    await db.ensureUser(OWNER_ID, msg.from.first_name || 'Owner');
+
+    const subCommand = (match[1] || '').trim().toLowerCase();
+    const planner = require('../executive/planner');
+
+    if (subCommand === 'create' || subCommand === 'new') {
+      return bot.sendMessage(msg.chat.id,
+        '📋 *Create a Plan*\n\n' +
+        'Just tell me naturally what you want to achieve, for example:\n' +
+        '• "Plan: Learn React Native in 2 weeks"\n' +
+        '• "Help me plan my project deployment"\n' +
+        '• "Buat plan untuk belajar Python"\n\n' +
+        'I\'ll break it down into steps for you!');
+    }
+
+    const activePlans = planner.getPlans(OWNER_ID).filter(p => p.status === 'active');
+    if (activePlans.length === 0) {
+      return bot.sendMessage(msg.chat.id,
+        '📋 *No active plans.*\n\n' +
+        'Create one by saying something like:\n' +
+        '• "Plan: Learn X in Y weeks"\n' +
+        '• "Help me break down [task] into steps"');
+    }
+
+    let reply = '*📋 Active Plans*\n\n';
+    for (const plan of activePlans) {
+      reply += '🎯 *' + escapeMd(plan.goal) + '*\n';
+      reply += '  Progress: ' + plan.progress + '% | Steps: ' + plan.steps.length + '\n';
+      const nextStep = planner.getNextStep(OWNER_ID, plan.planId);
+      if (nextStep) {
+        reply += '  ➡️ Next: ' + escapeMd(nextStep.description) + '\n';
+      }
+      reply += '\n';
+    }
+
+    await safeSendMessage(bot, msg.chat.id, reply.trim());
+  });
+
+  // ── /domains command — view memory domains (Fasa 3) ────────────────────
+  bot.onText(/\/domains/, async (msg) => {
+    if (!isOwner(msg)) return;
+    await db.ensureUser(OWNER_ID, msg.from.first_name || 'Owner');
+
+    try {
+      const domains = require('../memory/domains');
+      const stats = await domains.getDomainStats(OWNER_ID);
+
+      if (stats.every(s => s.count === 0)) {
+        return bot.sendMessage(msg.chat.id,
+          '🧠 *No memory domains yet.*\n\n' +
+          'As we talk, I\'ll organize what I learn about you into domains like Personal, Work, Health, etc.');
+      }
+
+      let reply = '*🧠 Memory Domains*\n\n';
+      for (const s of stats) {
+        if (s.count === 0) continue;
+        const bar = '█'.repeat(Math.min(s.count, 20));
+        reply += s.icon + ' *' + s.name + ':* ' + s.count + ' facts\n';
+        reply += '  ' + bar + '\n\n';
+      }
+
+      try {
+        await bot.sendMessage(msg.chat.id, reply.trim(), { parse_mode: 'Markdown' });
+      } catch {
+        await bot.sendMessage(msg.chat.id, reply.trim());
+      }
+    } catch (err) {
+      console.error('/domains error:', err.message);
+      await bot.sendMessage(msg.chat.id, '❌ Could not retrieve domains.');
+    }
+  });
+
+  // ── /evaluate command — view self-evaluation stats (Fasa 5) ────────────
+  bot.onText(/\/evaluate/, async (msg) => {
+    if (!isOwner(msg)) return;
+    await db.ensureUser(OWNER_ID, msg.from.first_name || 'Owner');
+
+    try {
+      const evaluator = require('../executive/evaluator');
+      const summary = evaluator.getLearningSummary(OWNER_ID);
+
+      if (!summary) {
+        return bot.sendMessage(msg.chat.id,
+          '📊 *No evaluation data yet.*\n\nInteract with me more and I\'ll start tracking my performance!');
+      }
+
+      const wm = executive.worldModel.get(OWNER_ID);
+      let reply = '*📊 Self-Evaluation Report*\n\n' + summary + '\n\n';
+
+      if (wm) {
+        reply += '*Current State:*\n';
+        reply += '• Status: ' + (wm.status || 'unknown') + '\n';
+        reply += '• Domain: ' + (wm.activeDomain || 'general') + '\n';
+        reply += '• Mood: ' + (wm.currentMood || 'neutral') + '\n';
+        reply += '• Messages: ' + wm.messageCount + '\n';
+      }
+
+      await safeSendMessage(bot, msg.chat.id, reply.trim());
+    } catch (err) {
+      console.error('/evaluate error:', err.message);
+      await bot.sendMessage(msg.chat.id, '❌ Could not generate evaluation.');
+    }
+  });
+
+  // ── /proactive command — trigger proactive suggestion (Fasa 5) ─────────
+  bot.onText(/\/proactive/, async (msg) => {
+    if (!isOwner(msg)) return;
+    await db.ensureUser(OWNER_ID, msg.from.first_name || 'Owner');
+
+    try {
+      const proactive = require('../executive/proactive');
+      const result = await proactive.getBestProactiveMessage(OWNER_ID, bot);
+
+      if (result) {
+        await safeSendMessage(bot, msg.chat.id, result.message);
+      } else {
+        await bot.sendMessage(msg.chat.id,
+          '💤 *Nothing to suggest right now.*\n\n' +
+          'I\'ll proactively check in when:\n' +
+          '• It\'s morning/evening\n' +
+          '• You have stalled plans\n' +
+          '• Your mood seems off\n' +
+          '• You haven\'t chatted in a while');
+      }
+    } catch (err) {
+      console.error('/proactive error:', err.message);
+      await bot.sendMessage(msg.chat.id, '❌ Could not generate suggestion.');
+    }
+  });
+
+  // ── /state command — view full bot state (all Fasa) ────────────────────
+  bot.onText(/\/state/, async (msg) => {
+    if (!isOwner(msg)) return;
+    await db.ensureUser(OWNER_ID, msg.from.first_name || 'Owner');
+
+    try {
+      const wm = executive.worldModel.get(OWNER_ID);
+      const wrkMem = executive.workingMemory.get(OWNER_ID);
+      const activePlan = require('../executive/planner').getActivePlan(OWNER_ID);
+      const domains = require('../memory/domains');
+      const stats = await domains.getDomainStats(OWNER_ID);
+      const evaluator = require('../executive/evaluator');
+      const evalStats = evaluator.getStats(OWNER_ID);
+
+      let reply = '*🤖 JARVIS STATE REPORT*\n\n';
+
+      reply += '*🌍 World Model:*\n';
+      reply += '• Status: ' + (wm.status || 'unknown') + '\n';
+      reply += '• Domain: ' + (wm.activeDomain || 'general') + '\n';
+      reply += '• Mood: ' + (wm.currentMood || 'neutral') + '\n';
+      reply += '• Project: ' + (wm.currentProject || 'none') + '\n';
+      reply += '• Messages: ' + wm.messageCount + '\n\n';
+
+      reply += '*🧠 Working Memory:*\n';
+      reply += '• Goal: ' + (wrkMem.currentGoal || 'none') + '\n';
+      reply += '• Problem: ' + (wrkMem.currentProblem || 'none') + '\n';
+      reply += '• Steps: ' + (wrkMem.nextSteps.length > 0 ? wrkMem.nextSteps.join(', ') : 'none') + '\n\n';
+
+      if (activePlan) {
+        reply += '*📋 Active Plan:*\n';
+        reply += '• Goal: ' + activePlan.goal + '\n';
+        reply += '• Progress: ' + activePlan.progress + '%\n';
+        reply += '• Steps: ' + activePlan.steps.filter(s => s.status === 'completed').length + '/' + activePlan.steps.length + ' done\n\n';
+      }
+
+      reply += '*📊 Domains:*\n';
+      stats.filter(s => s.count > 0).forEach(s => {
+        reply += '• ' + s.icon + ' ' + s.name + ': ' + s.count + '\n';
+      });
+      reply += '\n';
+
+      reply += '*📈 Eval Stats:*\n';
+      reply += '• Total interactions: ' + evalStats.totalInteractions + '\n';
+      reply += '• Avg quality: ' + evalStats.avgQuality + '%\n';
+      reply += '• Fast/Med/Deep: ' + evalStats.byTier.fast + '/' + evalStats.byTier.medium + '/' + evalStats.byTier.deep + '\n';
+
+      try {
+        await bot.sendMessage(msg.chat.id, reply.trim(), { parse_mode: 'Markdown' });
+      } catch {
+        await bot.sendMessage(msg.chat.id, reply.trim());
+      }
+    } catch (err) {
+      console.error('/state error:', err.message);
+      await bot.sendMessage(msg.chat.id, '❌ Could not retrieve state. ' + err.message);
+    }
   });
 
   // ── /reminders command ────────────────────────────────────────────────────
@@ -1142,8 +1337,9 @@ async function createBot() {
       console.log('[Bot] LLM response type:', llmResponse.type, llmResponse.name ? '| tool=' + llmResponse.name : '');
 
       // ── Recovery: if LLM returned a message that looks like a fake action, retry once ──
-      // Expanded regex to catch common hallucination patterns in English AND Malay
-      const actionKeywords = /\b(cancelled|cancel|updated?|update|changed?|change|deleted?|delete|created?|create|saved?|save|noted?|note|remembered|remember|done|settled|settle|confirmed|dah\s*(set|buat|masuk|confirm|simpan|ingat)|reminder|event|task|goal)\b/i;
+      // Narrowed regex: only catch CLEAR hallucinated action claims, not normal conversation.
+      // A hallucinated action message typically says "I've done X" or "Done! X created" etc.
+      const actionKeywords = /\b(?:i've\s+(?:created|set|saved|added|updated|cancelled|deleted|removed|changed|recorded)|i\s+have\s+(?:created|set|saved|added)|i\s+will\s+(?:remind|create|set|save|add|cancel|delete)|dah\s+(?:set|buat|masuk|confirm|simpan|ingat|create|save|cancel|delete|tambah|jadual|schedule)|sudah\s+(?:set|create|tambah|save|cancel|delete)|telah\s+(?:set|create|tambah|save|cancel)|akan\s+(?:set|create|tambah|ingatkan)|all\s+set|got\s+it|done!|siap\s+dah|okay\s+dah)\b/i;
       if (llmResponse.type === 'message' && actionKeywords.test(llmResponse.content)) {
         console.log('[Bot] ⚠️  LLM hallucinated an action! Retrying with correction...');
         const correctionMsg = '❌ You responded with natural language claiming you did something. ' +
@@ -1164,9 +1360,40 @@ async function createBot() {
       // If LLM returns a message that looks like a formatted reminder list,
       // replace it with the actual tool call to get correct times from DB.
       if (llmResponse.type === 'message') {
-        const fakeListPattern = /upcoming\s*reminders|⏰.*reminder|reminder.*#\d+|•.*#\d+.*—/i;
-        if (fakeListPattern.test(llmResponse.content)) {
+        const content = llmResponse.content;
+
+        // Pattern 1: "#4 - Text — pukul X:XX am", "#5 — Text", bullet lists
+        const pattern1 = /(?:^|\n)\s*#\d+\s*[-–—]|upcoming\s*reminders|⏰.*reminder|reminder.*#\d+|•.*#\d+/im;
+
+        // Pattern 2: Numbered list with date+time — "1. Text — 29 Jun 2026, 7:15 pm"
+        const pattern2 = /(?:^|\n)\s*\d+\.\s+.+?\s*[-–—]\s*\d{1,2}\s+\w{3}\s+\d{4}\s*,?\s*\d{1,2}:\d{2}/im;
+
+        // Pattern 3: Multiple "X. Text — time" format (two or more numbered items)
+        const numberedItems = content.match(/(?:^|\n)\s*(\d+)\.\s+.+?[-–—].+?(?:\n|$)/gi);
+        const hasMultipleNumberedItems = numberedItems && numberedItems.length >= 2;
+
+        // Pattern 4: Content mentions "reminder" AND has multiple lines with dash-separated times
+        const hasReminderWord = /\breminder(s)?\b/i.test(content);
+        const timeEntries = content.match(/\d{1,2}[:.]\d{2}\s*(?:am|pm|AM|PM)/g);
+        const hasMultipleTimes = timeEntries && timeEntries.length >= 2;
+
+        const looksLikeReminderList =
+          pattern1.test(content) ||
+          pattern2.test(content) ||
+          hasMultipleNumberedItems ||
+          (hasReminderWord && hasMultipleTimes);
+
+        // Also check: does the message mention multiple #numbers (like #4, #5)?
+        const hashIdMatches = content.match(/#(\d+)/g);
+        const hasMultipleHashIds = hashIdMatches && hashIdMatches.length >= 2;
+
+        if (looksLikeReminderList || hasMultipleHashIds) {
           console.log('[Bot] ⚠️ LLM hallucinated reminder list! Replacing with real list_reminders tool call.');
+          console.log('[Bot]    Detected by: pattern1=' + pattern1.test(content) +
+            ' pattern2=' + pattern2.test(content) +
+            ' numberedItems=' + hasMultipleNumberedItems +
+            ' reminderWord+times=' + (hasReminderWord && hasMultipleTimes) +
+            ' hashIds=' + hasMultipleHashIds);
           llmResponse = { type: 'tool', name: 'list_reminders', args: {} };
         }
       }
@@ -1189,17 +1416,42 @@ async function createBot() {
           relationships.extractPeopleFromChat(userId, text, llmResponse.content, llm.chatMimo);
         }
         if (postActions.updateWorkingMemory) {
-          // Let the LLM extract working memory updates from this exchange
           executive.workingMemory.update(userId, {
             contextNotes: 'Last exchange: user asked "' + text.slice(0, 100) + '" → bot responded',
           });
+        }
+        if (postActions.updateDomains) {
+          // Fasa 3: Track domain context
+          const activeDomain = domains.detectActiveDomain(text);
+          executive.worldModel.update(userId, { activeDomain: activeDomain.domain });
+        }
+        if (postActions.runSelfEval) {
+          // Fasa 5: Evaluate response quality
+          const quality = executive.evaluator.evaluateResponseQuality({
+            userMessage: text,
+            botResponse: llmResponse.content,
+            tier: decision.tier,
+            category: decision.category,
+          });
+          executive.evaluator.recordInteraction(userId, {
+            tier: decision.tier,
+            category: decision.category,
+            quality: quality.score,
+          });
+          if (quality.score < 60) {
+            console.log('[Evaluator] ⚠️ Low quality response (score=' + quality.score + '): ' + quality.issues.join('; '));
+          }
+        }
+        if (postActions.suggestProactive && decision.proactiveSuggestion) {
+          // Fasa 5: Check if we should send a proactive message later
+          console.log('[Proactive] 💡 Suggestion queued: ' + decision.proactiveSuggestion.reason);
         }
 
         // Track for pattern recognition (always)
         patterns.trackMessage(userId, { role: 'user', content: text });
         patterns.trackMessage(userId, { role: 'assistant', content: llmResponse.content });
 
-        console.log('[Executive] ✅ ' + decision.tier.toUpperCase() + ' path complete | post: facts=' + postActions.extractFacts + ' people=' + postActions.extractPeople + ' wm=' + postActions.updateWorkingMemory);
+        console.log('[Executive] ✅ ' + decision.tier.toUpperCase() + ' path complete | post: facts=' + postActions.extractFacts + ' people=' + postActions.extractPeople + ' wm=' + postActions.updateWorkingMemory + ' domains=' + postActions.updateDomains + ' eval=' + postActions.runSelfEval);
 
       } else if (llmResponse.type === 'tool') {
         // Execute tool
@@ -1253,6 +1505,23 @@ async function createBot() {
           if (postActions.updateWorkingMemory) {
             executive.workingMemory.update(userId, {
               contextNotes: 'Confirm flow: ' + text.slice(0, 100),
+            });
+          }
+          if (postActions.updateDomains) {
+            const activeDomain = domains.detectActiveDomain(text);
+            executive.worldModel.update(userId, { activeDomain: activeDomain.domain });
+          }
+          if (postActions.runSelfEval) {
+            const quality = executive.evaluator.evaluateResponseQuality({
+              userMessage: text,
+              botResponse: result.message,
+              tier: decision.tier,
+              category: decision.category,
+            });
+            executive.evaluator.recordInteraction(userId, {
+              tier: decision.tier,
+              category: decision.category,
+              quality: quality.score,
             });
           }
 
@@ -1418,6 +1687,25 @@ async function createBot() {
         if (postActions.extractPeople) {
           relationships.extractPeopleFromChat(userId, text, finalResult, llm.chatMimo);
         }
+        if (postActions.updateDomains) {
+          const activeDomain = domains.detectActiveDomain(text);
+          executive.worldModel.update(userId, { activeDomain: activeDomain.domain });
+        }
+        if (postActions.runSelfEval) {
+          const quality = executive.evaluator.evaluateResponseQuality({
+            userMessage: text,
+            botResponse: finalResult,
+            tier: decision.tier,
+            category: decision.category,
+          });
+          executive.evaluator.recordInteraction(userId, {
+            tier: decision.tier,
+            category: decision.category,
+            quality: quality.score,
+            toolName: llmResponse.name,
+            toolSuccess: true,
+          });
+        }
 
         // Track for pattern recognition (always)
         patterns.trackMessage(userId, { role: 'user', content: text });
@@ -1427,7 +1715,7 @@ async function createBot() {
           toolUsed: llmResponse.name,
         });
 
-        console.log('[Executive] ✅ ' + decision.tier.toUpperCase() + ' path complete (tool=' + llmResponse.name + ') | post: facts=' + postActions.extractFacts + ' people=' + postActions.extractPeople + ' wm=' + postActions.updateWorkingMemory);
+        console.log('[Executive] ✅ ' + decision.tier.toUpperCase() + ' path complete (tool=' + llmResponse.name + ') | post: facts=' + postActions.extractFacts + ' people=' + postActions.extractPeople + ' wm=' + postActions.updateWorkingMemory + ' domains=' + postActions.updateDomains + ' eval=' + postActions.runSelfEval);
 
       } else {
         console.log('[Bot] Unknown LLM response type:', llmResponse.type);
