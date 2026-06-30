@@ -13,6 +13,7 @@ const { getQuote } = require('../tools/quote');
 let { refreshSchedules } = require('../scheduler');
 const { transcribe, downloadVoiceFile } = require('../llm/whisper');
 const { getApiStatus, formatStatusMessage } = require('../api/status');
+const { formatFeaturesMarkdown } = require('../api/features');
 const memory = require('../memory');
 const relationships = require('../memory/relationships');
 const domains = require('../memory/domains');
@@ -1115,6 +1116,7 @@ async function createBot() {
       '/patterns — View detected behavioral patterns (/patterns <type>)\n' +
       '/history — Search past conversations (/history <keyword>)\n' +
       '/status — Check API connections\n' +
+      '/features — List all active capabilities & modules\n' +
       '/help — This message\n' +
       '/settings — View current bot settings\n' +
       '/setname <name> — Change bot name\n' +
@@ -1320,6 +1322,19 @@ async function createBot() {
     } catch (err) {
       console.error('/status error:', err.message);
       await bot.sendMessage(msg.chat.id, '❌ Could not check API status.');
+    }
+  });
+
+  // ── /features command — list all active capabilities ──────────────────────
+  bot.onText(/\/features/, async (msg) => {
+    if (!isOwner(msg)) return;
+    await bot.sendChatAction(msg.chat.id, 'typing');
+    try {
+      const message = formatFeaturesMarkdown();
+      await safeSendMessage(bot, msg.chat.id, message);
+    } catch (err) {
+      console.error('/features error:', err.message);
+      await bot.sendMessage(msg.chat.id, '❌ Could not retrieve features list.');
     }
   });
 

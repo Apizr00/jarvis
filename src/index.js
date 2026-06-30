@@ -8,6 +8,7 @@ const { createBot } = require('./bot');
 const { createApiServer } = require('./api');
 const { startScheduler } = require('./scheduler');
 const { getApiStatus, formatStatusMessage } = require('./api/status');
+const { formatFeaturesCompact } = require('./api/features');
 
 // ── Validate required env vars ────────────────────────────────────────────────
 const required = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_OWNER_ID', 'DEEPSEEK_API_KEY', 'DATABASE_URL'];
@@ -62,6 +63,10 @@ async function main() {
     console.log('  ' + padded + ' ' + label);
   }
   console.log('✅ Jarvis is fully operational.');
+  console.log('');
+  console.log('🧩 ACTIVE MODULES');
+  console.log('─────────────────');
+  console.log(formatFeaturesCompact());
   console.log('');
 
   // Graceful shutdown
