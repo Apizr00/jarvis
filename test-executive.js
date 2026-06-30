@@ -79,7 +79,7 @@ async function main() {
   });
 
   const world = executive.formatWorldModelForPrompt('test');
-  assert(world.includes('working'), 'World model contains status');
+  assert(world.includes('Working') || world.includes('working'), 'World model contains status');
   assert(world.includes('Telegram Bot'), 'World model contains project');
   assert(world.includes('AI'), 'World model contains interests');
 

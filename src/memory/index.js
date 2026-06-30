@@ -215,7 +215,15 @@ async function extractFactsFromChat(userId, userMessage, assistantResponse, llmC
 
     // Use a clean history with just this extraction prompt
     const extractHistory = [{ role: 'user', content: extractionPrompt }];
-    const llmResponse = await llmChatFn(userId, extractionPrompt, extractHistory);
+
+    // ⏱️ Timeout guard: extraction is fire-and-forget, don't let it hang
+    const EXTRACTION_TIMEOUT_MS = 10000;
+    const llmResponse = await Promise.race([
+      llmChatFn(userId, extractionPrompt, extractHistory),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Fact extraction timed out after ' + EXTRACTION_TIMEOUT_MS / 1000 + 's')), EXTRACTION_TIMEOUT_MS)
+      ),
+    ]);
 
     // LLM returns {type:'message', content:'...'} or {type:'tool', ...}
     let rawText = '';

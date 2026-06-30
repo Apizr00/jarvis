@@ -3,6 +3,129 @@
 const { dayjs, fmt } = require('../utils/datetime');
 const db = require('../db');
 
+// ── Shared validation (deduplicated from deepseek.js + mimo.js) ──────────────
+// Both providers use this single function for response validation.
+// Prevents drifting fixes between the two provider files.
+
+let _validator = null;
+function getValidator() {
+  if (!_validator) _validator = require('./validator');
+  return _validator;
+}
+
+/**
+ * Validate and normalize a parsed LLM response.
+ * Called by both deepseek.js and mimo.js after JSON parsing.
+ * Handles: cancel_reminder check, hallucination detection, fallback generation.
+ *
+ * @param {object} normalized - already normalized response from normalizeLLMResponse()
+ * @param {object} opts
+ * @param {boolean} opts.minimal - if true, uses lightweight checks (fast tier)
+ * @param {Array} opts.upcomingReminders - reminders for cancel validation
+ * @param {string} opts.userMessage - original user message for context
+ * @param {object} opts.facts - user facts for fact fabrication check
+ * @returns {{result: object, wasValidated: boolean}}
+ */
+function validateParsedResponse(normalized, opts = {}) {
+  const validator = getValidator();
+  const { minimal, upcomingReminders = [], userMessage = '', facts = [] } = opts;
+
+  // ── Always validate cancel_reminder calls ────────────────────────────
+  if (normalized.type === 'tool' && normalized.name === 'cancel_reminder') {
+    const cancelValidation = validator.validateCancelReminder(normalized, upcomingReminders, userMessage);
+    if (!cancelValidation.isValid) {
+      console.warn('[Shared] ⛔️ Blocked invalid cancel_reminder:', cancelValidation.error);
+      return {
+        result: { type: 'message', content: cancelValidation.suggestion || "I couldn't find that reminder." },
+        wasValidated: true,
+      };
+    }
+  }
+
+  // ── Lightweight check for fast-tier: only catch blatant action claims ──
+  if (minimal && normalized.type === 'message') {
+    const actionCheck = validator.detectActionHallucination(normalized.content);
+    if (actionCheck.isHallucination && actionCheck.confidence >= 0.85) {
+      console.warn('[Shared] ⚠️ Fast-tier action hallucination blocked:', actionCheck.reason);
+      return {
+        result: { type: 'message', content: validator.generateFallbackResponse(userMessage) },
+        wasValidated: true,
+      };
+    }
+    // Fast tier: skip full validation, just do time fix later in bot layer
+    return { result: normalized, wasValidated: true };
+  }
+
+  // ── Full validation for medium/deep tier ─────────────────────────────
+  if (!minimal) {
+    const validation = validator.validateLLMResponse(normalized, {
+      timezone: process.env.TIMEZONE || 'UTC',
+      userFacts: facts,
+      upcomingReminders: upcomingReminders,
+    });
+
+    if (!validation.isValid && normalized.type === 'message') {
+      console.warn('[Shared] ⚠️ Hallucination detected:', validation.issues.join('; '));
+      if (validation.forceToolCall) {
+        console.log('[Shared] 🔄 Forcing list_reminders tool call to get accurate times');
+        return { result: { type: 'tool', name: 'list_reminders', args: {} }, wasValidated: true };
+      }
+      const fallback = validator.generateFallbackResponse(userMessage);
+      return { result: { type: 'message', content: fallback }, wasValidated: true };
+    }
+
+    if (validation.issues.length > 0) {
+      console.log('[Shared] Validation issues (non-critical):', validation.issues.join('; '));
+    }
+  }
+
+  return { result: normalized, wasValidated: true };
+}
+
+/**
+ * Parse raw LLM text into a validated response.
+ * Full pipeline: JSON parse → normalize → validate.
+ * Used by both chat() and chatStream() in both providers.
+ *
+ * @param {string} rawText - raw text from LLM
+ * @param {object} opts - same as validateParsedResponse
+ * @returns {object} the final response (type + content/name+args)
+ */
+function parseAndValidate(rawText, opts = {}) {
+  // ── Try 1: strip markdown fences then parse ───────────────────────────
+  try {
+    const cleaned = rawText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
+    const parsed = JSON.parse(cleaned);
+    const normalized = normalizeLLMResponse(parsed);
+    if (normalized) {
+      const { result } = validateParsedResponse(normalized, opts);
+      return result;
+    }
+    // Valid JSON but unrecognized structure — fall through to rawText
+    console.log('[Shared] Valid JSON but unrecognized structure, falling back to rawText');
+    return { type: 'message', content: rawText };
+  } catch (e) {
+    // ── Try 2: extract JSON object with regex ───────────────────────────
+    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        const extracted = JSON.parse(jsonMatch[0]);
+        const normalized = normalizeLLMResponse(extracted);
+        if (normalized) {
+          const { result } = validateParsedResponse(normalized, opts);
+          return result;
+        }
+        console.log('[Shared] Regex-extracted JSON but unrecognized structure');
+      } catch (_) {
+        console.log('[Shared] Regex extraction found but JSON.parse failed');
+      }
+    } else {
+      console.log('[Shared] No JSON object found in response, treating as plain message');
+    }
+    return { type: 'message', content: rawText };
+  }
+}
+
 // ── Config cache (botName/personality rarely change, avoid DB hit every message) ──
 const configCache = new Map(); // userId → { botName, personality, cachedAt }
 const CONFIG_CACHE_TTL_MS = 5 * 60_000; // 5 min TTL
@@ -590,4 +713,4 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
   return prompt;
 }
 
-module.exports = { buildSystemPrompt, normalizeLLMResponse, invalidateConfigCache };
+module.exports = { buildSystemPrompt, normalizeLLMResponse, invalidateConfigCache, validateParsedResponse, parseAndValidate };

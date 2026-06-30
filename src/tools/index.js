@@ -341,7 +341,13 @@ async function executeTool(userId, toolCall) {
       if (isNaN(remindAt.getTime())) {
         return 'I couldn\'t parse that time. Can you try again with a clearer time?';
       }
-      const recurrence = args.recurrence || null;
+      // ✅ Validate recurrence value
+      const VALID_RECURRENCE = ['daily', 'weekly', 'weekdays'];
+      let recurrence = args.recurrence || null;
+      if (recurrence !== null && !VALID_RECURRENCE.includes(recurrence)) {
+        console.warn('[Tools] ⚠️ Invalid recurrence value ignored:', recurrence);
+        recurrence = null;
+      }
       const reminder = await db.createReminder(userId, args.text, remindAt, recurrence);
       const dateFormatted = fmt(reminder.remind_at, 'dddd, D MMM YYYY');
       const timeFormatted = fmt(reminder.remind_at, 'h:mm A');

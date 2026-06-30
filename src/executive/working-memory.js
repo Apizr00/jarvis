@@ -25,7 +25,7 @@ const MAX_SOLUTIONS = 5;
 const MAX_REJECTED = 10;
 const MAX_NEXT_STEPS = 5;
 const EXPIRE_AFTER_MS = 30 * 60 * 1000; // 30 minutes inactivity → reset
-const RESET_AFTER_MESSAGES = 20;        // reset after 20 messages
+const RESET_AFTER_MESSAGES = 50;        // reset after 50 messages (was 20 — too short for deep tasks)
 
 /**
  * Get working memory for a user. Creates empty if not exists.

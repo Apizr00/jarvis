@@ -100,6 +100,33 @@ function fixHallucinatedTime(text) {
     }
   }
 
+  // ── Relative time hallucination: "dalam X minit" / "X minit lagi" near current time ──
+  // If text mentions the current time AND says "dalam 5 minit", but it's actually now,
+  // the relative phrase is hallucinated. Replace with "sekarang" / "now".
+  const relativePattern = /(?:dalam|tinggal|lagi)\s+(\d+)\s*(?:minit|minute|min|minit\s+lagi|minutes?\s+(?:left|from\s+now))/gi;
+  const hasCurrentTimeMention = (() => {
+    const currentMinStr = minute.toString().padStart(2, '0');
+    const hr12 = hour % 12 === 0 ? 12 : hour % 12;
+    return text.includes(hr12 + ':' + currentMinStr) || text.includes(hr12 + '.' + currentMinStr);
+  })();
+
+  if (hasCurrentTimeMention) {
+    let relMatch;
+    relativePattern.lastIndex = 0;
+    while ((relMatch = relativePattern.exec(text)) !== null) {
+      const minsOff = parseInt(relMatch[1], 10);
+      if (minsOff >= 3) {
+        console.log('[Bot] ⏰ Suspicious relative time: "' + relMatch[0] + '" near current time mention — may be hallucinated');
+        // Replace relative phrase with "sekarang"
+        replacements.push({
+          index: relMatch.index,
+          oldStr: relMatch[0],
+          newStr: /\bminit\b/i.test(relMatch[0]) ? 'sekarang' : 'now',
+        });
+      }
+    }
+  }
+
   if (replacements.length === 0) return text;
 
   // Sort by index descending so we can replace from right to left
@@ -174,8 +201,8 @@ function getHistory(userId) {
 function addToHistory(userId, role, content) {
   const history = getHistory(userId);
   history.push({ role, content });
-  // Keep last 10 messages to avoid huge prompts
-  if (history.length > 10) history.splice(0, history.length - 10);
+  // Keep last 20 messages (doubled from 10 — prevents context loss in deep conversations)
+  if (history.length > 20) history.splice(0, history.length - 20);
 
   // 💾 Persist to DB (fire-and-forget — don't block the response)
   db.saveChatMessage(userId, role, content).catch(err => {

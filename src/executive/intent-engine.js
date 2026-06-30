@@ -395,7 +395,7 @@ function detectIntentAdvanced(text, context = {}) {
   const { language } = detectLanguage(text);
 
   // ── Step 7: Determine tier ────────────────────────────────────────────
-  const fastCategories = [INTENT_CATEGORIES.GREETING];
+  const fastCategories = [INTENT_CATEGORIES.GREETING, INTENT_CATEGORIES.FEEDBACK];
   const deepCategories = [
     INTENT_CATEGORIES.TASK_REMINDER, INTENT_CATEGORIES.TASK_EVENT,
     INTENT_CATEGORIES.TASK_NOTE, INTENT_CATEGORIES.TASK_SEARCH,
@@ -414,6 +414,13 @@ function detectIntentAdvanced(text, context = {}) {
     category = INTENT_CATEGORIES.EMERGENCY;
   } else {
     tier = 'medium';
+  }
+
+  // ── Fast-tier override: simple time/date queries and bot identity ─────
+  if (tier === 'medium' && category === INTENT_CATEGORIES.QUESTION_FACT) {
+    if (reason === 'time/date query' || reason === 'bot identity question') {
+      tier = 'fast';
+    }
   }
 
   // ── Step 8: Context-aware escalation ──────────────────────────────────

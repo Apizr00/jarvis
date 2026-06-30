@@ -178,16 +178,27 @@ test('#2: llm/index.js has prepareContext (deduplicated prefetch)', () => {
   if (!code.includes('Promise.all([')) throw new Error('Missing parallel fetch in prepareContext');
 });
 
-test('#3: deepseek.js skips validator for minimal mode', () => {
-  const code = fs.readFileSync('./src/llm/deepseek.js', 'utf8');
-  if (!code.includes('Skip hallucination validator for fast-tier')) throw new Error('Missing validator skip guard');
-  if (!code.includes('if (!minimal) {')) throw new Error('Missing if(!minimal) guard');
+test('#3: shared.js has centralized validation (deduplicated from providers)', () => {
+  const code = fs.readFileSync('./src/llm/shared.js', 'utf8');
+  if (!code.includes('validateParsedResponse')) throw new Error('Missing validateParsedResponse');
+  if (!code.includes('parseAndValidate')) throw new Error('Missing parseAndValidate');
+  if (!code.includes('getValidator()')) throw new Error('Missing lazy validator loader');
+  // Should have lightweight check for fast tier (minimal mode)
+  if (!code.includes('Fast-tier action hallucination blocked')) throw new Error('Missing fast-tier lightweight check');
 });
 
-test('#3: mimo.js skips validator for minimal mode', () => {
+test('#3: deepseek.js uses shared parseAndValidate (deduplicated)', () => {
+  const code = fs.readFileSync('./src/llm/deepseek.js', 'utf8');
+  if (!code.includes('parseAndValidate')) throw new Error('Missing parseAndValidate import/usage');
+  // Should NOT have the old duplicated validator import
+  if (code.includes("require('./validator')")) throw new Error('Still has direct validator import (should use shared)');
+});
+
+test('#3: mimo.js uses shared parseAndValidate (deduplicated)', () => {
   const code = fs.readFileSync('./src/llm/mimo.js', 'utf8');
-  if (!code.includes('Skip hallucination validator for fast-tier')) throw new Error('Missing validator skip guard');
-  if (!code.includes('if (!minimal) {')) throw new Error('Missing if(!minimal) guard');
+  if (!code.includes('parseAndValidate')) throw new Error('Missing parseAndValidate import/usage');
+  // Should NOT have the old duplicated validator import
+  if (code.includes("require('./validator')")) throw new Error('Still has direct validator import (should use shared)');
 });
 
 test('#4: bot/index.js has early exit guard in fixHallucinatedTime', () => {

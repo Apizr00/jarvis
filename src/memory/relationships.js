@@ -50,7 +50,15 @@ async function extractPeopleFromChat(userId, userMessage, assistantResponse, llm
       'Format: {"people":[{"name":"...","relationship":"...","context":"...","confidence":0.9}]}';
 
     const extractHistory = [{ role: 'user', content: extractionPrompt }];
-    const llmResponse = await llmChatFn(userId, extractionPrompt, extractHistory);
+
+    // ⏱️ Timeout guard: extraction is fire-and-forget, don't let it hang
+    const EXTRACTION_TIMEOUT_MS = 10000;
+    const llmResponse = await Promise.race([
+      llmChatFn(userId, extractionPrompt, extractHistory),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('People extraction timed out after ' + EXTRACTION_TIMEOUT_MS / 1000 + 's')), EXTRACTION_TIMEOUT_MS)
+      ),
+    ]);
 
     let rawText = '';
     if (llmResponse.type === 'message') {

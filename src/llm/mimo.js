@@ -6,8 +6,7 @@ const db = require('../db');
 const redisCache = require('../redis');
 const memory = require('../memory');
 const relationships = require('../memory/relationships');
-const { buildSystemPrompt, normalizeLLMResponse } = require('./shared');
-const validator = require('./validator');
+const { buildSystemPrompt, parseAndValidate } = require('./shared');
 
 const MIMO_BASE = (process.env.MIMO_BASE_URL || 'https://api.xiaomimimo.com').replace(/\/+$/, '');
 const MIMO_URL = MIMO_BASE.endsWith('/v1')
@@ -76,107 +75,12 @@ async function chat(userId, userMessage, conversationHistory, options = {}, pref
   const rawText = response.data.choices[0].message.content.trim();
   console.log('[MiMo] Raw response:', rawText.slice(0, 300));
 
-  // ── Try 1: strip markdown fences then parse ───────────────────────────
-  try {
-    const cleaned = rawText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
-    const parsed = JSON.parse(cleaned);
-    const normalized = normalizeLLMResponse(parsed);
-    if (normalized) {
-      // ✅ Validate cancel_reminder calls against actual reminders (always)
-      if (normalized.type === 'tool' && normalized.name === 'cancel_reminder') {
-        const cancelValidation = validator.validateCancelReminder(normalized, upcomingReminders, userMessage);
-        if (!cancelValidation.isValid) {
-          console.warn('[MiMo] ⛔️ Blocked invalid cancel_reminder:', cancelValidation.error);
-          return {
-            type: 'message',
-            content: cancelValidation.suggestion || 'I couldn\'t find that reminder.',
-          };
-        }
-      }
-
-      // ⚡ Skip hallucination validator for fast-tier messages (greetings etc.)
-      if (!minimal) {
-        const validation = validator.validateLLMResponse(normalized, {
-          timezone: process.env.TIMEZONE || 'UTC',
-          userFacts: facts,
-          upcomingReminders: upcomingReminders,
-        });
-
-        if (!validation.isValid && normalized.type === 'message') {
-          console.warn('[MiMo] ⚠️ Hallucination detected:', validation.issues.join('; '));
-          if (validation.forceToolCall) {
-            console.log('[MiMo] 🔄 Forcing list_reminders tool call to get accurate times');
-            return { type: 'tool', name: 'list_reminders', args: {} };
-          }
-          const fallback = validator.generateFallbackResponse(userMessage);
-          return { type: 'message', content: fallback };
-        }
-
-        if (validation.issues.length > 0) {
-          console.log('[MiMo] Validation issues (non-critical):', validation.issues.join('; '));
-        }
-      }
-
-      console.log('[MiMo] Parsed OK (type=' + normalized.type + (normalized.name ? ', name=' + normalized.name : '') + ')');
-      return normalized;
-    }
-    console.log('[MiMo] Valid JSON but unrecognized structure, falling back to rawText');
-    return { type: 'message', content: rawText };
-  } catch (e) {
-    // ── Try 2: extract JSON object with regex ───────────────────────────
-    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      try {
-        const extracted = JSON.parse(jsonMatch[0]);
-        const normalized = normalizeLLMResponse(extracted);
-        if (normalized) {
-          // ✅ Validate cancel_reminder calls against actual reminders (always)
-          if (normalized.type === 'tool' && normalized.name === 'cancel_reminder') {
-            const cancelValidation = validator.validateCancelReminder(normalized, upcomingReminders, userMessage);
-            if (!cancelValidation.isValid) {
-              console.warn('[MiMo] ⛔️ Blocked invalid cancel_reminder:', cancelValidation.error);
-              return {
-                type: 'message',
-                content: cancelValidation.suggestion || 'I couldn\'t find that reminder.',
-              };
-            }
-          }
-
-          // ⚡ Skip hallucination validator for fast-tier messages
-          if (!minimal) {
-            const validation = validator.validateLLMResponse(normalized, {
-              timezone: process.env.TIMEZONE || 'UTC',
-              userFacts: facts,
-              upcomingReminders: upcomingReminders,
-            });
-
-            if (!validation.isValid && normalized.type === 'message') {
-              console.warn('[MiMo] ⚠️ Hallucination detected:', validation.issues.join('; '));
-              if (validation.forceToolCall) {
-                console.log('[MiMo] 🔄 Forcing list_reminders tool call to get accurate times');
-                return { type: 'tool', name: 'list_reminders', args: {} };
-              }
-              const fallback = validator.generateFallbackResponse(userMessage);
-              return { type: 'message', content: fallback };
-            }
-
-            if (validation.issues.length > 0) {
-              console.log('[MiMo] Validation issues (non-critical):', validation.issues.join('; '));
-            }
-          }
-
-          console.log('[MiMo] Regex-extracted JSON OK (type=' + normalized.type + (normalized.name ? ', name=' + normalized.name : '') + ')');
-          return normalized;
-        }
-        console.log('[MiMo] Regex-extracted JSON but unrecognized structure');
-      } catch (_) {
-        console.log('[MiMo] Regex extraction found but JSON.parse failed');
-      }
-    } else {
-      console.log('[MiMo] No JSON object found in response, treating as plain message');
-    }
-    return { type: 'message', content: rawText };
-  }
+  return parseAndValidate(rawText, {
+    minimal,
+    upcomingReminders,
+    userMessage,
+    facts,
+  });
 }
 
 /**
@@ -281,30 +185,12 @@ async function chatStream(userId, userMessage, conversationHistory, options = {}
 
   console.log('[MiMo] Stream complete (' + rawText.length + ' chars):', rawText.slice(0, 200));
 
-  try {
-    const cleaned = rawText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
-    const parsed = JSON.parse(cleaned);
-    const normalized = normalizeLLMResponse(parsed);
-    if (normalized) {
-      if (normalized.type === 'tool' && normalized.name === 'cancel_reminder') {
-        const cancelValidation = validator.validateCancelReminder(normalized, upcomingReminders, userMessage);
-        if (!cancelValidation.isValid) {
-          return { type: 'message', content: cancelValidation.suggestion || "I couldn't find that reminder." };
-        }
-      }
-      if (!minimal) {
-        const validation = validator.validateLLMResponse(normalized, { timezone: process.env.TIMEZONE || 'UTC', userFacts: facts, upcomingReminders });
-        if (!validation.isValid && normalized.type === 'message') {
-          if (validation.forceToolCall) return { type: 'tool', name: 'list_reminders', args: {} };
-          return { type: 'message', content: validator.generateFallbackResponse(userMessage) };
-        }
-      }
-      return normalized;
-    }
-    return { type: 'message', content: rawText };
-  } catch {
-    return { type: 'message', content: rawText };
-  }
+  return parseAndValidate(rawText, {
+    minimal,
+    upcomingReminders,
+    userMessage,
+    facts,
+  });
 }
 
 module.exports = { chat, chatStream };
