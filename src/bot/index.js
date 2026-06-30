@@ -1396,6 +1396,29 @@ async function createBot() {
             ' hashIds=' + hasMultipleHashIds);
           llmResponse = { type: 'tool', name: 'list_reminders', args: {} };
         }
+
+        // ── Recovery: LLM acknowledged a search instead of calling web_search ──
+        const searchAckPattern = /\b(?:kejap|sekejap|tunggu|search dulu|cari dulu|check dulu|cekidout dulu|aku search|aku cari|aku check|let me (?:search|look|check|find|google)|mencari|searching|checking|looking (?:up|for)|nak (?:aku|saya)?\s*(?:search|cari|check)|takut.*aku.*update)/i;
+        const userSearchIntentPattern = /\b(?:siapa|apa|bila|mana|berapa|cari|search|check|find|look\s*up|berita|news|terkini|latest|cuaca|weather|harga|price|stock|crypto|pm\s*malaysia|perdana\s*menteri)/i;
+
+        if (searchAckPattern.test(content) && userSearchIntentPattern.test(text)) {
+          console.log('[Bot] ⚠️ LLM acknowledged search but didn\'t call web_search! Forcing search...');
+          console.log('[Bot]    LLM said:', content.slice(0, 150));
+          console.log('[Bot]    User asked:', text.slice(0, 150));
+
+          // Extract a clean search query from the user's original text
+          let searchQuery = text
+            .replace(/^(?:tolong\s+)?(?:cari|search|check|find|look\s*up)\s+/i, '')
+            .replace(/\b(?:aku|saya|i|you|tolong|please|boleh\s+(?:tak|kah)?|can\s+you|nak\s+(?:tau|tahu)?)\b/gi, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+          // If query is too short after cleanup, use the original text
+          if (searchQuery.length < 3) searchQuery = text;
+
+          console.log('[Bot]    Search query:', searchQuery);
+          llmResponse = { type: 'tool', name: 'web_search', args: { query: searchQuery } };
+        }
       }
 
       if (llmResponse.type === 'message') {

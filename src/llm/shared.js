@@ -273,10 +273,15 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     '  ❌ {"type":"message","content":"Siap dah! Dah set reminder tu."}\n' +
     '  ❌ {"type":"message","content":"I\'ll remind you at 6pm."}\n' +
     '  ❌ {"type":"message","content":"Noted! I\'ll remember that."}\n' +
+    '  ❌ {"type":"message","content":"Kejap, aku search dulu!"}\n' +
+    '  ❌ {"type":"message","content":"Let me search for that..."}\n' +
+    '  ❌ {"type":"message","content":"Sekejap, aku check dulu! 🔍"}\n' +
+    '  ❌ {"type":"message","content":"Tunggu, aku cari dulu."}\n' +
     '✅ CORRECT ALTERNATIVES:\n' +
     '  ✅ {"type":"tool","name":"create_reminder","args":{"text":"Pagi Subuh","time":"2026-06-30T06:00:00+08:00"}}\n' +
     '  ✅ {"type":"tool","name":"add_note","args":{"content":"follow up with client"}}\n' +
-    '  ✅ {"type":"tool","name":"cancel_reminder","args":{"reminder_id":3}}\n\n' +
+    '  ✅ {"type":"tool","name":"cancel_reminder","args":{"reminder_id":3}}\n' +
+    '  ✅ {"type":"tool","name":"web_search","args":{"query":"Perdana Menteri Malaysia 2026"}}\n\n' +
     '⚠️ FORBIDDEN WORDS IN MESSAGE RESPONSES:\n' +
     'If your response type is "message", you MUST NOT use these words/phrases:\n' +
     '• "done", "created", "set", "saved", "updated", "cancelled", "deleted", "added", "removed"\n' +
@@ -284,7 +289,15 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     '• "i\'ve", "i have", "i will", "i just", "i\'ll", "all set", "got it"\n' +
     '• "✅", "✓", "☑" (success emojis)\n' +
     'These words mean you\'re claiming to have done an action. YOU CANNOT DO ACTIONS.\n' +
-    'If you need to do an action, use format A (tool call), NEVER format B (message).\n\n';
+    'If you need to do an action, use format A (tool call), NEVER format B (message).\n\n' +
+    '🔥 SEARCH RULE (CRITICAL — READ 5 TIMES):\n' +
+    'When the user asks a question that needs web search (latest news, current facts, real-time info,\n' +
+    'weather, stock/crypto prices, "who is", "what is the latest", "siapa", "apa berita", "cari", etc.),\n' +
+    'you MUST output a web_search TOOL CALL. NEVER respond with a message like "let me search",\n' +
+    '"kejap aku cari", "tunggu aku check", or any acknowledgment. The system handles the searching.\n' +
+    'Your ONLY job is to output: {"type":"tool","name":"web_search","args":{"query":"..."}}\n' +
+    '🔥 A search acknowledgment message is USELESS — the user gets NO information and has to ask again.\n' +
+    '🔥 If user asks about something you don\'t know → web_search tool call, NOT "let me check".\n\n';
 
   // ═══════════════════════════════════════════════════════════════════════
   // SECTION 3: Context block (all tiers)
