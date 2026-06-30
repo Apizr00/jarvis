@@ -6,7 +6,7 @@ A self-hosted AI assistant that lives in your Telegram. Talk naturally — remin
 
 ---
 
-## 🧠 Architecture (5 Fasa)
+## 🧠 Architecture (5 Fasa + Anti-Hallucination)
 
 ```
 User Message
@@ -45,7 +45,14 @@ User Message
 │  Fast reflection after deep interactions     │
 └──────────────────┬──────────────────────────┘
                    ▼
-              LLM Response
+┌─────────────────────────────────────────────┐
+│  🛡️ ANTI-HALLUCINATION VALIDATOR             │
+│  Action detection · Time verification        │
+│  Reminder fabrication check · DB cross-ref   │
+│  Fallback generation if hallucination found  │
+└──────────────────┬──────────────────────────┘
+                   ▼
+         ✅ Safe LLM Response
          (DeepSeek / MiMo fallback)
 ```
 
@@ -54,7 +61,8 @@ User Message
 ## ✨ Highlights
 
 - **🧠 5-Fasa Executive Architecture** — Layered intelligence: intent → world model → domains → planning → self-eval + proactive
-- **📊 Pattern Recognition** — Dedicated non-LLM system detecting usage, topics, behavior, trends, correlations — zero API cost
+- **�️ Anti-Hallucination Validator** — Multi-layer response validation catches & prevents fabricated actions, times, reminders, and facts before they reach you
+- **�📊 Pattern Recognition** — Dedicated non-LLM system detecting usage, topics, behavior, trends, correlations — zero API cost
 - **👥 Relationship Memory** — Auto-extracts names, relationships, context from conversations
 - **🎤 Voice Messages** — Transcribed via OpenAI Whisper, processed like text
 - **🌐 Web Search** — Real-time info summarized in your language (BM/EN/Rojak)
@@ -405,9 +413,33 @@ curl -X POST http://localhost:3000/notes \
 
 ---
 
+## 🛡️ Anti-Hallucination System
+
+Jarvis includes a **multi-layer anti-hallucination validator** that runs after every LLM response, catching and fixing fabricated information before it reaches you:
+
+| Validation Layer         | What it catches                                                                      |
+| ------------------------ | ------------------------------------------------------------------------------------ |
+| **Action Detection**     | Bot claiming "Done! Dah set reminder" without actually calling a tool                |
+| **Time Verification**    | Bot mentioning wrong times (e.g., "pukul 6:36 am" when it's 8:00 PM)                 |
+| **Reminder Fabrication** | Bot inventing reminder IDs/times — cross-references with actual DB records           |
+| **Fact Hallucination**   | Bot making up facts about the user not in memory — triggers "I don't have that info" |
+| **Tool Parameter Check** | Validates all tool call parameters before execution — catches missing/invalid args   |
+| **Fallback Generation**  | Auto-replaces hallucinated responses with safe clarifying questions or tool calls    |
+
+**Key files:**
+
+- `src/llm/validator.js` — Core validation engine (50+ detection rules)
+- `src/bot/index.js` — Time hallucination guard with `fixHallucinatedTime()`
+- `src/tools/index.js` — Tool parameter schema validation
+- `src/llm/shared.js` — Enhanced system prompt with anti-fabrication rules
+
+📖 See **[ANTI-HALLUCINATION-IMPROVEMENTS.md](ANTI-HALLUCINATION-IMPROVEMENTS.md)** for full technical details.
+
+---
+
 ## 🧠 LLM Fallback Architecture
 
-Jarvis uses a primary + backup LLM setup for reliability:
+Jarvis uses a primary + backup LLM setup with validation at every stage:
 
 ```
 User message
@@ -419,15 +451,25 @@ User message
 └──────┬──────────────┘
        │
        ├── 1️⃣ DeepSeek (primary)
-       │      └── fails? →
+       │      ├── enhanced system prompt
+       │      ├── response parsed
+       │      └── 🛡️ validator checks →
        │
        └── 2️⃣ Xiaomi MiMo (backup)
-              └── fails? → throw error
+              ├── enhanced system prompt
+              ├── response parsed
+              └── 🛡️ validator checks →
+                                           │
+                                      ┌────▼────┐
+                                      │  Safe   │
+                                      │ Response│
+                                      └─────────┘
 ```
 
 - **Redis cache** sits in front of both providers — user facts are cached for 10 minutes, reducing DB load on every message
 - If Redis is unavailable, the bot still works — just queries PostgreSQL directly
 - Set `MIMO_API_KEY` in `.env` to activate the backup. Skip it and only DeepSeek is used
+- The validator runs on ALL responses from ALL providers — hallucination protection is universal
 
 ---
 
@@ -507,6 +549,11 @@ jarvis/
 ├── test-all-phases.js         # 🧪 46 tests — all 5 Fasa modules
 ├── test-all-features.js       # 🧪 67 tests — full feature coverage
 ├── test-briefing.js           # Quick morning briefing test
+├── test-executive.js          # Executive controller + intent engine tests
+├── test-perf-improvements.js  # Performance & anti-hallucination validation tests
+├── TESTING-GUIDE.md           # 📖 Step-by-step anti-hallucination testing guide
+├── ANTI-HALLUCINATION-IMPROVEMENTS.md # 📖 Full anti-hallucination technical docs
+├── CHANGES-SUMMARY.md         # 📖 Summary of latest code changes
 ├── .env.example               # Environment variable template
 ├── package.json
 └── README.md
@@ -517,12 +564,16 @@ jarvis/
 ## 🧪 Testing
 
 ```bash
-node test-all-phases.js    # 46 tests — all 5 Fasa modules
-node test-all-features.js  # 67 tests — full feature coverage
-node test-briefing.js      # Quick morning briefing test
+node test-all-phases.js      # 46 tests — all 5 Fasa modules
+node test-all-features.js    # 67 tests — full feature coverage
+node test-briefing.js        # Quick morning briefing test
+node test-executive.js       # Executive controller tests
+node test-perf-improvements.js # Performance improvements validation
 ```
 
 Tests cover 10 sections — semantic search, auto-extract, confidence scoring, conflict resolution, importance scoring, chat history, episodic memory, daily reflection, tasks & goals, and memory cleanup — **67+ assertions** with zero API calls needed.
+
+📖 See **[TESTING-GUIDE.md](TESTING-GUIDE.md)** for step-by-step anti-hallucination testing scenarios.
 
 ---
 
@@ -563,6 +614,12 @@ Tests cover 10 sections — semantic search, auto-extract, confidence scoring, c
 
 **"ZenQuotes fetch failed" in logs**
 → The free ZenQuotes API occasionally goes down. Built-in fallback quotes are used automatically — nothing to worry about.
+
+**"⚠️ Hallucination detected" in logs**
+→ This is GOOD — it means the anti-hallucination validator caught a fabricated response before it was sent. The bot automatically replaces it with a safe response. If you see many of these, check your LLM API account balance.
+
+**"⏰ Fixing hallucinated time" in logs**
+→ The time guard corrected a wrong time mentioned by the LLM. The bot auto-fixes it — no action needed.
 
 ---
 
