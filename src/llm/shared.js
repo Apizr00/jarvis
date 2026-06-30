@@ -194,6 +194,8 @@ const TOOL_ALIASES = {
   'whattime': 'get_current_time',
   'timenow': 'get_current_time',
   'now': 'get_current_time',
+  'time': 'get_current_time',
+  'checktime': 'get_current_time',
   'createtask': 'create_task', 'addtask': 'create_task', 'newtask': 'create_task',
   'updatetask': 'update_task', 'edittask': 'update_task',
   'starttask': 'start_task', 'begintask': 'start_task',
