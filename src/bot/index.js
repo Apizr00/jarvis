@@ -1897,15 +1897,28 @@ async function createBot() {
         }
 
         if (inlineKeyboard) {
+          let keyboardSent = false;
           try {
             await bot.sendMessage(chatId, finalResult, {
               parse_mode: 'Markdown',
               reply_markup: { inline_keyboard: inlineKeyboard },
             });
-          } catch {
-            await bot.sendMessage(chatId, finalResult, {
-              reply_markup: { inline_keyboard: inlineKeyboard },
-            });
+            keyboardSent = true;
+          } catch (mdErr) {
+            console.error('[Bot] Inline keyboard Markdown send failed: ' + mdErr.message);
+            try {
+              await bot.sendMessage(chatId, finalResult, {
+                reply_markup: { inline_keyboard: inlineKeyboard },
+              });
+              keyboardSent = true;
+            } catch (plainErr) {
+              console.error('[Bot] Inline keyboard plain send also failed: ' + plainErr.message);
+            }
+          }
+          // ── Fallback: if keyboard send failed entirely, try without keyboard ──
+          if (!keyboardSent) {
+            console.log('[Bot] ⚠️ Keyboard send failed, falling back to safeSendMessage without keyboard');
+            await safeSendMessage(bot, chatId, finalResult);
           }
         } else {
           await safeSendMessage(bot, chatId, finalResult);
@@ -1963,7 +1976,7 @@ async function createBot() {
       });
 
     } catch (err) {
-      console.error('Message handler error:', err.message);
+      console.error('[Bot] Message handler error:', err.message, err.stack?.split('\n')[1] || '');
 
       // ── Record error in state machine ───────────────────────────────────
       if (sm && !errorOccurred) {
@@ -1975,6 +1988,11 @@ async function createBot() {
         errorMsg += 'Check your API key.';
       } else if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND') {
         errorMsg += 'Can\'t reach the API. Check your internet connection.';
+      } else if (err.response && err.response.status === 400) {
+        // Telegram 400 — likely a message formatting issue, but the action likely succeeded
+        errorMsg += 'Tapi action tadi mungkin dah jalan. Guna /reminders untuk check.';
+      } else if (err.response && err.response.status >= 500) {
+        errorMsg += 'Telegram server issue. Please try again in a moment.';
       } else {
         errorMsg += 'Please try again.';
       }

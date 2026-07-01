@@ -309,26 +309,34 @@ function simpleHash(str) {
   return hash;
 }
 
-async function safeSendMessage(bot, chatId, text) {
+async function safeSendMessage(bot, chatId, text, fallbackTextOverride = null) {
   // ── Dedup: skip if identical message sent to this chat within 3s ────
   if (isDuplicateMessage(chatId, text)) {
     console.log('[Tools] 🚫 Suppressed duplicate message to chat ' + chatId + ': ' + text.slice(0, 80));
-    return;
+    return false;
   }
 
   try {
     await bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+    return true;
   } catch (mdErr) {
+    console.error('[Tools] Markdown send failed (' + mdErr.response?.statusCode + '): ' + mdErr.message + ' | text preview: ' + text.slice(0, 120));
     // If Markdown fails, send as plain text (no parse_mode)
     try {
       await bot.sendMessage(chatId, text);
+      return true;
     } catch (plainErr) {
-      console.error('sendMessage fallback error:', plainErr.message);
+      console.error('[Tools] Plain text send also failed (' + plainErr.response?.statusCode + '): ' + plainErr.message + ' | text length: ' + text.length);
       // Only send the fallback if we haven't already sent it recently
-      const fallbackText = 'Something went wrong displaying the result.';
+      const fallbackText = fallbackTextOverride || 'Something went wrong displaying the result.';
       if (!isDuplicateMessage(chatId, fallbackText)) {
-        await bot.sendMessage(chatId, fallbackText);
+        try {
+          await bot.sendMessage(chatId, fallbackText);
+        } catch (fallbackErr) {
+          console.error('[Tools] Even fallback message failed:', fallbackErr.message);
+        }
       }
+      return false;
     }
   }
 }
