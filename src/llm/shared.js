@@ -435,6 +435,19 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     year: 'numeric',
   }).format(now);
 
+  // ── Time period for correct greetings (Malay) ───────────────────────────
+  const currentHour = parseInt(new Intl.DateTimeFormat('en', { timeZone: timezone, hour: 'numeric', hour12: false }).format(now), 10);
+  let timePeriod;
+  if (currentHour >= 5 && currentHour < 12) {
+    timePeriod = 'pagi (morning)';
+  } else if (currentHour >= 12 && currentHour < 14) {
+    timePeriod = 'tengah hari (noon/afternoon)';
+  } else if (currentHour >= 14 && currentHour < 19) {
+    timePeriod = 'petang (evening)';
+  } else {
+    timePeriod = 'malam (night)';
+  }
+
   // ── Personality + Bot Name (cached — rarely change, saves 2 DB hits per message) ──
   let botName, personality;
   const cached = getCachedConfig(userId);
@@ -533,7 +546,7 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     '─────────────── CONTEXT ───────────────\n' +
     'You are ' + botName + ', a personal AI assistant on Telegram.\n' +
     personalityBlock +
-    'Timezone: ' + timezone + ' | Today: ' + today + ' | Current time: ' + currentTime + '\n\n' +
+    'Timezone: ' + timezone + ' | Today: ' + today + ' | Current time: ' + currentTime + ' | Day period: ' + timePeriod + '\n\n' +
     (executiveCtx ? executiveCtx + '\n' : '') +
     (tier === 'fast' ? '' : 'User facts:\n' + factLines) +
     (tier === 'fast' ? '' : peopleSection) +
