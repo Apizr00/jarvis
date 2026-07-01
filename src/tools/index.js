@@ -279,7 +279,43 @@ function escapeMd(text) {
  * @param {number|string} chatId
  * @param {string} text
  */
+// ── Message deduplication guard ──────────────────────────────────────────
+// Prevents sending identical messages to the same chat within a short window.
+// This stops the bot from spamming when the LLM or streaming goes haywire.
+const recentSentMessages = new Map(); // key: `${chatId}::${hash}`, value: timestamp
+
+function isDuplicateMessage(chatId, text) {
+  const key = chatId + '::' + simpleHash(text);
+  const lastSent = recentSentMessages.get(key);
+  if (lastSent && Date.now() - lastSent < 3000) {
+    return true; // sent within last 3 seconds → skip
+  }
+  recentSentMessages.set(key, Date.now());
+  // Clean up old entries periodically
+  if (recentSentMessages.size > 200) {
+    const cutoff = Date.now() - 10000;
+    for (const [k, ts] of recentSentMessages) {
+      if (ts < cutoff) recentSentMessages.delete(k);
+    }
+  }
+  return false;
+}
+
+function simpleHash(str) {
+  let hash = 0;
+  for (let i = 0; i < Math.min(str.length, 200); i++) {
+    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+  }
+  return hash;
+}
+
 async function safeSendMessage(bot, chatId, text) {
+  // ── Dedup: skip if identical message sent to this chat within 3s ────
+  if (isDuplicateMessage(chatId, text)) {
+    console.log('[Tools] 🚫 Suppressed duplicate message to chat ' + chatId + ': ' + text.slice(0, 80));
+    return;
+  }
+
   try {
     await bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
   } catch (mdErr) {
@@ -288,7 +324,11 @@ async function safeSendMessage(bot, chatId, text) {
       await bot.sendMessage(chatId, text);
     } catch (plainErr) {
       console.error('sendMessage fallback error:', plainErr.message);
-      await bot.sendMessage(chatId, 'Something went wrong displaying the result.');
+      // Only send the fallback if we haven't already sent it recently
+      const fallbackText = 'Something went wrong displaying the result.';
+      if (!isDuplicateMessage(chatId, fallbackText)) {
+        await bot.sendMessage(chatId, fallbackText);
+      }
     }
   }
 }

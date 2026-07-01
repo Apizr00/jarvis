@@ -1482,16 +1482,27 @@ async function createBot() {
       } else {
         // ── Medium/Deep tier: STREAMING — first token appears in ~200ms ─
         let streamMsg = null;
+        let streamEditFailed = false; // track permanent edit failures to avoid spam
 
         llmResponse = await llm.chatStream(userId, text, history, llmOptions, async (displayText) => {
           try {
             if (!streamMsg) {
+              // Deduplication: if a message with this text was already sent,
+              // telegram may return the same message_id — we use safeSendMessage
               streamMsg = await bot.sendMessage(chatId, displayText);
-            } else {
-              await bot.editMessageText(displayText, { chat_id: chatId, message_id: streamMsg.message_id });
+            } else if (!streamEditFailed) {
+              try {
+                await bot.editMessageText(displayText, { chat_id: chatId, message_id: streamMsg.message_id });
+              } catch (editErr) {
+                // If edit fails permanently (e.g., message deleted or too old),
+                // mark as failed and stop trying to edit. Do NOT create new messages.
+                console.warn('[Bot] Stream edit failed, stopping edits for this response:', editErr.message);
+                streamEditFailed = true;
+              }
             }
+            // If streamEditFailed, silently drop remaining chunks — no spamming
           } catch {
-            // Edit may fail if message was deleted — harmless, next chunk will create new
+            // Initial sendMessage failed — don't attempt further
             streamMsg = null;
           }
         });
