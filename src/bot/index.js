@@ -336,6 +336,109 @@ function clearHistory(userId) {
   console.log('[Bot] 🧹 Cleared conversation history for ' + userId);
 }
 
+// ── Conversation Summarization (prevents context amnesia) ──────────────────
+// When history exceeds 15 messages, compress older messages into a topic
+// summary so the LLM retains awareness of earlier conversation without
+// blowing through token limits. The last 12 messages are always preserved
+// verbatim for accurate recent context.
+
+const SUMMARIZE_THRESHOLD = 15;  // trigger summarization when > 15 messages
+const KEEP_RECENT = 12;          // always keep last N messages verbatim
+
+/**
+ * Build a lightweight topic summary from older messages.
+ * Only extracts user messages — assistant replies are too verbose.
+ * No LLM call needed — regex-based, runs in <1ms.
+ */
+function buildTopicSummary(messages) {
+  const userMessages = messages.filter(m => m.role === 'user').map(m => m.content);
+  if (userMessages.length === 0) return '';
+
+  // Extract key noun phrases and topics (simple heuristic)
+  const topics = [];
+  const seen = new Set();
+
+  for (const msg of userMessages) {
+    // Extract capitalized words, quoted phrases, and meaningful segments
+    const clean = msg.replace(/[^\w\s@#\-]/g, ' ').replace(/\s+/g, ' ').trim();
+    const words = clean.split(' ').filter(w => w.length > 3 && !/^(?:nak|saya|aku|kau|dia|kami|kita|mereka|yang|dengan|pada|untuk|dalam|akan|telah|sudah|boleh|mesti|perlu|juga|sahaja|saja|pun|lagi|dah|ni|tu|ke|tak|kan|lah|nya|ini|itu|ada|tiada|bukan|tidak|ya|dan|atau|the|and|for|with|this|that|from|have|what|when|your|just|like|about)$/i.test(w)).slice(0, 5);
+    for (const w of words) {
+      if (!seen.has(w.toLowerCase())) {
+        seen.add(w.toLowerCase());
+        topics.push(w);
+        if (topics.length >= 8) break;
+      }
+    }
+    if (topics.length >= 8) break;
+  }
+
+  return topics.length > 0 ? '[Earlier topics: ' + topics.join(', ') + ']' : '';
+}
+
+/**
+ * Get effective history for LLM context — auto-summarizes when too long.
+ * Returns a history array optimized for token efficiency.
+ */
+function getEffectiveHistory(userId) {
+  const history = getHistory(userId);
+  if (history.length <= SUMMARIZE_THRESHOLD) return history;
+
+  // Check if already summarized recently
+  const firstMsg = history[0];
+  const alreadySummarized = firstMsg && firstMsg.role === 'system' &&
+    /^\[Earlier/.test(firstMsg.content);
+
+  if (alreadySummarized) {
+    // Keep the summary + last KEEP_RECENT messages
+    const recent = history.slice(-KEEP_RECENT);
+    return [firstMsg, ...recent];
+  }
+
+  // Build summary from older messages and replace history in-place
+  const older = history.slice(0, history.length - KEEP_RECENT);
+  const summary = buildTopicSummary(older);
+  const recent = history.slice(-KEEP_RECENT);
+
+  if (summary) {
+    const newHistory = [{ role: 'system', content: summary }, ...recent];
+    conversationHistory[userId] = newHistory;
+    console.log('[Bot] 📝 Summarized ' + older.length + ' older messages → ' + summary.slice(0, 100));
+    return newHistory;
+  }
+
+  // No useful summary — just trim (keep last 15)
+  const trimmed = history.slice(-15);
+  conversationHistory[userId] = trimmed;
+  return trimmed;
+}
+
+// ── User Message Deduplication ─────────────────────────────────────────────
+// Prevents re-processing the same user message within a short window.
+// If user sends "hi" twice in 10 seconds, skip the second LLM call.
+
+const recentUserMessages = new Map(); // userId → { text, timestamp, response }
+
+function isDuplicateUserMessage(userId, text) {
+  const entry = recentUserMessages.get(userId);
+  if (!entry) return false;
+  // Same text within 10 seconds → duplicate
+  if (entry.text === text && Date.now() - entry.timestamp < 10000) {
+    return true;
+  }
+  return false;
+}
+
+function cacheUserMessageResponse(userId, text, response) {
+  recentUserMessages.set(userId, { text, timestamp: Date.now(), response });
+  // Clean old entries periodically
+  if (recentUserMessages.size > 50) {
+    const cutoff = Date.now() - 30000;
+    for (const [k, v] of recentUserMessages) {
+      if (v.timestamp < cutoff) recentUserMessages.delete(k);
+    }
+  }
+}
+
 async function createBot() {
   const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
@@ -1517,9 +1620,24 @@ async function createBot() {
   });
 
   // ── Shared text processing (used by both text and voice messages) ─────────
-  async function processUserText(bot, chatId, userId, userName, text) {
+  async function processUserText(bot, chatId, userId, userName, text, messageId = null) {
     await db.ensureUser(userId, userName);
+
+    // ── 🚫 User message dedup: skip if same text within 10 seconds ──────
+    if (isDuplicateUserMessage(userId, text)) {
+      console.log('[Bot] 🚫 Skipped duplicate message: "' + text.slice(0, 60) + '"');
+      return; // silently ignore — user probably double-tapped send
+    }
+    cacheUserMessageResponse(userId, text, null); // mark as seen
+
+    // ── 🔄 Re-send typing indicator every 4s (Telegram expires it after ~5s) ──
+    const typingInterval = setInterval(() => {
+      bot.sendChatAction(chatId, 'typing').catch(() => {});
+    }, 4000);
+    // Initial typing indicator
     await bot.sendChatAction(chatId, 'typing');
+    // Cleanup helper — call when done
+    const stopTyping = () => { clearInterval(typingInterval); };
 
     // ── 📡 Emit message:received event ──────────────────────────────────
     eventBus.emitSync(EVENTS.MESSAGE_RECEIVED, {
@@ -1603,69 +1721,76 @@ async function createBot() {
         }
       }
 
-      const history = getHistory(userId);
+      // 🔥 Use summarized history to prevent context amnesia in long chats
+      const history = getEffectiveHistory(userId);
 
-      // 🔥 Streaming for medium/deep — tokens appear progressively in Telegram
-      // Fast tier uses quick non-streaming + Promise.race interim message
+      // ── 🧠 Thinking steps for deep tier — show what the bot is doing ──
       let thinkingMsg = null;
-      let thinkingTimer = null;
+      let thinkingStep = 0;
+      const thinkingSteps = decision.tier === 'deep'
+        ? ['🔍 Analyzing your request…', '🧠 Loading context & memory…', '📋 Planning approach…']
+        : [];
+
+      async function advanceThinking() {
+        if (thinkingSteps.length === 0) return;
+        if (thinkingStep >= thinkingSteps.length) return;
+        const step = thinkingSteps[thinkingStep];
+        thinkingStep++;
+        try {
+          if (!thinkingMsg) {
+            thinkingMsg = await bot.sendMessage(chatId, step);
+          } else {
+            await bot.editMessageText(step, { chat_id: chatId, message_id: thinkingMsg.message_id });
+          }
+        } catch { /* ignore edit failures */ }
+      }
+
+      // Show first thinking step immediately for deep tier
+      if (decision.tier === 'deep') await advanceThinking();
+
+      // ── 🔥 ALL tiers now use STREAMING for snappier UX ──────────────────
+      let streamMsg = null;
+      let streamEditFailed = false;
       let llmResponse;
 
-      if (decision.tier === 'fast') {
-        // ── Fast tier: non-streaming (already quick, < 1s typically) ─────
-        const llmPromise = llm.chat(userId, text, history, llmOptions);
-        const timeoutPromise = new Promise((resolve) => {
-          thinkingTimer = setTimeout(async () => {
-            try {
-              thinkingMsg = await bot.sendMessage(chatId, '🤔 *Sedang berfikir…*', { parse_mode: 'Markdown' });
-            } catch { /* ignore */ }
-            resolve('timeout');
-          }, 3000);
-        });
-
-        const raceResult = await Promise.race([llmPromise, timeoutPromise]);
-        if (raceResult === 'timeout') {
-          llmResponse = await llmPromise;
-        } else {
-          clearTimeout(thinkingTimer);
-          llmResponse = raceResult;
-        }
-        if (thinkingMsg) {
+      llmResponse = await llm.chatStream(userId, text, history, llmOptions, async (displayText) => {
+        // Delete thinking message on first real token
+        if (thinkingMsg && !streamMsg) {
           try { await bot.deleteMessage(chatId, thinkingMsg.message_id); } catch { }
+          thinkingMsg = null;
         }
-      } else {
-        // ── Medium/Deep tier: STREAMING — first token appears in ~200ms ─
-        let streamMsg = null;
-        let streamEditFailed = false; // track permanent edit failures to avoid spam
 
-        llmResponse = await llm.chatStream(userId, text, history, llmOptions, async (displayText) => {
-          try {
-            if (!streamMsg) {
-              // Deduplication: if a message with this text was already sent,
-              // telegram may return the same message_id — we use safeSendMessage
-              streamMsg = await bot.sendMessage(chatId, displayText);
-            } else if (!streamEditFailed) {
-              try {
-                await bot.editMessageText(displayText, { chat_id: chatId, message_id: streamMsg.message_id });
-              } catch (editErr) {
-                // If edit fails permanently (e.g., message deleted or too old),
-                // mark as failed and stop trying to edit. Do NOT create new messages.
-                console.warn('[Bot] Stream edit failed, stopping edits for this response:', editErr.message);
-                streamEditFailed = true;
-              }
+        // Show second thinking step after first few bytes arrive
+        if (decision.tier === 'deep' && thinkingStep === 1 && displayText.length < 20) {
+          await advanceThinking().catch(() => {});
+        }
+
+        try {
+          if (!streamMsg) {
+            streamMsg = await bot.sendMessage(chatId, displayText);
+          } else if (!streamEditFailed) {
+            try {
+              await bot.editMessageText(displayText, { chat_id: chatId, message_id: streamMsg.message_id });
+            } catch (editErr) {
+              console.warn('[Bot] Stream edit failed, stopping edits for this response:', editErr.message);
+              streamEditFailed = true;
             }
-            // If streamEditFailed, silently drop remaining chunks — no spamming
-          } catch {
-            // Initial sendMessage failed — don't attempt further
-            streamMsg = null;
           }
-        });
-
-        // If tool call: delete the streaming placeholder (showed raw JSON fragments)
-        if (llmResponse.type === 'tool' && streamMsg) {
-          try { await bot.deleteMessage(chatId, streamMsg.message_id); } catch { }
+        } catch {
           streamMsg = null;
         }
+      });
+
+      // Clean up thinking message if still showing
+      if (thinkingMsg) {
+        try { await bot.deleteMessage(chatId, thinkingMsg.message_id); } catch { }
+        thinkingMsg = null;
+      }
+
+      // If tool call: delete the streaming placeholder (showed raw JSON fragments)
+      if (llmResponse.type === 'tool' && streamMsg) {
+        try { await bot.deleteMessage(chatId, streamMsg.message_id); } catch { }
+        streamMsg = null;
       }
 
       // Add user message to history
@@ -1765,6 +1890,7 @@ async function createBot() {
         llmResponse.content = fixHallucinatedTime(llmResponse.content);
         console.log('[Bot] Message response (no tool executed):', llmResponse.content.slice(0, 150));
         addToHistory(userId, 'assistant', llmResponse.content);
+        stopTyping();
         await safeSendMessage(bot, chatId, llmResponse.content);
 
         // ── 📡 Emit message:sent event ───────────────────────────────────
@@ -1945,6 +2071,7 @@ async function createBot() {
           patterns.trackMessage(userId, { role: 'assistant', content: result.message });
 
           // ── 🏁 Finish pipeline (confirm flow exits early) ──────────────
+          stopTyping();
           executive.finishPipeline(sm, {
             tier: decision.tier,
             provider: decision.provider,
@@ -2012,8 +2139,15 @@ async function createBot() {
             console.log('[Bot] Web search re-summary result:', summaryResponse.type, summaryResponse.content ? summaryResponse.content.slice(0, 150) : '');
 
             if (summaryResponse.type === 'message' && summaryResponse.content) {
-              result = fixHallucinatedGreeting(summaryResponse.content);
-              result = fixHallucinatedTime(result);
+              // 🚫 Guard: if the summary looks like raw JSON (LLM didn't follow format),
+              // discard it and use the raw search results instead
+              const trimmed = summaryResponse.content.trim();
+              if (trimmed.startsWith('{') || trimmed.startsWith('```')) {
+                console.warn('[Bot] ⚠️ Web search summary looks like raw JSON, discarding and using raw results');
+              } else {
+                result = fixHallucinatedGreeting(summaryResponse.content);
+                result = fixHallucinatedTime(result);
+              }
             }
           } catch (summaryErr) {
             console.warn('[Bot] Web search re-summary failed (using raw results):', summaryErr.message);
@@ -2050,22 +2184,23 @@ async function createBot() {
           switch (result.tool) {
             case 'create_reminder':
             case 'update_reminder':
-              inlineKeyboard = [[
-                { text: '✏️ Edit', callback_data: 'edit_reminder:' + result.id },
-                { text: '❌ Cancel', callback_data: 'cancel_reminder:' + result.id },
-              ]];
+              inlineKeyboard = [
+                [{ text: '✏️ Edit', callback_data: 'edit_reminder:' + result.id }, { text: '❌ Cancel', callback_data: 'cancel_reminder:' + result.id }],
+                [{ text: '📋 View All Reminders', callback_data: 'list_reminders' }],
+              ];
               break;
             case 'create_event':
             case 'update_event':
-              inlineKeyboard = [[
-                { text: '✏️ Edit', callback_data: 'edit_event:' + result.id },
-                { text: '❌ Cancel', callback_data: 'cancel_event:' + result.id },
-              ]];
+              inlineKeyboard = [
+                [{ text: '✏️ Edit', callback_data: 'edit_event:' + result.id }, { text: '❌ Cancel', callback_data: 'cancel_event:' + result.id }],
+                [{ text: '📅 View Today', callback_data: 'get_today' }],
+              ];
               break;
             case 'add_note':
-              inlineKeyboard = [[
-                { text: '❌ Delete', callback_data: 'delete_note:' + result.id },
-              ]];
+              inlineKeyboard = [
+                [{ text: '❌ Delete', callback_data: 'delete_note:' + result.id }],
+                [{ text: '📝 View All Notes', callback_data: 'list_notes' }],
+              ];
               break;
             case 'set_fact':
               inlineKeyboard = [[
@@ -2073,20 +2208,47 @@ async function createBot() {
               ]];
               break;
             case 'create_task':
-              inlineKeyboard = [[
-                { text: '🚀 Start', callback_data: 'start_task:' + result.id },
-                { text: '✅ Done', callback_data: 'complete_task:' + result.id },
-                { text: '❌ Cancel', callback_data: 'cancel_task:' + result.id },
-              ]];
+              inlineKeyboard = [
+                [{ text: '🚀 Start', callback_data: 'start_task:' + result.id }, { text: '✅ Done', callback_data: 'complete_task:' + result.id }],
+                [{ text: '❌ Cancel', callback_data: 'cancel_task:' + result.id }, { text: '📋 All Tasks', callback_data: 'list_tasks' }],
+              ];
               break;
             case 'create_goal':
+              inlineKeyboard = [
+                [{ text: '🏆 Complete', callback_data: 'complete_goal:' + result.id }, { text: '🗑️ Abandon', callback_data: 'abandon_goal:' + result.id }],
+                [{ text: '🎯 All Goals', callback_data: 'list_goals' }],
+              ];
+              break;
+            // List results — add contextual quick follow-ups
+            case 'list_reminders':
               inlineKeyboard = [[
-                { text: '🏆 Complete', callback_data: 'complete_goal:' + result.id },
-                { text: '🗑️ Abandon', callback_data: 'abandon_goal:' + result.id },
+                { text: '➕ Set New Reminder', callback_data: 'new_reminder' },
+              ]];
+              break;
+            case 'list_tasks':
+              inlineKeyboard = [[
+                { text: '➕ New Task', callback_data: 'new_task' },
+                { text: '🎯 Goals', callback_data: 'list_goals' },
+              ]];
+              break;
+            case 'list_goals':
+              inlineKeyboard = [[
+                { text: '➕ New Goal', callback_data: 'new_goal' },
+                { text: '📋 Tasks', callback_data: 'list_tasks' },
               ]];
               break;
           }
         }
+
+        // Add web_search follow-up button for search results
+        if (llmResponse.name === 'web_search') {
+          inlineKeyboard = [[
+            { text: '📝 Save as Note', callback_data: 'save_search_note:' + encodeURIComponent(text.slice(0, 50)) },
+          ]];
+        }
+
+        // ── 🔄 Stop typing indicator before showing result ────────────────
+        stopTyping();
 
         if (inlineKeyboard) {
           let keyboardSent = false;
@@ -2114,6 +2276,18 @@ async function createBot() {
           }
         } else {
           await safeSendMessage(bot, chatId, finalResult);
+        }
+
+        // ── ✅ Emoji reaction on user's message for tool execution ───────
+        if (messageId) {
+          try {
+            await bot.setMessageReaction(chatId, messageId, {
+              reaction: [{ type: 'emoji', emoji: '✅' }],
+            });
+          } catch {
+            // setMessageReaction may not be available on older bot API versions
+            // Fallback: silently ignore — reactions are a nice-to-have
+          }
         }
 
         // ── Post-processing guided by executive ──────────────────────────
@@ -2168,6 +2342,7 @@ async function createBot() {
       });
 
     } catch (err) {
+      stopTyping();
       console.error('[Bot] Message handler error:', err.message, err.stack?.split('\n')[1] || '');
 
       // ── 📡 Emit error:occurred event ───────────────────────────────────
@@ -2201,6 +2376,52 @@ async function createBot() {
       await safeSendMessage(bot, chatId, errorMsg);
     }
   }
+
+  // ── /recap command — summarize recent conversations ────────────────────
+  bot.onText(/\/recap(?:\s+(\d+))?/, async (msg, match) => {
+    if (!isOwner(msg)) return;
+    const chatId = msg.chat.id;
+    await bot.sendChatAction(chatId, 'typing');
+
+    try {
+      const count = Math.min(parseInt(match[1] || '15', 10), 50);
+      const history = getHistory(OWNER_ID);
+
+      if (history.length < 3) {
+        return bot.sendMessage(chatId, '📭 Not enough conversation history to recap. Chat with me more!');
+      }
+
+      // Take the last N messages for summarization
+      const recentMessages = history.slice(-count);
+      const conversationText = recentMessages
+        .map(m => (m.role === 'user' ? '👤' : '🤖') + ' ' + m.content.slice(0, 200))
+        .join('\n\n');
+
+      const recapPrompt =
+        '📋 Summarize this Telegram chat conversation into a concise recap.\n\n' +
+        'Rules:\n' +
+        '• Group by topic, not chronologically\n' +
+        '• Highlight decisions made, reminders set, and key info shared\n' +
+        '• Keep it brief — bullet points preferred\n' +
+        '• Match the user\'s language (BM / English / rojak)\n\n' +
+        '─────────────── CONVERSATION ───────────────\n' +
+        conversationText + '\n' +
+        '──────────────────────────────────────────────\n\n' +
+        'Respond with: {"type":"message","content":"*📋 Conversation Recap*\n\n...your recap here..."}';
+
+      const recapResponse = await llm.chatMimo(OWNER_ID, 'Recap my conversations', [{ role: 'user', content: recapPrompt }], { minimal: false });
+
+      if (recapResponse.type === 'message' && recapResponse.content) {
+        const recap = fixHallucinatedGreeting(recapResponse.content);
+        await safeSendMessage(bot, chatId, recap);
+      } else {
+        await bot.sendMessage(chatId, '❌ Could not generate recap. Try again.');
+      }
+    } catch (err) {
+      console.error('/recap error:', err.message);
+      await bot.sendMessage(chatId, '❌ Could not generate recap.');
+    }
+  });
 
   // ── Main text message handler ────────────────────────────────────────────
   bot.on('message', async (msg) => {
@@ -2249,7 +2470,7 @@ async function createBot() {
       return;
     }
 
-    await processUserText(bot, chatId, userId, userName, msg.text);
+    await processUserText(bot, chatId, userId, userName, msg.text, msg.message_id);
   });
 
   // ── Voice message handler ────────────────────────────────────────────────
@@ -2290,7 +2511,7 @@ async function createBot() {
       await bot.sendMessage(chatId, '🎤 _"' + escapeMd(transcribedText) + '"_', { parse_mode: 'Markdown' });
 
       // Process the transcribed text through the normal pipeline
-      await processUserText(bot, chatId, userId, userName, transcribedText);
+      await processUserText(bot, chatId, userId, userName, transcribedText, msg.message_id);
 
     } catch (err) {
       console.error('[Bot] Voice processing error:', err.message);

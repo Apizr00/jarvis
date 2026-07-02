@@ -186,9 +186,16 @@ function parseAndValidate(rawText, opts = {}) {
       const { result } = validateParsedResponse(normalized, opts);
       return result;
     }
-    // Valid JSON but unrecognized structure — fall through to rawText
-    console.log('[Shared] Valid JSON but unrecognized structure, falling back to rawText');
-    return { type: 'message', content: rawText };
+    // Valid JSON but unrecognized structure — try to extract readable content
+    // If that also fails, return a safe fallback instead of raw JSON
+    console.log('[Shared] Valid JSON but unrecognized structure after normalization, extracting readable content');
+    const readable = extractReadableContent(parsed);
+    if (readable) {
+      return { type: 'message', content: readable };
+    }
+    // Truly unrecoverable — return a safe fallback, NOT raw JSON
+    console.warn('[Shared] ⚠️ Could not extract readable content from LLM response');
+    return { type: 'message', content: 'I received that but had trouble formatting my response. Could you rephrase?' };
   } catch (e) {
     // ── Try 2: extract JSON object with regex ───────────────────────────
     const jsonMatch = rawText.match(/\{[\s\S]*\}/);
@@ -312,6 +319,37 @@ const TOOL_ALIASES = {
  * @param {object} parsed - already JSON.parsed object
  * @returns {object|null} normalized {type, name?, content?, args?} or null if unparseable
  */
+
+/**
+ * Extract readable content from an unrecognized JSON object.
+ * Used as a last resort when normalizeLLMResponse returns null —
+ * prevents raw JSON from being shown to the user.
+ * Looks for keys that typically contain human-readable text.
+ *
+ * @param {object} parsed - JSON.parsed but unrecognized object
+ * @returns {string|null} extracted content or null
+ */
+function extractReadableContent(parsed) {
+  if (!parsed || typeof parsed !== 'object') return null;
+
+  // Priority keys that commonly contain the main response text
+  const priorityKeys = ['summary', 'answer', 'text', 'message', 'reply', 'response', 'content', 'description'];
+  for (const key of priorityKeys) {
+    if (parsed[key] && typeof parsed[key] === 'string' && parsed[key].trim().length > 0) {
+      return parsed[key].trim();
+    }
+  }
+
+  // If the object has any string value > 20 chars, use it
+  for (const key of Object.keys(parsed)) {
+    if (typeof parsed[key] === 'string' && parsed[key].length > 20) {
+      return parsed[key];
+    }
+  }
+
+  return null;
+}
+
 function normalizeLLMResponse(parsed) {
   // Already correct
   if (parsed.type === 'message' || parsed.type === 'tool') {
@@ -362,6 +400,29 @@ function normalizeLLMResponse(parsed) {
     const onlyKey = keys[0].toLowerCase();
     if (onlyKey === 'people' || onlyKey === 'facts') {
       return { type: 'message', content: JSON.stringify(parsed) };
+    }
+  }
+
+  // 🔥 Last resort: try to extract meaningful string content from any key
+  // Prevents raw JSON from being shown to the user when the LLM deviates
+  // from the expected {"type":"message","content":"..."} format.
+  // Common LLM output patterns that should be handled:
+  //   {"summary":"...", "sources":[...]} → extract "summary"
+  //   {"answer":"...", "results":[...]} → extract "answer"
+  //   {"text":"...", "data":{...}} → extract "text"
+  const extractableKeys = ['summary', 'answer', 'text', 'message', 'reply', 'response', 'content', 'description'];
+  for (const key of extractableKeys) {
+    if (parsed[key] && typeof parsed[key] === 'string' && parsed[key].trim().length > 0) {
+      console.log('[Shared] 🔄 Extracted content from key "' + key + '" — LLM used non-standard JSON format');
+      return { type: 'message', content: parsed[key].trim() };
+    }
+  }
+
+  // If the object has ANY string value that looks like natural language (>20 chars)
+  for (const key of keys) {
+    if (typeof parsed[key] === 'string' && parsed[key].length > 20) {
+      console.log('[Shared] 🔄 Extracted content from key "' + key + '" (fallback) — LLM used unexpected format');
+      return { type: 'message', content: parsed[key] };
     }
   }
 

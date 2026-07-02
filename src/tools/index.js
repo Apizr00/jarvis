@@ -316,6 +316,96 @@ async function safeSendMessage(bot, chatId, text, fallbackTextOverride = null) {
     return false;
   }
 
+  // ── Smart splitting for long messages (> 4000 chars) ──────────────────
+  const MAX_LEN = 4000;
+  if (text.length <= MAX_LEN) {
+    return await sendSingleMessage(bot, chatId, text, fallbackTextOverride);
+  }
+
+  // Split into chunks at paragraph boundaries, then sentence if needed
+  const chunks = splitLongMessage(text, MAX_LEN);
+  console.log('[Tools] 📝 Splitting long message (' + text.length + ' chars) into ' + chunks.length + ' chunks');
+
+  let allSent = true;
+  for (let i = 0; i < chunks.length; i++) {
+    let chunk = chunks[i];
+
+    // Add continuation markers
+    if (chunks.length > 1) {
+      if (i < chunks.length - 1) {
+        chunk += '\n\n_(cont\'d…)_';
+      }
+      if (i > 0) {
+        chunk = '_(…continued)_\n\n' + chunk;
+      }
+    }
+
+    const sent = await sendSingleMessage(bot, chatId, chunk, fallbackTextOverride);
+    if (!sent) allSent = false;
+
+    // Small delay between chunks to avoid rate limiting
+    if (i < chunks.length - 1) {
+      await new Promise(r => setTimeout(r, 200));
+    }
+  }
+
+  return allSent;
+}
+
+/**
+ * Split a long message into chunks at natural boundaries.
+ * Prefers paragraph breaks (\\n\\n), then line breaks (\\n), then sentence breaks.
+ * Falls back to hard character split if no natural boundaries found.
+ */
+function splitLongMessage(text, maxLen) {
+  const chunks = [];
+
+  // Reserve some space for continuation markers
+  const effectiveMax = maxLen - 50;
+
+  let remaining = text;
+  while (remaining.length > 0) {
+    if (remaining.length <= effectiveMax) {
+      chunks.push(remaining);
+      break;
+    }
+
+    // Try paragraph break first
+    let splitAt = remaining.lastIndexOf('\n\n', effectiveMax);
+    if (splitAt > effectiveMax * 0.5) {
+      chunks.push(remaining.slice(0, splitAt).trim());
+      remaining = remaining.slice(splitAt + 2).trim();
+      continue;
+    }
+
+    // Try single newline
+    splitAt = remaining.lastIndexOf('\n', effectiveMax);
+    if (splitAt > effectiveMax * 0.5) {
+      chunks.push(remaining.slice(0, splitAt).trim());
+      remaining = remaining.slice(splitAt + 1).trim();
+      continue;
+    }
+
+    // Try sentence break (. followed by space)
+    splitAt = remaining.lastIndexOf('. ', effectiveMax);
+    if (splitAt > effectiveMax * 0.5) {
+      chunks.push(remaining.slice(0, splitAt + 1).trim());
+      remaining = remaining.slice(splitAt + 2).trim();
+      continue;
+    }
+
+    // Hard split at maxLen
+    chunks.push(remaining.slice(0, effectiveMax).trim());
+    remaining = remaining.slice(effectiveMax).trim();
+  }
+
+  return chunks;
+}
+
+/**
+ * Send a single message (no splitting). Tries Markdown first, then plain text.
+ */
+async function sendSingleMessage(bot, chatId, text, fallbackTextOverride = null) {
   try {
     await bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
     return true;
