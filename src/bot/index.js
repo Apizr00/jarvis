@@ -26,6 +26,81 @@ const { invalidateConfigCache } = require('../llm/shared');
 
 const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
 
+// ── Greeting hallucination guard ──────────────────────────────────────────────
+// LLMs often default to "Selamat pagi" regardless of actual time.
+// This function detects and fixes wrong time-of-day greetings in the bot's reply.
+function fixHallucinatedGreeting(text) {
+  if (typeof text !== 'string' || text.length === 0) return text;
+
+  // ⚡ Early exit: skip if no greeting keywords
+  if (!/(selamat\s*(pagi|petang|malam|tengah\s*hari))/i.test(text)) return text;
+
+  const tz = process.env.TIMEZONE || 'UTC';
+  const now = new Date();
+  const hour = parseInt(new Intl.DateTimeFormat('en', { timeZone: tz, hour: 'numeric', hour12: false }).format(now), 10);
+
+  // Determine the correct time period
+  let correctPeriod;
+  if (hour >= 5 && hour < 12) {
+    correctPeriod = 'pagi';
+  } else if (hour >= 12 && hour < 14) {
+    correctPeriod = 'tengah hari';
+  } else if (hour >= 14 && hour < 19) {
+    correctPeriod = 'petang';
+  } else {
+    correctPeriod = 'malam';
+  }
+
+  // Patterns for each greeting, with the opening "Selamat X" pattern
+  // We only fix the OPENING greeting (start of message or after punctuation/newline)
+  // "Selamat malam" as farewell at end of message is NOT replaced
+  const greetingPatterns = [
+    { pattern: /\b(Selamat\s+pagi)\b/gi, period: 'pagi' },
+    { pattern: /\b(Selamat\s+tengah\s+hari)\b/gi, period: 'tengah hari' },
+    { pattern: /\b(Selamat\s+petang)\b/gi, period: 'petang' },
+    { pattern: /(?<!\bbye\b|\bgoodbye\b|\bbai\b|\bjumpa\b|\bnight\b)\s*(Selamat\s+malam)\b(?!\s*(?:lah|je|aja|semua|semuanya|dunia|sayang|sayangku))/gi, period: 'malam' },
+  ];
+
+  const replacements = [];
+
+  for (const { pattern, period } of greetingPatterns) {
+    if (period === correctPeriod) continue; // already correct, skip
+
+    let match;
+    pattern.lastIndex = 0;
+    while ((match = pattern.exec(text)) !== null) {
+      // For "selamat malam", only fix if it's used as an opening greeting
+      // (near the start of the message), not as a farewell
+      if (period === 'malam') {
+        // Check if this looks like a farewell context — skip if so
+        const afterMatch = text.substring(match.index + match[0].length, match.index + match[0].length + 30);
+        if (/(?:jumpa|bye|goodbye|bai|tidur|sleep|good\s*night)/i.test(afterMatch)) continue;
+        // Also check if it's very late in the message (farewell tends to be at end)
+        const positionRatio = match.index / text.length;
+        if (positionRatio > 0.7) continue; // likely a farewell, not opening greeting
+      }
+
+      const correctGreeting = 'Selamat ' + correctPeriod;
+      replacements.push({ index: match.index, oldStr: match[1], newStr: correctGreeting });
+      console.log('[Bot] 👋 Fixing hallucinated greeting: "' + match[1] + '" → "' + correctGreeting + '" (hour=' + hour + ', period=' + correctPeriod + ')');
+    }
+  }
+
+  if (replacements.length === 0) return text;
+
+  // Sort by index descending for right-to-left replacement
+  replacements.sort((a, b) => b.index - a.index);
+
+  let fixed = text;
+  for (const r of replacements) {
+    const before = fixed.substring(0, r.index);
+    const after = fixed.substring(r.index + r.oldStr.length);
+    fixed = before + r.newStr + after;
+  }
+
+  return fixed;
+}
+
 // ── Time hallucination guard ────────────────────────────────────────────────
 // LLMs love to make up times. This function scans the bot's reply for any
 // time mention that doesn't match the actual current time, and fixes it.
@@ -1482,16 +1557,27 @@ async function createBot() {
       } else {
         // ── Medium/Deep tier: STREAMING — first token appears in ~200ms ─
         let streamMsg = null;
+        let streamEditFailed = false; // track permanent edit failures to avoid spam
 
         llmResponse = await llm.chatStream(userId, text, history, llmOptions, async (displayText) => {
           try {
             if (!streamMsg) {
+              // Deduplication: if a message with this text was already sent,
+              // telegram may return the same message_id — we use safeSendMessage
               streamMsg = await bot.sendMessage(chatId, displayText);
-            } else {
-              await bot.editMessageText(displayText, { chat_id: chatId, message_id: streamMsg.message_id });
+            } else if (!streamEditFailed) {
+              try {
+                await bot.editMessageText(displayText, { chat_id: chatId, message_id: streamMsg.message_id });
+              } catch (editErr) {
+                // If edit fails permanently (e.g., message deleted or too old),
+                // mark as failed and stop trying to edit. Do NOT create new messages.
+                console.warn('[Bot] Stream edit failed, stopping edits for this response:', editErr.message);
+                streamEditFailed = true;
+              }
             }
+            // If streamEditFailed, silently drop remaining chunks — no spamming
           } catch {
-            // Edit may fail if message was deleted — harmless, next chunk will create new
+            // Initial sendMessage failed — don't attempt further
             streamMsg = null;
           }
         });
@@ -1596,6 +1682,7 @@ async function createBot() {
       if (llmResponse.type === 'message') {
         // Plain response — WARNING: no DB action occurs here
         // ⏰ Guard: fix any hallucinated time before sending
+        llmResponse.content = fixHallucinatedGreeting(llmResponse.content);
         llmResponse.content = fixHallucinatedTime(llmResponse.content);
         console.log('[Bot] Message response (no tool executed):', llmResponse.content.slice(0, 150));
         addToHistory(userId, 'assistant', llmResponse.content);
@@ -1685,6 +1772,7 @@ async function createBot() {
         // ── Confirmation flow: if tool returned {type:'confirm', message} ──
         if (result && typeof result === 'object' && result.type === 'confirm') {
           // ⏰ Guard: fix any hallucinated times in the confirm message
+          result.message = fixHallucinatedGreeting(result.message);
           result.message = fixHallucinatedTime(result.message);
           addToHistory(userId, 'assistant', result.message);
           try {
@@ -1810,7 +1898,8 @@ async function createBot() {
             console.log('[Bot] Web search re-summary result:', summaryResponse.type, summaryResponse.content ? summaryResponse.content.slice(0, 150) : '');
 
             if (summaryResponse.type === 'message' && summaryResponse.content) {
-              result = fixHallucinatedTime(summaryResponse.content);
+              result = fixHallucinatedGreeting(summaryResponse.content);
+              result = fixHallucinatedTime(result);
             }
           } catch (summaryErr) {
             console.warn('[Bot] Web search re-summary failed (using raw results):', summaryErr.message);
@@ -1886,15 +1975,28 @@ async function createBot() {
         }
 
         if (inlineKeyboard) {
+          let keyboardSent = false;
           try {
             await bot.sendMessage(chatId, finalResult, {
               parse_mode: 'Markdown',
               reply_markup: { inline_keyboard: inlineKeyboard },
             });
-          } catch {
-            await bot.sendMessage(chatId, finalResult, {
-              reply_markup: { inline_keyboard: inlineKeyboard },
-            });
+            keyboardSent = true;
+          } catch (mdErr) {
+            console.error('[Bot] Inline keyboard Markdown send failed: ' + mdErr.message);
+            try {
+              await bot.sendMessage(chatId, finalResult, {
+                reply_markup: { inline_keyboard: inlineKeyboard },
+              });
+              keyboardSent = true;
+            } catch (plainErr) {
+              console.error('[Bot] Inline keyboard plain send also failed: ' + plainErr.message);
+            }
+          }
+          // ── Fallback: if keyboard send failed entirely, try without keyboard ──
+          if (!keyboardSent) {
+            console.log('[Bot] ⚠️ Keyboard send failed, falling back to safeSendMessage without keyboard');
+            await safeSendMessage(bot, chatId, finalResult);
           }
         } else {
           await safeSendMessage(bot, chatId, finalResult);
@@ -1952,7 +2054,7 @@ async function createBot() {
       });
 
     } catch (err) {
-      console.error('Message handler error:', err.message);
+      console.error('[Bot] Message handler error:', err.message, err.stack?.split('\n')[1] || '');
 
       // ── Record error in state machine ───────────────────────────────────
       if (sm && !errorOccurred) {
@@ -1964,6 +2066,11 @@ async function createBot() {
         errorMsg += 'Check your API key.';
       } else if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND') {
         errorMsg += 'Can\'t reach the API. Check your internet connection.';
+      } else if (err.response && err.response.status === 400) {
+        // Telegram 400 — likely a message formatting issue, but the action likely succeeded
+        errorMsg += 'Tapi action tadi mungkin dah jalan. Guna /reminders untuk check.';
+      } else if (err.response && err.response.status >= 500) {
+        errorMsg += 'Telegram server issue. Please try again in a moment.';
       } else {
         errorMsg += 'Please try again.';
       }

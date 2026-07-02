@@ -91,6 +91,91 @@ function validateParsedResponse(normalized, opts = {}) {
  * @param {object} opts - same as validateParsedResponse
  * @returns {object} the final response (type + content/name+args)
  */
+/**
+ * Try to parse XML-style tool calls that some LLMs output instead of JSON.
+ * Handles formats like:
+ *   <tool_call><function=create_event><parameter=title>Meeting</parameter>...</function></tool_call>
+ *   <function=create_event><parameter=title>Meeting</parameter>...</function>
+ *   <create_event><title>Meeting</title><time>2026-07-01T08:00:00</time></create_event>
+ *
+ * @param {string} rawText
+ * @returns {object|null} normalized tool call or null if not XML
+ */
+function parseXmlToolCall(rawText) {
+  // Pattern 1: <tool_call><function=NAME>...</function></tool_call>
+  const tcMatch = rawText.match(/<tool_call>\s*<function\s*=\s*([\w-]+)>([\s\S]*?)<\/function\s*>\s*<\/tool_call>/i);
+  if (tcMatch) {
+    return parseXmlParams(tcMatch[1], tcMatch[2]);
+  }
+
+  // Pattern 2: <function=NAME>...</function> (no outer wrapper, optional spaces around =)
+  const fnMatch = rawText.match(/<function\s*=\s*([\w-]+)>([\s\S]*?)<\/function\s*>/i);
+  if (fnMatch) {
+    return parseXmlParams(fnMatch[1], fnMatch[2]);
+  }
+
+  // Pattern 3: <TOOL_NAME><param>value</param>...</TOOL_NAME>
+  const knownToolsRe = new RegExp('<(' + KNOWN_TOOLS.join('|') + ')>([\\s\\S]*?)</\\1>', 'i');
+  const namedMatch = rawText.match(knownToolsRe);
+  if (namedMatch) {
+    return parseXmlParams(namedMatch[1], namedMatch[2]);
+  }
+
+  return null;
+}
+
+/**
+ * Extract parameters from XML-style <parameter=KEY>VALUE</parameter> or <KEY>VALUE</KEY> blocks.
+ * @param {string} toolName - the tool/function name
+ * @param {string} innerXml - the inner XML content between function tags
+ * @returns {object} normalized { type:'tool', name, args }
+ */
+function parseXmlParams(toolName, innerXml) {
+  const args = {};
+
+  // Pattern: <parameter=KEY>VALUE</parameter> (with optional spaces around =)
+  const paramRe = /<parameter\s*=\s*(\w+)>([\s\S]*?)<\/parameter\s*>/gi;
+  let m;
+  while ((m = paramRe.exec(innerXml)) !== null) {
+    args[m[1]] = m[2].trim();
+  }
+
+  // Pattern: <KEY>VALUE</KEY> (generic XML tags)
+  if (Object.keys(args).length === 0) {
+    const tagRe = /<(\w+)>([\s\S]*?)<\/\1>/gi;
+    while ((m = tagRe.exec(innerXml)) !== null) {
+      args[m[1]] = m[2].trim();
+    }
+  }
+
+  // Normalize tool name through aliases
+  const lower = toolName.toLowerCase().replace(/[_-]/g, '');
+  let resolvedName = toolName;
+  if (TOOL_ALIASES[lower]) {
+    resolvedName = TOOL_ALIASES[lower];
+  } else if (KNOWN_TOOLS.includes(toolName)) {
+    resolvedName = toolName;
+  } else {
+    const fuzzy = KNOWN_TOOLS.find(t => t.replace(/[_-]/g, '') === lower);
+    if (fuzzy) resolvedName = fuzzy;
+  }
+
+  if (!KNOWN_TOOLS.includes(resolvedName)) {
+    console.log('[Shared] XML tool call with unknown tool:', toolName, '→ resolved:', resolvedName);
+    return null;
+  }
+
+  // Convert numeric string params to numbers where appropriate
+  for (const key of ['reminder_id', 'event_id', 'task_id', 'goal_id', 'duration_minutes']) {
+    if (args[key] && /^\d+$/.test(args[key])) {
+      args[key] = parseInt(args[key], 10);
+    }
+  }
+
+  console.log('[Shared] 🔄 Parsed XML tool call: ' + resolvedName + ' ' + JSON.stringify(args).slice(0, 200));
+  return { type: 'tool', name: resolvedName, args };
+}
+
 function parseAndValidate(rawText, opts = {}) {
   // ── Try 1: strip markdown fences then parse ───────────────────────────
   try {
@@ -119,9 +204,16 @@ function parseAndValidate(rawText, opts = {}) {
       } catch (_) {
         console.log('[Shared] Regex extraction found but JSON.parse failed');
       }
-    } else {
-      console.log('[Shared] No JSON object found in response, treating as plain message');
     }
+
+    // ── Try 3: XML-style tool calls (some LLMs use <tool_call> format) ──
+    const xmlResult = parseXmlToolCall(rawText);
+    if (xmlResult) {
+      const { result } = validateParsedResponse(xmlResult, opts);
+      return result;
+    }
+
+    console.log('[Shared] No JSON or XML tool call found in response, treating as plain message');
     return { type: 'message', content: rawText };
   }
 }
@@ -343,6 +435,19 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     year: 'numeric',
   }).format(now);
 
+  // ── Time period for correct greetings (Malay) ───────────────────────────
+  const currentHour = parseInt(new Intl.DateTimeFormat('en', { timeZone: timezone, hour: 'numeric', hour12: false }).format(now), 10);
+  let timePeriod;
+  if (currentHour >= 5 && currentHour < 12) {
+    timePeriod = 'pagi (morning)';
+  } else if (currentHour >= 12 && currentHour < 14) {
+    timePeriod = 'tengah hari (noon/afternoon)';
+  } else if (currentHour >= 14 && currentHour < 19) {
+    timePeriod = 'petang (evening)';
+  } else {
+    timePeriod = 'malam (night)';
+  }
+
   // ── Personality + Bot Name (cached — rarely change, saves 2 DB hits per message) ──
   let botName, personality;
   const cached = getCachedConfig(userId);
@@ -441,7 +546,7 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     '─────────────── CONTEXT ───────────────\n' +
     'You are ' + botName + ', a personal AI assistant on Telegram.\n' +
     personalityBlock +
-    'Timezone: ' + timezone + ' | Today: ' + today + ' | Current time: ' + currentTime + '\n\n' +
+    'Timezone: ' + timezone + ' | Today: ' + today + ' | Current time: ' + currentTime + ' | Day period: ' + timePeriod + '\n\n' +
     (executiveCtx ? executiveCtx + '\n' : '') +
     (tier === 'fast' ? '' : 'User facts:\n' + factLines) +
     (tier === 'fast' ? '' : peopleSection) +

@@ -279,16 +279,64 @@ function escapeMd(text) {
  * @param {number|string} chatId
  * @param {string} text
  */
-async function safeSendMessage(bot, chatId, text) {
+// ── Message deduplication guard ──────────────────────────────────────────
+// Prevents sending identical messages to the same chat within a short window.
+// This stops the bot from spamming when the LLM or streaming goes haywire.
+const recentSentMessages = new Map(); // key: `${chatId}::${hash}`, value: timestamp
+
+function isDuplicateMessage(chatId, text) {
+  const key = chatId + '::' + simpleHash(text);
+  const lastSent = recentSentMessages.get(key);
+  if (lastSent && Date.now() - lastSent < 3000) {
+    return true; // sent within last 3 seconds → skip
+  }
+  recentSentMessages.set(key, Date.now());
+  // Clean up old entries periodically
+  if (recentSentMessages.size > 200) {
+    const cutoff = Date.now() - 10000;
+    for (const [k, ts] of recentSentMessages) {
+      if (ts < cutoff) recentSentMessages.delete(k);
+    }
+  }
+  return false;
+}
+
+function simpleHash(str) {
+  let hash = 0;
+  for (let i = 0; i < Math.min(str.length, 200); i++) {
+    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+  }
+  return hash;
+}
+
+async function safeSendMessage(bot, chatId, text, fallbackTextOverride = null) {
+  // ── Dedup: skip if identical message sent to this chat within 3s ────
+  if (isDuplicateMessage(chatId, text)) {
+    console.log('[Tools] 🚫 Suppressed duplicate message to chat ' + chatId + ': ' + text.slice(0, 80));
+    return false;
+  }
+
   try {
     await bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+    return true;
   } catch (mdErr) {
+    console.error('[Tools] Markdown send failed (' + mdErr.response?.statusCode + '): ' + mdErr.message + ' | text preview: ' + text.slice(0, 120));
     // If Markdown fails, send as plain text (no parse_mode)
     try {
       await bot.sendMessage(chatId, text);
+      return true;
     } catch (plainErr) {
-      console.error('sendMessage fallback error:', plainErr.message);
-      await bot.sendMessage(chatId, 'Something went wrong displaying the result.');
+      console.error('[Tools] Plain text send also failed (' + plainErr.response?.statusCode + '): ' + plainErr.message + ' | text length: ' + text.length);
+      // Only send the fallback if we haven't already sent it recently
+      const fallbackText = fallbackTextOverride || 'Something went wrong displaying the result.';
+      if (!isDuplicateMessage(chatId, fallbackText)) {
+        try {
+          await bot.sendMessage(chatId, fallbackText);
+        } catch (fallbackErr) {
+          console.error('[Tools] Even fallback message failed:', fallbackErr.message);
+        }
+      }
+      return false;
     }
   }
 }
