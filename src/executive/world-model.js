@@ -13,6 +13,16 @@
 
 const store = new Map();
 
+/**
+ * Get the current hour (0-23) in the configured timezone.
+ * Uses Intl.DateTimeFormat for reliable timezone-aware hour extraction.
+ */
+function getCurrentHour() {
+  const tz = process.env.TIMEZONE || 'UTC';
+  const now = new Date();
+  return parseInt(new Intl.DateTimeFormat('en', { timeZone: tz, hour: 'numeric', hour12: false }).format(now), 10);
+}
+
 const WORLD_MODEL_DEFAULTS = {
   // Basic status
   status: 'unknown',
@@ -163,7 +173,7 @@ function deriveDomain(topic, wm) {
  * Guess user's status based on time of day.
  */
 function deriveStatusFromTime(wm) {
-  const hour = new Date().getHours();
+  const hour = getCurrentHour();
 
   // Use known sleep/wake times if available
   if (wm.typicalSleepTime && wm.typicalWakeTime) {
@@ -198,7 +208,7 @@ function deriveStatusFromTime(wm) {
 function guessProductivityHours(wm) {
   // Simple heuristic: if user is active during 9-11 AM and 3-5 PM, those are peak work hours
   const peakHours = [];
-  const hour = new Date().getHours();
+  const hour = getCurrentHour();
 
   if (hour >= 9 && hour <= 11) peakHours.push(hour);
   if (hour >= 15 && hour <= 17) peakHours.push(hour);
@@ -261,7 +271,7 @@ function getInsights(userId) {
   const insights = [];
 
   // Time-based insights
-  const hour = new Date().getHours();
+  const hour = getCurrentHour();
   if (wm.status === 'sleeping') {
     insights.push('User likely sleeping — avoid notifications');
   } else if (wm.status === 'working' && wm.activeDomain === 'work') {

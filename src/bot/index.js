@@ -151,6 +151,45 @@ function fixHallucinatedTime(text) {
     // Only fix if > 2 minutes off
     if (diffMins <= 2) continue;
 
+    // ── Guard: only fix times that are clearly meant to be CURRENT time ──
+    // Future/past references like "remind at 12:30", "nanti pukul 6",
+    // "tadi pukul 3" should NOT be replaced with the current time.
+    // We check the prefix (captured by the regex) and surrounding context.
+    const prefixLower = prefix.toLowerCase();
+    const isCurrentTimeContext =
+      /^(dah\s+)?(pukul|jam)\s*$/i.test(prefix) ||   // "dah pukul X", "pukul X" (bare)
+      /\b(now|sekarang|it'?s?\s+now|currently|masa\s+sekarang)\b/i.test(prefix) ||
+      /^(it'?s?|is|now|already)\s*$/i.test(prefix);    // "it's X", "is X", "now X"
+
+    // Future-reference prefixes: "at X", "nanti pukul X", "remind at X"
+    const isFutureContext =
+      /\b(at|nanti|remind|akan|pada|around|about|by|before|until|hingga|sampai|dalam|lagi|next|esok|tomorrow|lusa|minggu|bulan)\b/i.test(prefixLower) ||
+      /\b(?:ingatkan|remind(?:er)?|event|jadual|schedule|meeting)\b/i.test(fullMatch);
+
+    // Past-reference prefixes
+    const isPastContext =
+      /\b(tadi|was|earlier|semalam|kelmarin|yesterday|last)\b/i.test(prefixLower);
+
+    // Skip replacement if this time is clearly a future/past reference
+    if (isFutureContext || isPastContext) {
+      console.log('[Bot] ⏰ Skipping time fix — looks like future/past reference: "' + fullMatch + '" (diff=' + diffMins + 'min)');
+      continue;
+    }
+
+    // Only fix if it's likely a current-time hallucination (bare "pukul X" or similar)
+    if (!isCurrentTimeContext) {
+      // For ambiguous cases (no clear prefix), check broader context around this match
+      const before = text.substring(Math.max(0, match.index - 40), match.index);
+      if (/(?:nanti|akan|remind|ingatkan|at\s*$|pada\s*$|esok|tomorrow)/i.test(before)) {
+        console.log('[Bot] ⏰ Skipping time fix — broader context suggests future reference: "' + fullMatch + '"');
+        continue;
+      }
+      if (/(?:tadi|was|semalam|yesterday)/i.test(before)) {
+        console.log('[Bot] ⏰ Skipping time fix — broader context suggests past reference: "' + fullMatch + '"');
+        continue;
+      }
+    }
+
     // Format the correct time
     const correctHour12 = hour % 12 === 0 ? 12 : hour % 12;
     const correctMinStr = minute.toString().padStart(2, '0');

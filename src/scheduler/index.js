@@ -84,9 +84,9 @@ async function startScheduler(bot) {
   });
   console.log('🧹 Daily cleanup scheduled for 3:00 AM (facts + chat history)');
 
-  // ── Daily reflection: 10:00 PM every day ─────────────────────────────
+  // ── Daily reflection: 9:00 PM every day ──────────────────────────────
   if (reflectionTask) { reflectionTask.stop(); reflectionTask = null; }
-  reflectionTask = cron.schedule('0 22 * * *', async () => {
+  reflectionTask = cron.schedule('0 21 * * *', async () => {
     try {
       const OWNER = String(process.env.TELEGRAM_OWNER_ID);
       // Need to import llm dynamically to avoid circular dependency
@@ -104,11 +104,11 @@ async function startScheduler(bot) {
       console.error('[Scheduler] Reflection error:', err.message);
     }
   });
-  console.log('🧘 Daily reflection scheduled for 10:00 PM');
+  console.log('🧘 Daily reflection scheduled for 9:00 PM');
 
-  // ── Pattern Analysis: 11:00 PM every day ─────────────────────────────
+  // ── Pattern Analysis: 2:00 AM every day (quiet hours, heavy compute) ─
   if (patternAnalysisTask) { patternAnalysisTask.stop(); patternAnalysisTask = null; }
-  patternAnalysisTask = cron.schedule('0 23 * * *', async () => {
+  patternAnalysisTask = cron.schedule('0 2 * * *', async () => {
     try {
       const OWNER = String(process.env.TELEGRAM_OWNER_ID);
       const detectedPatterns = await patterns.runFullAnalysis(OWNER, { lookbackDays: 30 });
@@ -127,13 +127,13 @@ async function startScheduler(bot) {
       console.error('[Scheduler] Pattern analysis error:', err.message);
     }
   });
-  console.log('🔍 Pattern analysis scheduled for 11:00 PM daily');
+  console.log('🔍 Pattern analysis scheduled for 2:00 AM daily');
 
-  // ── Fasa 5: Proactive check-in: every 30 minutes ─────────────────────
+  // ── Fasa 5: Proactive check-in: every 60 minutes ─────────────────────
   const proactive = require('../executive/proactive');
   let proactiveTask = null;
   if (proactiveTask) { proactiveTask.stop(); proactiveTask = null; }
-  proactiveTask = cron.schedule('*/30 * * * *', async () => {
+  proactiveTask = cron.schedule('*/60 * * * *', async () => {
     try {
       const OWNER = String(process.env.TELEGRAM_OWNER_ID);
       if (botInstance) {
@@ -146,13 +146,13 @@ async function startScheduler(bot) {
       console.error('[Scheduler] Proactive error:', err.message);
     }
   });
-  console.log('💬 Proactive check-in scheduled for every 30 minutes');
+  console.log('💬 Proactive check-in scheduled for every 60 minutes');
 
-  // ── Fasa 5: Quick self-evaluation: every hour ────────────────────────
+  // ── Fasa 5: Quick self-evaluation: every 3 hours ─────────────────────
   const evaluator = require('../executive/evaluator');
   let evalTask = null;
   if (evalTask) { evalTask.stop(); evalTask = null; }
-  evalTask = cron.schedule('0 * * * *', async () => {
+  evalTask = cron.schedule('0 */3 * * *', async () => {
     try {
       const OWNER = String(process.env.TELEGRAM_OWNER_ID);
       const summary = evaluator.getLearningSummary(OWNER);
@@ -163,7 +163,7 @@ async function startScheduler(bot) {
       console.error('[Scheduler] Eval error:', err.message);
     }
   });
-  console.log('📊 Self-evaluation summary scheduled hourly');
+  console.log('📊 Self-evaluation summary scheduled every 3 hours');
 }
 
 /**
@@ -177,7 +177,7 @@ async function refreshSchedules() {
   if (reviewTask) { reviewTask.stop(); reviewTask = null; }
 
   // ── Morning Briefing ───────────────────────────────────────────────────
-  const briefingTime = await db.getConfig(OWNER_ID, 'morning_briefing_time', 'MORNING_BRIEFING_TIME', '7:00');
+  const briefingTime = await db.getConfig(OWNER_ID, 'morning_briefing_time', 'MORNING_BRIEFING_TIME', '7:30');
   const [hour, minute] = briefingTime.split(':').map(n => parseInt(n, 10));
   if (!isNaN(hour) && !isNaN(minute)) {
     const cronExpr = `${minute} ${hour} * * *`;
@@ -192,7 +192,7 @@ async function refreshSchedules() {
   }
 
   // ── Weekly Review ──────────────────────────────────────────────────────
-  const reviewTime = await db.getConfig(OWNER_ID, 'weekly_review_time', 'WEEKLY_REVIEW_TIME', '20:00');
+  const reviewTime = await db.getConfig(OWNER_ID, 'weekly_review_time', 'WEEKLY_REVIEW_TIME', '10:00');
   const [revHour, revMinute] = reviewTime.split(':').map(n => parseInt(n, 10));
   if (!isNaN(revHour) && !isNaN(revMinute)) {
     const reviewCronExpr = `${revMinute} ${revHour} * * 0`;
