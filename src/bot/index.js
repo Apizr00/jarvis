@@ -23,6 +23,9 @@ const stateMachine = require('../executive/state-machine');
 const lifecycle = require('../executive/lifecycle');
 const trace = require('../utils/trace');
 const { invalidateConfigCache } = require('../llm/shared');
+const { eventBus, EVENTS } = require('../events');
+const { pluginRegistry } = require('../plugins');
+const { agentRegistry } = require('../agents');
 
 const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
 
@@ -1479,10 +1482,36 @@ async function createBot() {
     await db.ensureUser(userId, userName);
     await bot.sendChatAction(chatId, 'typing');
 
+    // ── 📡 Emit message:received event ──────────────────────────────────
+    eventBus.emitSync(EVENTS.MESSAGE_RECEIVED, {
+      userId,
+      chatId,
+      userName,
+      text,
+      timestamp: new Date().toISOString(),
+    });
+
+    // ── 🔌 Run plugin message hooks (before core processing) ────────────
+    const pluginResults = await pluginRegistry.runMessageHooks({
+      userId,
+      chatId,
+      message: text,
+      bot,
+    });
+    // Log any plugin activity
+    for (const pr of pluginResults) {
+      console.log('[Bot] Plugin "' + pr.plugin + '" returned:', JSON.stringify(pr.result).slice(0, 100));
+    }
+
     // ── � Lifecycle: track conversation phase ───────────────────────────
     const phaseInfo = lifecycle.onMessageReceived(userId);
     if (phaseInfo.transitioned) {
       console.log('[Lifecycle] Phase: ' + phaseInfo.previousPhase + ' → ' + phaseInfo.phase);
+      eventBus.emitSync(EVENTS.LIFECYCLE_CHANGED, {
+        userId,
+        from: phaseInfo.previousPhase,
+        to: phaseInfo.phase,
+      });
     }
 
     // ── �🔍 Create execution pipeline (state machine + tracing) ─────────────
@@ -1498,6 +1527,17 @@ async function createBot() {
         ' | wm=' + (decision.workingMemoryActive ? 'active' : 'idle') +
         ' | reason=' + decision.reason +
         ' | trace=' + traceId);
+
+      // ── 📡 Emit intent:detected event ─────────────────────────────────
+      eventBus.emitSync(EVENTS.INTENT_DETECTED, {
+        userId,
+        tier: decision.tier,
+        category: decision.category,
+        mood: decision.mood,
+        language: decision.language,
+        provider: decision.provider,
+        traceId,
+      });
 
       // ── Build executive context for deep tier ──────────────────────────
       const llmOptions = {};
@@ -1688,6 +1728,15 @@ async function createBot() {
         addToHistory(userId, 'assistant', llmResponse.content);
         await safeSendMessage(bot, chatId, llmResponse.content);
 
+        // ── 📡 Emit message:sent event ───────────────────────────────────
+        eventBus.emitSync(EVENTS.MESSAGE_SENT, {
+          userId,
+          chatId,
+          type: 'message',
+          content: llmResponse.content.slice(0, 200),
+          timestamp: new Date().toISOString(),
+        });
+
         // ── Post-processing guided by executive ──────────────────────────
         const postActions = executive.decidePostProcessing(decision, llmResponse);
 
@@ -1743,24 +1792,50 @@ async function createBot() {
         console.log('[Executive] ✅ ' + decision.tier.toUpperCase() + ' path complete | post: facts=' + postActions.extractFacts + ' people=' + postActions.extractPeople + ' wm=' + postActions.updateWorkingMemory + ' domains=' + postActions.updateDomains + ' eval=' + postActions.runSelfEval);
 
       } else if (llmResponse.type === 'tool') {
-        // Execute tool
-        console.log('[Bot] Executing tool:', llmResponse.name, JSON.stringify(llmResponse.args).slice(0, 200));
-        let result;
-        const toolStartMs = Date.now();
-        try {
-          result = await tools.executeTool(userId, {
-            name: llmResponse.name,
-            args: llmResponse.args,
-          });
-          const toolDurationMs = Date.now() - toolStartMs;
-          console.log('[Bot] Tool result:', typeof result === 'object' ? (result.type || 'object') : result.slice(0, 150));
+        // ── 🔌 Run plugin tool call hooks (before execution) ───────────────
+        const interceptResult = await pluginRegistry.runToolCallHooks(
+          llmResponse.name, llmResponse.args, userId
+        );
+        if (interceptResult.intercepted) {
+          console.log('[Bot] 🔌 Tool call intercepted by plugin "' + interceptResult.plugin + '"');
+          result = interceptResult.result;
+        } else {
+          // Execute tool
+          console.log('[Bot] Executing tool:', llmResponse.name, JSON.stringify(llmResponse.args).slice(0, 200));
+          const toolStartMs = Date.now();
+          try {
+            result = await tools.executeTool(userId, {
+              name: llmResponse.name,
+              args: llmResponse.args,
+            });
+            const toolDurationMs = Date.now() - toolStartMs;
+            console.log('[Bot] Tool result:', typeof result === 'object' ? (result.type || 'object') : result.slice(0, 150));
 
-          // Log tool call for observability
-          trace.logToolCall(llmResponse.name, llmResponse.args, result, toolDurationMs);
-        } catch (toolErr) {
-          console.error('[Bot] Tool execution error:', toolErr.message);
-          trace.logToolCall(llmResponse.name, llmResponse.args, { error: toolErr.message }, Date.now() - toolStartMs);
-          result = 'I tried to do that but ran into a problem. Please try again.';
+            // 📡 Emit tool:executed event
+            eventBus.emitSync(EVENTS.TOOL_EXECUTED, {
+              userId,
+              toolName: llmResponse.name,
+              args: llmResponse.args,
+              success: true,
+              durationMs: toolDurationMs,
+            });
+
+            // Log tool call for observability
+            trace.logToolCall(llmResponse.name, llmResponse.args, result, toolDurationMs);
+          } catch (toolErr) {
+            console.error('[Bot] Tool execution error:', toolErr.message);
+
+            // 📡 Emit tool:failed event
+            eventBus.emitSync(EVENTS.TOOL_FAILED, {
+              userId,
+              toolName: llmResponse.name,
+              args: llmResponse.args,
+              error: toolErr.message,
+            });
+
+            trace.logToolCall(llmResponse.name, llmResponse.args, { error: toolErr.message }, Date.now() - toolStartMs);
+            result = 'I tried to do that but ran into a problem. Please try again.';
+          }
         }
 
         // ── State machine: tools executed ────────────────────────────────
@@ -2055,6 +2130,16 @@ async function createBot() {
 
     } catch (err) {
       console.error('[Bot] Message handler error:', err.message, err.stack?.split('\n')[1] || '');
+
+      // ── 📡 Emit error:occurred event ───────────────────────────────────
+      eventBus.emitSync(EVENTS.ERROR_OCCURRED, {
+        source: 'bot:message_handler',
+        userId,
+        message: text?.slice(0, 100),
+        error: err.message,
+        stack: err.stack?.split('\n').slice(0, 3).join('\n'),
+        timestamp: new Date().toISOString(),
+      });
 
       // ── Record error in state machine ───────────────────────────────────
       if (sm && !errorOccurred) {

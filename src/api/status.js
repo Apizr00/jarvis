@@ -180,6 +180,54 @@ async function getApiStatus(bot) {
     detail: process.env.REDIS_URL ? 'REDIS_URL set' : 'REDIS_URL not set (optional)',
   });
 
+  // ── Event Bus ───────────────────────────────────────────────────────────
+  let ebStatus = null;
+  try {
+    const { eventBus } = require('../events');
+    ebStatus = eventBus.getStatus();
+  } catch { /* ignore */ }
+  results.push({
+    name: 'Event Bus',
+    icon: '📡',
+    configured: true,
+    connected: ebStatus ? ebStatus.started : null,
+    detail: ebStatus
+      ? ebStatus.listenerCount + ' listeners, ' + ebStatus.registeredEvents.length + ' events'
+      : 'Not initialized',
+  });
+
+  // ── Agent Layer ─────────────────────────────────────────────────────────
+  let agStatus = null;
+  try {
+    const { agentRegistry } = require('../agents');
+    agStatus = agentRegistry.getStatus();
+  } catch { /* ignore */ }
+  results.push({
+    name: 'Agent Layer',
+    icon: '🤖',
+    configured: true,
+    connected: agStatus ? agStatus.initialized : null,
+    detail: agStatus
+      ? agStatus.totalAgents + ' agents (' + agStatus.agents.filter(a => a.status === 'idle').length + ' idle)'
+      : 'Not initialized',
+  });
+
+  // ── Plugin System ───────────────────────────────────────────────────────
+  let plStatus = null;
+  try {
+    const { pluginRegistry } = require('../plugins');
+    plStatus = pluginRegistry.getStatus();
+  } catch { /* ignore */ }
+  results.push({
+    name: 'Plugin System',
+    icon: '🔌',
+    configured: true,
+    connected: plStatus ? plStatus.initialized : null,
+    detail: plStatus
+      ? plStatus.totalPlugins + ' plugins (' + plStatus.enabledPlugins + ' enabled)'
+      : 'Not initialized',
+  });
+
   return results;
 }
 

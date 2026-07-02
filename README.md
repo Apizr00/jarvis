@@ -4,6 +4,8 @@ A self-hosted AI assistant that lives in your Telegram. Talk naturally — remin
 
 **Stack:** Node.js · PostgreSQL · Redis (optional) · DeepSeek + MiMo · Telegram Bot API
 
+**Extensible:** 📡 Event Bus · 🤖 Agent Layer · 🔌 Plugin System
+
 ---
 
 ## 🧠 Architecture (5 Fasa + 9 Phase Upgrades)
@@ -13,7 +15,19 @@ User Message
     │
     ▼
 ┌──────────────────────────────────────────────────────────┐
-│  🔄 CONVERSATION LIFECYCLE MANAGER                        │
+│  � EVENT BUS — Pub/Sub Decoupling Layer                   │
+│  24 namespaced events, middleware, async isolation        │
+│  Plugins + agents subscribe without touching core         │
+└────────────────────┬─────────────────────────────────────┘
+                     ▼
+┌──────────────────────────────────────────────────────────┐
+│  🔌 PLUGIN SYSTEM — Extensible Architecture                │
+│  onMessage · onCommand · onEvent · onToolCall hooks       │
+│  Hot-reload, plugin.json manifest, isolated context       │
+└────────────────────┬─────────────────────────────────────┘
+                     ▼
+┌──────────────────────────────────────────────────────────┐
+│  �🔄 CONVERSATION LIFECYCLE MANAGER                        │
 │  onboarding → idle → active_task → dormant → reactivation │
 │  Phase-aware messaging policy + engagement tracking       │
 └────────────────────┬─────────────────────────────────────┘
@@ -80,6 +94,9 @@ User Message
 
 ## ✨ Highlights
 
+- **📡 Event Bus** — Pub/sub system decoupling all components. 24 events, middleware, wildcard listeners, async isolation
+- **🤖 Agent Layer** — 5 autonomous agents (Memory, Task, Reminder, Search, Weather) with retry, timeout, and validation
+- **🔌 Plugin System** — Drop-in plugins with plugin.json manifest. 8 hook types, hot-reload, isolated context
 - **🧠 5-Fasa Executive + 9 Phase Upgrades** — Production-grade architecture: state machine, observability, fact lock, lifecycle, memory strategy, cost optimizer, proactive scoring, tool arbitration
 - **🔄 Conversation Lifecycle** — 5 phases (onboarding→idle→active_task→dormant→reactivation) with per-phase messaging policies
 - **🧠 State Machine** — Explicit execution flow with `/why` command to trace every decision
@@ -132,70 +149,76 @@ User Message
 
 ## 📋 All Commands
 
-| Command | Description |
-|---------|-------------|
-| `/start` | Welcome message + feature intro |
-| `/today` | Today's events + reminders + tasks |
-| `/briefing` | 🌅 Morning briefing — weather, quote, schedule |
-| `/review` | 📊 Weekly review — notes, tasks, upcoming week |
-| `/reflect` | 🧘 Daily reflection — patterns, changes, suggestions |
-| `/reminders` | Upcoming reminders with `[❌ Cancel]` buttons |
-| `/tasks` | 📋 All active tasks sorted by priority |
-| `/goals` | 🎯 Goals with progress bars |
-| `/notes` | Last 10 notes |
-| `/memory` | All stored facts about you |
-| `/people` | 👥 All remembered people & their relationships |
-| `/person <name>` | 🔍 Search for a specific person |
-| `/history <keyword>` | 🔍 Search past conversations |
-| `/verify` | ⚠️ Review & resolve conflicting facts |
-| `/plan` | **Fasa 4:** Active plans with steps + progress |
-| `/domains` | **Fasa 3:** Memory organized by 8 domains |
-| `/evaluate` | **Fasa 5:** Self-evaluation stats & learning |
-| `/proactive` | **Fasa 5:** Trigger proactive suggestion |
-| `/state` | **All Fasa:** Full bot state report |
-| `/settings` | View bot name, personality, times, location |
-| `/status` | API health (DeepSeek, MiMo, Whisper, Redis) |
-| `/why` | 🧠 **State Machine:** Trace why bot responded that way |
-| `/trace [N]` | 📊 **Observability:** Last N execution traces + latency |
-| `/lifecycle` | 🔄 **Lifecycle:** Conversation phase + engagement |
-| `/patterns` | 🔍 Detected behavioral patterns |
-| `/patterns usage\|topic\|behavior\|trend\|correlation` | Filter by type |
+| Command                                                | Description                                                            |
+| ------------------------------------------------------ | ---------------------------------------------------------------------- |
+| `/start`                                               | Welcome message + feature intro                                        |
+| `/today`                                               | Today's events + reminders + tasks                                     |
+| `/briefing`                                            | 🌅 Morning briefing — weather, quote, schedule                         |
+| `/review`                                              | 📊 Weekly review — notes, tasks, upcoming week                         |
+| `/reflect`                                             | 🧘 Daily reflection — patterns, changes, suggestions                   |
+| `/reminders`                                           | Upcoming reminders with `[❌ Cancel]` buttons                          |
+| `/tasks`                                               | 📋 All active tasks sorted by priority                                 |
+| `/goals`                                               | 🎯 Goals with progress bars                                            |
+| `/notes`                                               | Last 10 notes                                                          |
+| `/memory`                                              | All stored facts about you                                             |
+| `/people`                                              | 👥 All remembered people & their relationships                         |
+| `/person <name>`                                       | 🔍 Search for a specific person                                        |
+| `/history <keyword>`                                   | 🔍 Search past conversations                                           |
+| `/verify`                                              | ⚠️ Review & resolve conflicting facts                                  |
+| `/plan`                                                | **Fasa 4:** Active plans with steps + progress                         |
+| `/domains`                                             | **Fasa 3:** Memory organized by 8 domains                              |
+| `/evaluate`                                            | **Fasa 5:** Self-evaluation stats & learning                           |
+| `/proactive`                                           | **Fasa 5:** Trigger proactive suggestion                               |
+| `/state`                                               | **All Fasa:** Full bot state report                                    |
+| `/settings`                                            | View bot name, personality, times, location                            |
+| `/status`                                              | API health (DeepSeek, MiMo, Whisper, Redis)                            |
+| `/why`                                                 | 🧠 **State Machine:** Trace why bot responded that way                 |
+| `/trace [N]`                                           | 📊 **Observability:** Last N execution traces + latency                |
+| `/lifecycle`                                           | 🔄 **Lifecycle:** Conversation phase + engagement                      |
+| `/insights`                                            | 📊 **Plugin:** Usage stats, mood distribution, activity summary        |
+| `/mood [mood]`                                         | 🎭 **Plugin:** Track mood, view 7-day mood trend                       |
+| `/weekly`                                              | 📋 **Plugin:** Weekly summary — activity, productivity, mood breakdown |
+| `/patterns`                                            | 🔍 Detected behavioral patterns                                        |
+| `/patterns usage\|topic\|behavior\|trend\|correlation` | Filter by type                                                         |
 
 ### ⚙️ Settings
 
-| Command | What it changes |
-|---------|----------------|
-| `/setname <name>` | Bot's display name |
-| `/setpersonality <t>` | Bot's personality/tone |
-| `/setlocation <city>` | Weather location |
-| `/setbriefing <HH:MM>` | Morning briefing time |
-| `/setreview <HH:MM>` | Weekly review time (Sunday) |
-| `/revert` | Revert a setting to previous value |
+| Command                | What it changes                    |
+| ---------------------- | ---------------------------------- |
+| `/setname <name>`      | Bot's display name                 |
+| `/setpersonality <t>`  | Bot's personality/tone             |
+| `/setlocation <city>`  | Weather location                   |
+| `/setbriefing <HH:MM>` | Morning briefing time              |
+| `/setreview <HH:MM>`   | Weekly review time (Sunday)        |
+| `/revert`              | Revert a setting to previous value |
 
 ---
 
 ## 🔬 9 Phase Upgrades
 
 ### Phase 1-3: Core Architecture (NOW)
-| # | Upgrade | File | Function |
-|---|---------|------|----------|
-| 1 | **State Machine** | `executive/state-machine.js` | 8 explicit states, valid transitions, trace replay, `/why` |
-| 7 | **Observability** | `utils/trace.js` | Spans, prompt/tool/memory logs, per-phase latency |
-| 8 | **Fact Lock** | `llm/validator.js` | 3 tiers (verified/inferred/uncertain), assertion control |
+
+| #   | Upgrade           | File                         | Function                                                   |
+| --- | ----------------- | ---------------------------- | ---------------------------------------------------------- |
+| 1   | **State Machine** | `executive/state-machine.js` | 8 explicit states, valid transitions, trace replay, `/why` |
+| 7   | **Observability** | `utils/trace.js`             | Spans, prompt/tool/memory logs, per-phase latency          |
+| 8   | **Fact Lock**     | `llm/validator.js`           | 3 tiers (verified/inferred/uncertain), assertion control   |
 
 ### Phase 4-6: Memory & Engagement (SOON)
-| # | Upgrade | File | Function |
-|---|---------|------|----------|
-| 6 | **Lifecycle** | `executive/lifecycle.js` | 5 phases, per-phase policies, dormant detection, `/lifecycle` |
-| 2 | **Memory Strategy** | `memory/index.js` | Importance scoring, decay (λ per tier), compression, smart write |
-| 3 | **Scenario Tests** | `test-scenarios.js` | 12 user journeys, 106 assertions, MockLLM |
+
+| #   | Upgrade             | File                     | Function                                                         |
+| --- | ------------------- | ------------------------ | ---------------------------------------------------------------- |
+| 6   | **Lifecycle**       | `executive/lifecycle.js` | 5 phases, per-phase policies, dormant detection, `/lifecycle`    |
+| 2   | **Memory Strategy** | `memory/index.js`        | Importance scoring, decay (λ per tier), compression, smart write |
+| 3   | **Scenario Tests**  | `test-scenarios.js`      | 12 user journeys, 106 assertions, MockLLM                        |
 
 ### Phase 7-9: Optimization & Scale (LATER)
-| # | Upgrade | File | Function |
-|---|---------|------|----------|
-| 5 | **Cost Optimizer** | `llm/index.js` | Token estimation, cost prediction, latency-aware routing |
-| 9 | **Proactive Scoring** | `executive/proactive.js` | 4D opportunity engine (0-100), engagement tracking |
-| 4 | **Tool Arbitration** | `tools/arbitration.js` | Conflict matrix, ranking, fallback chains, dependency resolution |
+
+| #   | Upgrade               | File                     | Function                                                         |
+| --- | --------------------- | ------------------------ | ---------------------------------------------------------------- |
+| 5   | **Cost Optimizer**    | `llm/index.js`           | Token estimation, cost prediction, latency-aware routing         |
+| 9   | **Proactive Scoring** | `executive/proactive.js` | 4D opportunity engine (0-100), engagement tracking               |
+| 4   | **Tool Arbitration**  | `tools/arbitration.js`   | Conflict matrix, ranking, fallback chains, dependency resolution |
 
 ---
 
@@ -203,14 +226,14 @@ User Message
 
 Multi-layer validator runs after every LLM response:
 
-| Layer | What it catches |
-|-------|----------------|
-| **Action Detection** | "Done! Dah set reminder" without tool call |
-| **Time Verification** | Wrong times (e.g., "6:36 am" when actual is 8:00 PM) |
-| **Reminder Fabrication** | Fake reminder IDs/times — cross-references DB |
-| **Fact Hallucination** | Made-up user facts not in memory |
-| **Fact Lock** | ✅ verified → can assert / ⚠️ inferred → must hedge / ❓ uncertain → must question |
-| **Fallback** | Auto-replaces bad responses with safe clarifying questions |
+| Layer                    | What it catches                                                                    |
+| ------------------------ | ---------------------------------------------------------------------------------- |
+| **Action Detection**     | "Done! Dah set reminder" without tool call                                         |
+| **Time Verification**    | Wrong times (e.g., "6:36 am" when actual is 8:00 PM)                               |
+| **Reminder Fabrication** | Fake reminder IDs/times — cross-references DB                                      |
+| **Fact Hallucination**   | Made-up user facts not in memory                                                   |
+| **Fact Lock**            | ✅ verified → can assert / ⚠️ inferred → must hedge / ❓ uncertain → must question |
+| **Fallback**             | Auto-replaces bad responses with safe clarifying questions                         |
 
 ---
 
@@ -234,7 +257,15 @@ node test-perf-improvements.js # Performance & anti-hallucination validation
 ```
 jarvis/
 ├── src/
-│   ├── index.js                # Entry point — boots bot, API, scheduler
+│   ├── index.js                # Entry point — boots event bus, agents, plugins, bot, API, scheduler
+│   ├── events/
+│   │   └── index.js            # 📡 Event Bus — pub/sub, 24 events, middleware, async isolation
+│   ├── agents/
+│   │   └── index.js            # 🤖 Agent Layer — 5 autonomous agents + AgentRegistry
+│   ├── plugins/
+│   │   ├── index.js            # 🔌 Plugin System — discovery, lifecycle, 8 hook types
+│   │   └── builtin/
+│   │       └── jarvis-insights/ # Built-in plugin: /insights, /mood, /weekly
 │   ├── bot/
 │   │   └── index.js            # Telegram bot — all commands + message processing
 │   ├── executive/              # 🧠 5-Fasa + 9 Upgrades
@@ -281,6 +312,8 @@ jarvis/
 │   └── utils/
 │       ├── datetime.js         # Date/time helpers (dayjs)
 │       └── trace.js            # Phase 7: Observability (spans, logs, latency)
+├── plugins/
+│   └── README.md               # Plugin developer documentation
 ├── scripts/
 │   └── setup-db.js             # One-time DB table creation
 ├── test-max-capability.js      # 🔬 125 assertions — ultimate stress test
@@ -299,9 +332,75 @@ jarvis/
 
 ---
 
-## 🚀 Setup
+## � Event Bus
+
+Decouples all components through a pub/sub system. Instead of direct function calls, modules communicate via namespaced events.
+
+```
+┌──────────┐  emit('tool:executed')  ┌──────────────┐  on('tool:executed')
+│  Tools   │ ──────────────────────▶ │  Event Bus   │ ──────────────────▶ Plugins
+└──────────┘                         │              │                     Agents
+                                     │  Middleware  │                     Patterns
+┌──────────┐  emit('message:sent')   │  Event Log   │                     Analytics
+│   Bot    │ ──────────────────────▶ │  24 Events   │ ──────────────────▶ Monitor
+└──────────┘                         └──────────────┘
+```
+
+**Core events:** `message:received`, `message:sent`, `tool:executed`, `tool:failed`, `intent:detected`, `state:changed`, `memory:updated`, `lifecycle:changed`, `error:occurred`, `plugin:loaded`, `agent:task_completed`, and 13 more.
+
+**Features:** Async isolation (listener crashes don't affect emitters), per-listener timeouts, wildcard listeners (`*`), before/after middleware, event log for debugging.
+
+---
+
+## 🤖 Agent Layer
+
+Autonomous task-execution units that sit **above** individual tools. While tools are single-purpose (`create_reminder`), agents orchestrate multi-step workflows with retry, validation, and error recovery.
+
+| Agent             | Capabilities                                                                                              |
+| ----------------- | --------------------------------------------------------------------------------------------------------- |
+| **MemoryAgent**   | Auto-extract facts from chat, store/retrieve/update/forget facts, find relationships, summarize knowledge |
+| **TaskAgent**     | Create, update, start, complete, cancel, list, prioritize tasks; link to goals                            |
+| **ReminderAgent** | Create, update, cancel, list reminders; validate time formats with anti-hallucination guards              |
+| **SearchAgent**   | Web search, news lookup, definition lookup with 15s timeout                                               |
+| **WeatherAgent**  | Current weather, forecast, summary for configured location                                                |
+
+Each agent has: exponential backoff retry (configurable), timeout protection, input validation, event bus integration, and status tracking (completed/failed counts, task history).
+
+**Dispatch:** `agentRegistry.dispatch({ userId, action: 'memory:retrieve_context', params: { query: '...' } })` — automatically routes to the correct agent by namespace.
+
+---
+
+## 🔌 Plugin System
+
+Extend Jarvis without modifying core code. Drop a folder in `plugins/` with a `plugin.json` manifest and `index.js` entry point — auto-discovered on startup.
+
+**plugin.json example:**
+
+```json
+{
+  "name": "my-plugin",
+  "version": "1.0.0",
+  "description": "Does something cool",
+  "hooks": ["onInit", "onMessage", "onCommand"],
+  "commands": ["/mycommand"],
+  "capabilities": ["custom:action"]
+}
+```
+
+**8 hook types:** `onInit`, `onEnable`, `onDisable`, `onUnload`, `onMessage`, `onCommand`, `onEvent`, `onToolCall`
+
+**Plugin context** provides access to `llm`, `db`, `eventBus`, `agentRegistry`, `tools`, `memory`, `patterns` — plus `registerCommand()`, `registerSchedule()`, and `registerAgent()`.
+
+**Built-in plugin:** `jarvis-insights` — provides `/insights` (usage stats), `/mood` (mood tracking + 7-day trend), and `/weekly` (productivity summary with mood breakdown).
+
+**Lifecycle:** `discovered → loaded → initialized → enabled → disabled → unloaded` with hot-reload support.
+
+---
+
+## �🚀 Setup
 
 ### Requirements
+
 - Node.js **v18+**
 - PostgreSQL **v14+**
 - Telegram Bot Token ([@BotFather](https://t.me/botfather))
@@ -332,60 +431,60 @@ pm2 save && pm2 startup
 
 ## 📝 Available LLM Tools (25+)
 
-| Category | Tools |
-|----------|-------|
-| **Reminders** | `create_reminder`, `update_reminder`, `cancel_reminder`, `list_reminders` |
-| **Events** | `create_event`, `update_event`, `cancel_event` |
-| **Notes** | `add_note` |
-| **Facts** | `set_fact` |
-| **Tasks** | `create_task`, `update_task`, `start_task`, `complete_task`, `cancel_task`, `list_tasks` |
-| **Goals** | `create_goal`, `update_goal`, `complete_goal`, `abandon_goal`, `list_goals` |
-| **People** | `save_relationship`, `list_people` |
-| **Search** | `web_search` |
-| **Time** | `get_current_time`, `get_today`, `get_briefing`, `get_weekly_review` |
-| **Other** | `get_quote`, `set_config`, `revert_config` |
+| Category      | Tools                                                                                    |
+| ------------- | ---------------------------------------------------------------------------------------- |
+| **Reminders** | `create_reminder`, `update_reminder`, `cancel_reminder`, `list_reminders`                |
+| **Events**    | `create_event`, `update_event`, `cancel_event`                                           |
+| **Notes**     | `add_note`                                                                               |
+| **Facts**     | `set_fact`                                                                               |
+| **Tasks**     | `create_task`, `update_task`, `start_task`, `complete_task`, `cancel_task`, `list_tasks` |
+| **Goals**     | `create_goal`, `update_goal`, `complete_goal`, `abandon_goal`, `list_goals`              |
+| **People**    | `save_relationship`, `list_people`                                                       |
+| **Search**    | `web_search`                                                                             |
+| **Time**      | `get_current_time`, `get_today`, `get_briefing`, `get_weekly_review`                     |
+| **Other**     | `get_quote`, `set_config`, `revert_config`                                               |
 
 ---
 
 ## 🔘 Inline Buttons
 
-| Context | Buttons |
-|---------|---------|
-| Reminder created/updated | `[✏️ Edit]` `[❌ Cancel]` |
-| Event created/updated | `[✏️ Edit]` `[❌ Cancel]` |
-| Note saved | `[❌ Delete]` |
-| Fact remembered | `[❌ Forget]` |
-| Task created | `[🚀 Start]` `[✅ Done]` `[❌ Cancel]` |
-| Goal set | `[🏆 Complete]` `[🗑️ Abandon]` |
-| Reminder fires | `[✅ Done]` `[🔁 Snooze 10m]` |
-| Settings change | `[✅ Ya]` `[❌ Batal]` |
-| Conflict detected | `[✅ Keep]` `[↩️ Restore]` |
+| Context                  | Buttons                                |
+| ------------------------ | -------------------------------------- |
+| Reminder created/updated | `[✏️ Edit]` `[❌ Cancel]`              |
+| Event created/updated    | `[✏️ Edit]` `[❌ Cancel]`              |
+| Note saved               | `[❌ Delete]`                          |
+| Fact remembered          | `[❌ Forget]`                          |
+| Task created             | `[🚀 Start]` `[✅ Done]` `[❌ Cancel]` |
+| Goal set                 | `[🏆 Complete]` `[🗑️ Abandon]`         |
+| Reminder fires           | `[✅ Done]` `[🔁 Snooze 10m]`          |
+| Settings change          | `[✅ Ya]` `[❌ Batal]`                 |
+| Conflict detected        | `[✅ Keep]` `[↩️ Restore]`             |
 
 ---
 
 ## 🔧 Troubleshooting
 
-| Problem | Solution |
-|---------|----------|
-| "Missing required environment variables" | `.env` missing or incomplete |
-| "password authentication failed" | Check `DATABASE_URL` credentials |
-| Voice not working | Set `OPENAI_API_KEY` in `.env` |
-| Bot not responding | Check `TELEGRAM_OWNER_ID` is numeric ID |
-| Reminders wrong time | Check `TIMEZONE` in `.env` |
-| DeepSeek API error | Check credits at platform.deepseek.com |
-| "Redis unavailable" | Not an error — optional, bot works without |
-| "⚠️ Hallucination detected" | **Good!** Validator caught it before sending |
-| "⏰ Fixing hallucinated time" | Time guard auto-corrected LLM time |
-| "All LLM providers unavailable" | Both DeepSeek AND MiMo down — check API keys |
+| Problem                                  | Solution                                     |
+| ---------------------------------------- | -------------------------------------------- |
+| "Missing required environment variables" | `.env` missing or incomplete                 |
+| "password authentication failed"         | Check `DATABASE_URL` credentials             |
+| Voice not working                        | Set `OPENAI_API_KEY` in `.env`               |
+| Bot not responding                       | Check `TELEGRAM_OWNER_ID` is numeric ID      |
+| Reminders wrong time                     | Check `TIMEZONE` in `.env`                   |
+| DeepSeek API error                       | Check credits at platform.deepseek.com       |
+| "Redis unavailable"                      | Not an error — optional, bot works without   |
+| "⚠️ Hallucination detected"              | **Good!** Validator caught it before sending |
+| "⏰ Fixing hallucinated time"            | Time guard auto-corrected LLM time           |
+| "All LLM providers unavailable"          | Both DeepSeek AND MiMo down — check API keys |
 
 ---
 
 ## 🌐 REST API (optional)
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /` | API info — name, version, routes |
-| `GET /health` | Health check — status + uptime |
-| `GET /today` | Today's events and reminders (JSON) |
+| Endpoint      | Description                            |
+| ------------- | -------------------------------------- |
+| `GET /`       | API info — name, version, routes       |
+| `GET /health` | Health check — status + uptime         |
+| `GET /today`  | Today's events and reminders (JSON)    |
 | `GET /memory` | All stored data — facts, events, notes |
-| `POST /notes` | Add a note `{"content":"..."}` |
+| `POST /notes` | Add a note `{"content":"..."}`         |

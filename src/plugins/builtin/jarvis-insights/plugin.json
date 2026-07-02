@@ -1,0 +1,20 @@
+{
+  "name": "jarvis-insights",
+  "version": "1.0.0",
+  "description": "Built-in plugin that provides usage insights, mood tracking, and weekly summaries",
+  "author": "Jarvis Core Team",
+  "main": "index.js",
+  "hooks": ["onInit", "onMessage", "onCommand", "onEvent"],
+  "commands": ["/insights", "/mood", "/weekly"],
+  "capabilities": [
+    "insights:usage",
+    "insights:mood_trend",
+    "insights:weekly_summary"
+  ],
+  "jarvisVersion": ">=2.0.0",
+  "config": {
+    "enabled": true,
+    "moodTracking": true,
+    "weeklyReportDay": "sunday"
+  }
+}
