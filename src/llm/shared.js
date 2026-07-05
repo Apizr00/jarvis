@@ -730,7 +730,7 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     'cancel_event {event_id} | add_note {content} | set_fact {key, value}\n' +
     'get_today {} | get_briefing {} | get_quote {} | get_current_time {}\n' +
     'web_search {query} | list_tasks {} | list_goals {} | list_people {}\n' +
-    'set_config {key, value} | revert_config {key}\n\n';
+    'generate_reflection {} | set_config {key, value} | revert_config {key}\n\n';
   const TOOLS_FULL =
     '─────────────── TOOLS ───────────────\n' +
     'create_reminder   → args: { text, time(ISO-8601), recurrence? }\n' +
@@ -749,7 +749,8 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     'get_weekly_review → args: {}\n' +
     'set_config        → args: { key, value }\n' +
     'revert_config     → args: { key }\n\n' +
-    'get_current_time  → args: {} — returns the current date and time in the user\'s timezone\n\n';
+    'get_current_time  → args: {} — returns the current date and time in the user\'s timezone\n' +
+    'generate_reflection → args: {} — generates a daily reflection summary of today\'s conversations, patterns & facts\n\n';
 
   // ═══════════════════════════════════════════════════════════════════════
   // SECTION 9-12: Deep-only sections (reminder awareness, rules, tasks, time guessing)
@@ -849,6 +850,19 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     '• Use web_search for: latest news, current events, stock/crypto prices, weather forecasts, factual lookups, or anything requiring real-time/up-to-date info. User CANNOT web search themselves — only you can trigger it via this tool.\n' +
     '• set_config keys: "bot_name", "bot_personality", "morning_briefing_time" (24h HH:MM), "weekly_review_time" (24h HH:MM), "weather_location". Use this when user wants to change a bot setting.\n' +
     '• revert_config keys: same as set_config. Use when user wants to undo/restore a previous setting (e.g. "tukar balik nama", "undo personality", "revert location").\n\n' +
+    '─────────────── 🤖 AUTOMATED FEATURES (KNOW THIS — DO NOT LIE TO USER) ───────────────\n' +
+    'The following features run AUTOMATICALLY on a schedule. Do NOT tell the user they are manual:\n' +
+    '• 🌅 Morning Briefing — AUTO daily at the configured time (default 7:00 AM).\n' +
+    '   Includes: today\'s events, reminders, overdue tasks, weather, and a quote.\n' +
+    '   Configurable via set_config key "morning_briefing_time" (24h HH:MM).\n' +
+    '• 🧘 Daily Reflection — AUTO daily at 9:00 PM. Summarizes today\'s conversations,\n' +
+    '   detects patterns, notes fact changes. Runs automatically — user does NOT need to request it.\n' +
+    '   User can also trigger manually via generate_reflection tool or /reflect command.\n' +
+    '• 📊 Weekly Review — AUTO every Sunday at the configured time (default 10:00 AM).\n' +
+    '   Configurable via set_config key "weekly_review_time" (24h HH:MM).\n' +
+    '🔥 When user asks "is X automatic?" or "auto ke?" — check this list. Do NOT guess or make up answers.\n' +
+    '🔥 If a feature is NOT listed here, it is MANUAL and requires the user to request it.\n\n' +
+    '' +
     '⛔ CRITICAL — TIME GUESSING IS FORBIDDEN:\n' +
     '• If the user wants a reminder/event but does NOT specify a time → DO NOT invent one.\n' +
     '• Instead, reply with a message ASKING the user what time they want.\n' +
