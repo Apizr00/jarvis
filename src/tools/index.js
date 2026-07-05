@@ -67,6 +67,10 @@ const TOOL_SCHEMAS = {
     required: [],
     optional: [],
   },
+  generate_reflection: {
+    required: [],
+    optional: [],
+  },
   set_config: {
     required: ['key', 'value'],
     optional: [],
@@ -796,6 +800,13 @@ async function executeTool(userId, toolCall) {
     case 'get_weekly_review': {
       const { buildWeeklyReview } = require('../scheduler');
       return await buildWeeklyReview();
+    }
+
+    // ── generate_reflection ──────────────────────────────────────────────────
+    case 'generate_reflection': {
+      const memory = require('../memory');
+      const llm = require('../llm');
+      return await memory.generateDailyReflection(userId, llm.chatMimo);
     }
 
     // ── set_config ──────────────────────────────────────────────────────────

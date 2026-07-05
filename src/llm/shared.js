@@ -261,6 +261,7 @@ const KNOWN_TOOLS = [
   'create_task', 'update_task', 'start_task', 'complete_task', 'cancel_task', 'list_tasks',
   'create_goal', 'update_goal', 'complete_goal', 'abandon_goal', 'list_goals',
   'save_relationship', 'list_people',
+  'generate_reflection',
 ];
 
 // Common LLM typos → correct tool name
