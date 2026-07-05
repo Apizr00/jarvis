@@ -984,7 +984,7 @@ async function createBot() {
         }
 
         // Refresh cron if time setting changed
-        if (pending.envKey === 'MORNING_BRIEFING_TIME' || pending.envKey === 'WEEKLY_REVIEW_TIME') {
+        if (pending.envKey === 'MORNING_BRIEFING_TIME' || pending.envKey === 'REFLECTION_TIME' || pending.envKey === 'WEEKLY_REVIEW_TIME') {
           try {
             const { refreshSchedules } = require('../scheduler');
             if (typeof refreshSchedules === 'function') await refreshSchedules();
@@ -1397,8 +1397,8 @@ async function createBot() {
 
       const labels = {
         bot_name: 'Bot Name', bot_personality: 'Bot Personality',
-        morning_briefing_time: 'Morning Briefing Time', weekly_review_time: 'Weekly Review Time',
-        weather_location: 'Weather Location',
+        morning_briefing_time: 'Morning Briefing Time', reflection_time: 'Daily Reflection Time',
+        weekly_review_time: 'Weekly Review Time', weather_location: 'Weather Location',
       };
 
       for (const [key, label] of Object.entries(labels)) {
@@ -1632,7 +1632,7 @@ async function createBot() {
 
     // ── 🔄 Re-send typing indicator every 4s (Telegram expires it after ~5s) ──
     const typingInterval = setInterval(() => {
-      bot.sendChatAction(chatId, 'typing').catch(() => {});
+      bot.sendChatAction(chatId, 'typing').catch(() => { });
     }, 4000);
     // Initial typing indicator
     await bot.sendChatAction(chatId, 'typing');
@@ -1762,7 +1762,7 @@ async function createBot() {
 
         // Show second thinking step after first few bytes arrive
         if (decision.tier === 'deep' && thinkingStep === 1 && displayText.length < 20) {
-          await advanceThinking().catch(() => {});
+          await advanceThinking().catch(() => { });
         }
 
         try {
@@ -2453,7 +2453,7 @@ async function createBot() {
             clearHistory(userId);
           }
           // Refresh cron if time setting changed
-          if (confirmed.envKey === 'MORNING_BRIEFING_TIME' || confirmed.envKey === 'WEEKLY_REVIEW_TIME') {
+          if (confirmed.envKey === 'MORNING_BRIEFING_TIME' || confirmed.envKey === 'REFLECTION_TIME' || confirmed.envKey === 'WEEKLY_REVIEW_TIME') {
             try {
               if (typeof refreshSchedules === 'function') await refreshSchedules();
             } catch { /* ignore */ }

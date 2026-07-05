@@ -84,27 +84,8 @@ async function startScheduler(bot) {
   });
   console.log('🧹 Daily cleanup scheduled for 3:00 AM (facts + chat history)');
 
-  // ── Daily reflection: 9:00 PM every day ──────────────────────────────
-  if (reflectionTask) { reflectionTask.stop(); reflectionTask = null; }
-  reflectionTask = cron.schedule('0 21 * * *', async () => {
-    try {
-      const OWNER = String(process.env.TELEGRAM_OWNER_ID);
-      // Need to import llm dynamically to avoid circular dependency
-      const llm = require('../llm');
-      const reflection = await memory.generateDailyReflection(OWNER, llm.chatMimo);
-      if (reflection && botInstance) {
-        try {
-          await botInstance.sendMessage(OWNER, '*🧘 Daily Reflection*\n\n' + reflection, { parse_mode: 'Markdown' });
-        } catch {
-          await botInstance.sendMessage(OWNER, '🧘 Daily Reflection\n\n' + reflection);
-        }
-        console.log('[Scheduler] 🧘 Daily reflection sent');
-      }
-    } catch (err) {
-      console.error('[Scheduler] Reflection error:', err.message);
-    }
-  });
-  console.log('🧘 Daily reflection scheduled for 9:00 PM');
+  // ── Daily reflection: configurable time (default 9:00 PM) ────────────
+  // NOTE: This is now set up inside refreshSchedules() below for consistency
 
   // ── Pattern Analysis: 2:00 AM every day (quiet hours, heavy compute) ─
   if (patternAnalysisTask) { patternAnalysisTask.stop(); patternAnalysisTask = null; }
@@ -175,6 +156,7 @@ async function refreshSchedules() {
   // ── Stop existing tasks ────────────────────────────────────────────────
   if (briefingTask) { briefingTask.stop(); briefingTask = null; }
   if (reviewTask) { reviewTask.stop(); reviewTask = null; }
+  if (reflectionTask) { reflectionTask.stop(); reflectionTask = null; }
 
   // ── Morning Briefing ───────────────────────────────────────────────────
   const briefingTime = await db.getConfig(OWNER_ID, 'morning_briefing_time', 'MORNING_BRIEFING_TIME', '7:30');
@@ -204,6 +186,31 @@ async function refreshSchedules() {
       }
     });
     console.log(`📊 Weekly review scheduled for Sunday at ${reviewTime}`);
+  }
+
+  // ── Daily Reflection ───────────────────────────────────────────────────
+  const reflectionTime = await db.getConfig(OWNER_ID, 'reflection_time', 'REFLECTION_TIME', '21:00');
+  const [refHour, refMinute] = reflectionTime.split(':').map(n => parseInt(n, 10));
+  if (!isNaN(refHour) && !isNaN(refMinute)) {
+    const refCronExpr = `${refMinute} ${refHour} * * *`;
+    reflectionTask = cron.schedule(refCronExpr, async () => {
+      try {
+        const OWNER = String(process.env.TELEGRAM_OWNER_ID);
+        const llm = require('../llm');
+        const reflection = await memory.generateDailyReflection(OWNER, llm.chatMimo);
+        if (reflection && botInstance) {
+          try {
+            await botInstance.sendMessage(OWNER, '*🧘 Daily Reflection*\n\n' + reflection, { parse_mode: 'Markdown' });
+          } catch {
+            await botInstance.sendMessage(OWNER, '🧘 Daily Reflection\n\n' + reflection);
+          }
+          console.log('[Scheduler] 🧘 Daily reflection sent');
+        }
+      } catch (err) {
+        console.error('[Scheduler] Reflection error:', err.message);
+      }
+    });
+    console.log(`🧘 Daily reflection scheduled for ${reflectionTime} daily`);
   }
 }
 

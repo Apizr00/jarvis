@@ -848,21 +848,8 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     '⛔ The CURRENT UPCOMING REMINDERS section above is ONLY for ID reference (cancel/update), NOT for answering "what reminders do I have?"\n' +
     '• Recurrence values: "daily", "weekly", "weekdays", or null to remove recurrence\n' +
     '• Use web_search for: latest news, current events, stock/crypto prices, weather forecasts, factual lookups, or anything requiring real-time/up-to-date info. User CANNOT web search themselves — only you can trigger it via this tool.\n' +
-    '• set_config keys: "bot_name", "bot_personality", "morning_briefing_time" (24h HH:MM), "weekly_review_time" (24h HH:MM), "weather_location". Use this when user wants to change a bot setting.\n' +
+    '• set_config keys: "bot_name", "bot_personality", "morning_briefing_time", "reflection_time", "weekly_review_time" (24h HH:MM), "weather_location". Use this when user wants to change a bot setting.\n' +
     '• revert_config keys: same as set_config. Use when user wants to undo/restore a previous setting (e.g. "tukar balik nama", "undo personality", "revert location").\n\n' +
-    '─────────────── 🤖 AUTOMATED FEATURES (KNOW THIS — DO NOT LIE TO USER) ───────────────\n' +
-    'The following features run AUTOMATICALLY on a schedule. Do NOT tell the user they are manual:\n' +
-    '• 🌅 Morning Briefing — AUTO daily at the configured time (default 7:00 AM).\n' +
-    '   Includes: today\'s events, reminders, overdue tasks, weather, and a quote.\n' +
-    '   Configurable via set_config key "morning_briefing_time" (24h HH:MM).\n' +
-    '• 🧘 Daily Reflection — AUTO daily at 9:00 PM. Summarizes today\'s conversations,\n' +
-    '   detects patterns, notes fact changes. Runs automatically — user does NOT need to request it.\n' +
-    '   User can also trigger manually via generate_reflection tool or /reflect command.\n' +
-    '• 📊 Weekly Review — AUTO every Sunday at the configured time (default 10:00 AM).\n' +
-    '   Configurable via set_config key "weekly_review_time" (24h HH:MM).\n' +
-    '🔥 When user asks "is X automatic?" or "auto ke?" — check this list. Do NOT guess or make up answers.\n' +
-    '🔥 If a feature is NOT listed here, it is MANUAL and requires the user to request it.\n\n' +
-    '' +
     '⛔ CRITICAL — TIME GUESSING IS FORBIDDEN:\n' +
     '• If the user wants a reminder/event but does NOT specify a time → DO NOT invent one.\n' +
     '• Instead, reply with a message ASKING the user what time they want.\n' +
@@ -889,6 +876,23 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     'If user says "I want to..." or "I need to..." without a specific time → use create_task, NOT create_reminder.\n';
 
   // ═══════════════════════════════════════════════════════════════════════
+  // SECTION: Automated Features (medium + deep — LLM must know what's auto)
+  // ═══════════════════════════════════════════════════════════════════════
+  const AUTO_FEATURES =
+    '─────────────── 🤖 AUTOMATED FEATURES (KNOW THIS — DO NOT LIE TO USER) ───────────────\n' +
+    'The following features run AUTOMATICALLY on a schedule. Do NOT tell the user they are manual:\n' +
+    '• 🌅 Morning Briefing — AUTO daily at configurable time (default 7:00 AM).\n' +
+    '   Configurable via set_config key "morning_briefing_time" (24h HH:MM).\n' +
+    '• 🧘 Daily Reflection — AUTO daily at configurable time (default 9:00 PM).\n' +
+    '   Configurable via set_config key "reflection_time" (24h HH:MM).\n' +
+    '• 💬 Proactive Check-ins — AUTO every 60 minutes. May send morning/evening\n' +
+    '   check-ins, goal reminders, or general conversation starters based on timing.\n' +
+    '• 📊 Weekly Review — AUTO every Sunday at configurable time (default 10:00 AM).\n' +
+    '   Configurable via set_config key "weekly_review_time" (24h HH:MM).\n' +
+    '🔥 When user asks "is X automatic?" or "auto ke?" — check this list. Do NOT guess.\n' +
+    '🔥 If a feature is NOT listed here, it is MANUAL and requires user to request.\n\n';
+
+  // ═══════════════════════════════════════════════════════════════════════
   // Assemble prompt by tier
   // ═══════════════════════════════════════════════════════════════════════
   let prompt;
@@ -904,7 +908,8 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
       TIME_MEDIUM +
       MEMORY_MEDIUM +
       ACTION_MEDIUM +
-      TOOLS_MEDIUM;
+      TOOLS_MEDIUM +
+      AUTO_FEATURES;
   } else {
     // Deep: full prompt
     prompt = JSON_FULL +
@@ -916,6 +921,7 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
       FACT_LOCK_FULL +
       ACTION_FULL +
       TOOLS_FULL +
+      AUTO_FEATURES +
       DEEP_ONLY;
   }
 

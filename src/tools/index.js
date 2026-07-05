@@ -815,6 +815,7 @@ async function executeTool(userId, toolCall) {
         bot_name: 'BOT_NAME',
         bot_personality: 'BOT_PERSONALITY',
         morning_briefing_time: 'MORNING_BRIEFING_TIME',
+        reflection_time: 'REFLECTION_TIME',
         weekly_review_time: 'WEEKLY_REVIEW_TIME',
         weather_location: 'WEATHER_LOCATION',
       };
@@ -832,6 +833,10 @@ async function executeTool(userId, toolCall) {
         'briefing': 'morning_briefing_time',
         'morning_time': 'morning_briefing_time',
         'masa_briefing': 'morning_briefing_time',
+        'reflection_time': 'reflection_time',
+        'reflection': 'reflection_time',
+        'masa_reflection': 'reflection_time',
+        'masa_reflect': 'reflection_time',
         'review_time': 'weekly_review_time',
         'review': 'weekly_review_time',
         'weekly_time': 'weekly_review_time',
@@ -845,7 +850,7 @@ async function executeTool(userId, toolCall) {
       };
 
       if (!args.key || args.value === undefined) {
-        return 'I need both a setting key and value. Try: bot_name, bot_personality, morning_briefing_time, weekly_review_time, weather_location.';
+        return 'I need both a setting key and value. Try: bot_name, bot_personality, morning_briefing_time, reflection_time, weekly_review_time, weather_location.';
       }
 
       let key = args.key.toLowerCase().trim();
@@ -860,11 +865,11 @@ async function executeTool(userId, toolCall) {
 
       const envKey = validKeys[key];
       if (!envKey) {
-        return 'Unknown setting: "' + escapeMd(args.key) + '". Available: bot_name, bot_personality, morning_briefing_time (e.g. "7:00"), weekly_review_time, weather_location.';
+        return 'Unknown setting: "' + escapeMd(args.key) + '". Available: bot_name, bot_personality, morning_briefing_time, reflection_time, weekly_review_time (e.g. "7:00"), weather_location.';
       }
 
       // Validate time formats
-      if ((envKey === 'MORNING_BRIEFING_TIME' || envKey === 'WEEKLY_REVIEW_TIME') && !/^\d{1,2}:\d{2}$/.test(args.value)) {
+      if ((envKey === 'MORNING_BRIEFING_TIME' || envKey === 'REFLECTION_TIME' || envKey === 'WEEKLY_REVIEW_TIME') && !/^\d{1,2}:\d{2}$/.test(args.value)) {
         return 'Time must be in 24h format, e.g. "7:00" or "20:00".';
       }
 
@@ -872,6 +877,7 @@ async function executeTool(userId, toolCall) {
         bot_name: 'Bot Name',
         bot_personality: 'Bot Personality',
         morning_briefing_time: 'Morning Briefing Time',
+        reflection_time: 'Daily Reflection Time',
         weekly_review_time: 'Weekly Review Time',
         weather_location: 'Weather Location',
       };
@@ -893,7 +899,8 @@ async function executeTool(userId, toolCall) {
     case 'revert_config': {
       const validKeys = {
         bot_name: 'BOT_NAME', bot_personality: 'BOT_PERSONALITY',
-        morning_briefing_time: 'MORNING_BRIEFING_TIME', weekly_review_time: 'WEEKLY_REVIEW_TIME',
+        morning_briefing_time: 'MORNING_BRIEFING_TIME', reflection_time: 'REFLECTION_TIME',
+        weekly_review_time: 'WEEKLY_REVIEW_TIME',
         weather_location: 'WEATHER_LOCATION',
       };
       const keyAliases = {
@@ -906,7 +913,7 @@ async function executeTool(userId, toolCall) {
       let key = (args.key || '').toLowerCase().trim();
       if (keyAliases[key]) key = keyAliases[key];
       if (!validKeys[key]) {
-        return 'Unknown setting to revert. Try: bot_name, bot_personality, morning_briefing_time, weekly_review_time, weather_location.';
+        return 'Unknown setting to revert. Try: bot_name, bot_personality, morning_briefing_time, reflection_time, weekly_review_time, weather_location.';
       }
 
       const prevVal = await db.getSetting(userId, 'prev_' + key);
