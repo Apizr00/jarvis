@@ -282,7 +282,20 @@ async function buildBriefingMessage() {
   ]);
 
   const name = userName || 'Boss';
-  let message = '🌅 *Good Morning, ' + escapeMd(name) + '!* Here\'s your briefing for ' + today + ':\n\n';
+
+  // Dynamic greeting based on current hour (in configured timezone)
+  const currentHour = parseInt(fmt(new Date(), 'H'), 10);
+  let greeting;
+  if (currentHour >= 5 && currentHour < 12) {
+    greeting = '🌅 *Good Morning, ';
+  } else if (currentHour >= 12 && currentHour < 17) {
+    greeting = '☀️ *Good Afternoon, ';
+  } else if (currentHour >= 17 && currentHour < 21) {
+    greeting = '🌆 *Good Evening, ';
+  } else {
+    greeting = '🌙 *Good Evening, ';
+  }
+  let message = greeting + escapeMd(name) + '!* Here\'s your briefing for ' + today + ':\n\n';
 
   // ── Today's events ───────────────────────────────────────────────────
   if (events.length > 0) {
