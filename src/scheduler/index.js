@@ -84,31 +84,12 @@ async function startScheduler(bot) {
   });
   console.log('🧹 Daily cleanup scheduled for 3:00 AM (facts + chat history)');
 
-  // ── Daily reflection: 10:00 PM every day ─────────────────────────────
-  if (reflectionTask) { reflectionTask.stop(); reflectionTask = null; }
-  reflectionTask = cron.schedule('0 22 * * *', async () => {
-    try {
-      const OWNER = String(process.env.TELEGRAM_OWNER_ID);
-      // Need to import llm dynamically to avoid circular dependency
-      const llm = require('../llm');
-      const reflection = await memory.generateDailyReflection(OWNER, llm.chatMimo);
-      if (reflection && botInstance) {
-        try {
-          await botInstance.sendMessage(OWNER, '*🧘 Daily Reflection*\n\n' + reflection, { parse_mode: 'Markdown' });
-        } catch {
-          await botInstance.sendMessage(OWNER, '🧘 Daily Reflection\n\n' + reflection);
-        }
-        console.log('[Scheduler] 🧘 Daily reflection sent');
-      }
-    } catch (err) {
-      console.error('[Scheduler] Reflection error:', err.message);
-    }
-  });
-  console.log('🧘 Daily reflection scheduled for 10:00 PM');
+  // ── Daily reflection: configurable time (default 9:00 PM) ────────────
+  // NOTE: This is now set up inside refreshSchedules() below for consistency
 
-  // ── Pattern Analysis: 11:00 PM every day ─────────────────────────────
+  // ── Pattern Analysis: 2:00 AM every day (quiet hours, heavy compute) ─
   if (patternAnalysisTask) { patternAnalysisTask.stop(); patternAnalysisTask = null; }
-  patternAnalysisTask = cron.schedule('0 23 * * *', async () => {
+  patternAnalysisTask = cron.schedule('0 2 * * *', async () => {
     try {
       const OWNER = String(process.env.TELEGRAM_OWNER_ID);
       const detectedPatterns = await patterns.runFullAnalysis(OWNER, { lookbackDays: 30 });
@@ -127,13 +108,13 @@ async function startScheduler(bot) {
       console.error('[Scheduler] Pattern analysis error:', err.message);
     }
   });
-  console.log('🔍 Pattern analysis scheduled for 11:00 PM daily');
+  console.log('🔍 Pattern analysis scheduled for 2:00 AM daily');
 
-  // ── Fasa 5: Proactive check-in: every 30 minutes ─────────────────────
+  // ── Fasa 5: Proactive check-in: every 60 minutes ─────────────────────
   const proactive = require('../executive/proactive');
   let proactiveTask = null;
   if (proactiveTask) { proactiveTask.stop(); proactiveTask = null; }
-  proactiveTask = cron.schedule('*/30 * * * *', async () => {
+  proactiveTask = cron.schedule('*/60 * * * *', async () => {
     try {
       const OWNER = String(process.env.TELEGRAM_OWNER_ID);
       if (botInstance) {
@@ -146,13 +127,13 @@ async function startScheduler(bot) {
       console.error('[Scheduler] Proactive error:', err.message);
     }
   });
-  console.log('💬 Proactive check-in scheduled for every 30 minutes');
+  console.log('💬 Proactive check-in scheduled for every 60 minutes');
 
-  // ── Fasa 5: Quick self-evaluation: every hour ────────────────────────
+  // ── Fasa 5: Quick self-evaluation: every 3 hours ─────────────────────
   const evaluator = require('../executive/evaluator');
   let evalTask = null;
   if (evalTask) { evalTask.stop(); evalTask = null; }
-  evalTask = cron.schedule('0 * * * *', async () => {
+  evalTask = cron.schedule('0 */3 * * *', async () => {
     try {
       const OWNER = String(process.env.TELEGRAM_OWNER_ID);
       const summary = evaluator.getLearningSummary(OWNER);
@@ -163,7 +144,7 @@ async function startScheduler(bot) {
       console.error('[Scheduler] Eval error:', err.message);
     }
   });
-  console.log('📊 Self-evaluation summary scheduled hourly');
+  console.log('📊 Self-evaluation summary scheduled every 3 hours');
 }
 
 /**
@@ -175,9 +156,10 @@ async function refreshSchedules() {
   // ── Stop existing tasks ────────────────────────────────────────────────
   if (briefingTask) { briefingTask.stop(); briefingTask = null; }
   if (reviewTask) { reviewTask.stop(); reviewTask = null; }
+  if (reflectionTask) { reflectionTask.stop(); reflectionTask = null; }
 
   // ── Morning Briefing ───────────────────────────────────────────────────
-  const briefingTime = await db.getConfig(OWNER_ID, 'morning_briefing_time', 'MORNING_BRIEFING_TIME', '7:00');
+  const briefingTime = await db.getConfig(OWNER_ID, 'morning_briefing_time', 'MORNING_BRIEFING_TIME', '7:30');
   const [hour, minute] = briefingTime.split(':').map(n => parseInt(n, 10));
   if (!isNaN(hour) && !isNaN(minute)) {
     const cronExpr = `${minute} ${hour} * * *`;
@@ -192,7 +174,7 @@ async function refreshSchedules() {
   }
 
   // ── Weekly Review ──────────────────────────────────────────────────────
-  const reviewTime = await db.getConfig(OWNER_ID, 'weekly_review_time', 'WEEKLY_REVIEW_TIME', '20:00');
+  const reviewTime = await db.getConfig(OWNER_ID, 'weekly_review_time', 'WEEKLY_REVIEW_TIME', '10:00');
   const [revHour, revMinute] = reviewTime.split(':').map(n => parseInt(n, 10));
   if (!isNaN(revHour) && !isNaN(revMinute)) {
     const reviewCronExpr = `${revMinute} ${revHour} * * 0`;
@@ -204,6 +186,31 @@ async function refreshSchedules() {
       }
     });
     console.log(`📊 Weekly review scheduled for Sunday at ${reviewTime}`);
+  }
+
+  // ── Daily Reflection ───────────────────────────────────────────────────
+  const reflectionTime = await db.getConfig(OWNER_ID, 'reflection_time', 'REFLECTION_TIME', '21:00');
+  const [refHour, refMinute] = reflectionTime.split(':').map(n => parseInt(n, 10));
+  if (!isNaN(refHour) && !isNaN(refMinute)) {
+    const refCronExpr = `${refMinute} ${refHour} * * *`;
+    reflectionTask = cron.schedule(refCronExpr, async () => {
+      try {
+        const OWNER = String(process.env.TELEGRAM_OWNER_ID);
+        const llm = require('../llm');
+        const reflection = await memory.generateDailyReflection(OWNER, llm.chatMimo);
+        if (reflection && botInstance) {
+          try {
+            await botInstance.sendMessage(OWNER, '*🧘 Daily Reflection*\n\n' + reflection, { parse_mode: 'Markdown' });
+          } catch {
+            await botInstance.sendMessage(OWNER, '🧘 Daily Reflection\n\n' + reflection);
+          }
+          console.log('[Scheduler] 🧘 Daily reflection sent');
+        }
+      } catch (err) {
+        console.error('[Scheduler] Reflection error:', err.message);
+      }
+    });
+    console.log(`🧘 Daily reflection scheduled for ${reflectionTime} daily`);
   }
 }
 
@@ -282,7 +289,20 @@ async function buildBriefingMessage() {
   ]);
 
   const name = userName || 'Boss';
-  let message = '🌅 *Good Morning, ' + escapeMd(name) + '!* Here\'s your briefing for ' + today + ':\n\n';
+
+  // Dynamic greeting based on current hour (in configured timezone)
+  const currentHour = parseInt(fmt(new Date(), 'H'), 10);
+  let greeting;
+  if (currentHour >= 5 && currentHour < 12) {
+    greeting = '🌅 *Good Morning, ';
+  } else if (currentHour >= 12 && currentHour < 17) {
+    greeting = '☀️ *Good Afternoon, ';
+  } else if (currentHour >= 17 && currentHour < 21) {
+    greeting = '🌆 *Good Evening, ';
+  } else {
+    greeting = '🌙 *Good Evening, ';
+  }
+  let message = greeting + escapeMd(name) + '!* Here\'s your briefing for ' + today + ':\n\n';
 
   // ── Today's events ───────────────────────────────────────────────────
   if (events.length > 0) {

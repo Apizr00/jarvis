@@ -15,6 +15,26 @@ const planner = require('./planner');
 const workingMemory = require('./working-memory');
 const lifecycle = require('./lifecycle');
 
+/**
+ * Get the current hour (0-23) in the configured timezone.
+ */
+function getCurrentHour() {
+  const tz = process.env.TIMEZONE || 'UTC';
+  const now = new Date();
+  return parseInt(new Intl.DateTimeFormat('en', { timeZone: tz, hour: 'numeric', hour12: false }).format(now), 10);
+}
+
+/**
+ * Get the current day of week (0=Sun, 6=Sat) in the configured timezone.
+ */
+function getCurrentDayOfWeek() {
+  const tz = process.env.TIMEZONE || 'UTC';
+  const now = new Date();
+  const dayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const weekday = new Intl.DateTimeFormat('en', { timeZone: tz, weekday: 'short' }).format(now);
+  return dayMap[weekday];
+}
+
 // ── Engagement history (tracks user response to proactive messages) ────────
 const engagementHistory = new Map(); // userId → {type → {sent, responded, lastResponse}}
 
@@ -94,8 +114,8 @@ function scoreUserState(userId) {
  * @returns {number} 0-25
  */
 function scoreTiming(type) {
-  const hour = new Date().getHours();
-  const dayOfWeek = new Date().getDay();
+  const hour = getCurrentHour();
+  const dayOfWeek = getCurrentDayOfWeek();
 
   const optimalWindows = {
     morning_checkin: { hours: [6, 9], score: 22 },
@@ -258,8 +278,8 @@ function recordEngagementResponse(userId, type) {
 async function generateProactiveCandidates(userId, bot) {
   const candidates = [];
   const wm = worldModel.get(userId);
-  const hour = new Date().getHours();
-  const dayOfWeek = new Date().getDay(); // 0=Sun, 6=Sat
+  const hour = getCurrentHour();
+  const dayOfWeek = getCurrentDayOfWeek(); // 0=Sun, 6=Sat
 
   // ── 1. Morning check-in ──────────────────────────────────────────────
   if (hour >= 6 && hour <= 9 && canSendProactive(userId, 'morning_checkin')) {
@@ -453,7 +473,7 @@ async function maybeSendProactiveMessage(bot, userId) {
       // Don't send if user was active more than 8 hours ago (probably sleeping/busy)
       // EXCEPT for morning check-in
       if (minutesSinceLastActive > 480) {
-        const hour = new Date().getHours();
+        const hour = getCurrentHour();
         if (hour < 6 || hour > 9) return false;
       }
     }

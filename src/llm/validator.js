@@ -181,8 +181,35 @@ function detectTimeHallucination(content, timezone = 'UTC') {
     const matchedTotalMins = matched24h * 60 + matchedMinute;
     const diffMins = Math.abs(matchedTotalMins - actualTotalMins);
 
-    // If more than 2 minutes off, it's wrong
+    // If more than 2 minutes off AND it looks like a CURRENT time reference, it's wrong.
+    // Future/past references like "remind at 12:30" or "tadi pukul 3" should NOT be flagged.
     if (diffMins > 2) {
+      const prefix = (match[1] || '').toLowerCase();
+      const fullMatch = match[0];
+
+      // Future-reference prefixes
+      const isFutureContext =
+        /\b(at|nanti|remind|akan|pada|around|about|by|before|until|hingga|sampai|dalam|lagi|next|esok|tomorrow|lusa|minggu|bulan)\b/i.test(prefix) ||
+        /\b(?:ingatkan|remind(?:er)?|event|jadual|schedule|meeting)\b/i.test(fullMatch);
+
+      // Past-reference prefixes
+      const isPastContext =
+        /\b(tadi|was|earlier|semalam|kelmarin|yesterday|last)\b/i.test(prefix);
+
+      if (isFutureContext || isPastContext) {
+        // Skip — this is a future/past event time, not a current time hallucination
+        continue;
+      }
+
+      // For ambiguous cases, check broader context
+      const before = content.substring(Math.max(0, match.index - 40), match.index);
+      if (/(?:nanti|akan|remind|ingatkan|at\s*$|pada\s*$|esok|tomorrow)/i.test(before)) {
+        continue; // future reference
+      }
+      if (/(?:tadi|was|semalam|yesterday)/i.test(before)) {
+        continue; // past reference
+      }
+
       wrongTimes.push(match[0]);
     }
   }

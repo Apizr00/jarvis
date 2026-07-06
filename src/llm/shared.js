@@ -186,9 +186,16 @@ function parseAndValidate(rawText, opts = {}) {
       const { result } = validateParsedResponse(normalized, opts);
       return result;
     }
-    // Valid JSON but unrecognized structure — fall through to rawText
-    console.log('[Shared] Valid JSON but unrecognized structure, falling back to rawText');
-    return { type: 'message', content: rawText };
+    // Valid JSON but unrecognized structure — try to extract readable content
+    // If that also fails, return a safe fallback instead of raw JSON
+    console.log('[Shared] Valid JSON but unrecognized structure after normalization, extracting readable content');
+    const readable = extractReadableContent(parsed);
+    if (readable) {
+      return { type: 'message', content: readable };
+    }
+    // Truly unrecoverable — return a safe fallback, NOT raw JSON
+    console.warn('[Shared] ⚠️ Could not extract readable content from LLM response');
+    return { type: 'message', content: 'I received that but had trouble formatting my response. Could you rephrase?' };
   } catch (e) {
     // ── Try 2: extract JSON object with regex ───────────────────────────
     const jsonMatch = rawText.match(/\{[\s\S]*\}/);
@@ -254,6 +261,7 @@ const KNOWN_TOOLS = [
   'create_task', 'update_task', 'start_task', 'complete_task', 'cancel_task', 'list_tasks',
   'create_goal', 'update_goal', 'complete_goal', 'abandon_goal', 'list_goals',
   'save_relationship', 'list_people',
+  'generate_reflection',
 ];
 
 // Common LLM typos → correct tool name
@@ -312,6 +320,37 @@ const TOOL_ALIASES = {
  * @param {object} parsed - already JSON.parsed object
  * @returns {object|null} normalized {type, name?, content?, args?} or null if unparseable
  */
+
+/**
+ * Extract readable content from an unrecognized JSON object.
+ * Used as a last resort when normalizeLLMResponse returns null —
+ * prevents raw JSON from being shown to the user.
+ * Looks for keys that typically contain human-readable text.
+ *
+ * @param {object} parsed - JSON.parsed but unrecognized object
+ * @returns {string|null} extracted content or null
+ */
+function extractReadableContent(parsed) {
+  if (!parsed || typeof parsed !== 'object') return null;
+
+  // Priority keys that commonly contain the main response text
+  const priorityKeys = ['summary', 'answer', 'text', 'message', 'reply', 'response', 'content', 'description'];
+  for (const key of priorityKeys) {
+    if (parsed[key] && typeof parsed[key] === 'string' && parsed[key].trim().length > 0) {
+      return parsed[key].trim();
+    }
+  }
+
+  // If the object has any string value > 20 chars, use it
+  for (const key of Object.keys(parsed)) {
+    if (typeof parsed[key] === 'string' && parsed[key].length > 20) {
+      return parsed[key];
+    }
+  }
+
+  return null;
+}
+
 function normalizeLLMResponse(parsed) {
   // Already correct
   if (parsed.type === 'message' || parsed.type === 'tool') {
@@ -362,6 +401,29 @@ function normalizeLLMResponse(parsed) {
     const onlyKey = keys[0].toLowerCase();
     if (onlyKey === 'people' || onlyKey === 'facts') {
       return { type: 'message', content: JSON.stringify(parsed) };
+    }
+  }
+
+  // 🔥 Last resort: try to extract meaningful string content from any key
+  // Prevents raw JSON from being shown to the user when the LLM deviates
+  // from the expected {"type":"message","content":"..."} format.
+  // Common LLM output patterns that should be handled:
+  //   {"summary":"...", "sources":[...]} → extract "summary"
+  //   {"answer":"...", "results":[...]} → extract "answer"
+  //   {"text":"...", "data":{...}} → extract "text"
+  const extractableKeys = ['summary', 'answer', 'text', 'message', 'reply', 'response', 'content', 'description'];
+  for (const key of extractableKeys) {
+    if (parsed[key] && typeof parsed[key] === 'string' && parsed[key].trim().length > 0) {
+      console.log('[Shared] 🔄 Extracted content from key "' + key + '" — LLM used non-standard JSON format');
+      return { type: 'message', content: parsed[key].trim() };
+    }
+  }
+
+  // If the object has ANY string value that looks like natural language (>20 chars)
+  for (const key of keys) {
+    if (typeof parsed[key] === 'string' && parsed[key].length > 20) {
+      console.log('[Shared] 🔄 Extracted content from key "' + key + '" (fallback) — LLM used unexpected format');
+      return { type: 'message', content: parsed[key] };
     }
   }
 
@@ -668,7 +730,7 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     'cancel_event {event_id} | add_note {content} | set_fact {key, value}\n' +
     'get_today {} | get_briefing {} | get_quote {} | get_current_time {}\n' +
     'web_search {query} | list_tasks {} | list_goals {} | list_people {}\n' +
-    'set_config {key, value} | revert_config {key}\n\n';
+    'generate_reflection {} | set_config {key, value} | revert_config {key}\n\n';
   const TOOLS_FULL =
     '─────────────── TOOLS ───────────────\n' +
     'create_reminder   → args: { text, time(ISO-8601), recurrence? }\n' +
@@ -687,7 +749,8 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     'get_weekly_review → args: {}\n' +
     'set_config        → args: { key, value }\n' +
     'revert_config     → args: { key }\n\n' +
-    'get_current_time  → args: {} — returns the current date and time in the user\'s timezone\n\n';
+    'get_current_time  → args: {} — returns the current date and time in the user\'s timezone\n' +
+    'generate_reflection → args: {} — generates a daily reflection summary of today\'s conversations, patterns & facts\n\n';
 
   // ═══════════════════════════════════════════════════════════════════════
   // SECTION 9-12: Deep-only sections (reminder awareness, rules, tasks, time guessing)
@@ -785,7 +848,7 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     '⛔ The CURRENT UPCOMING REMINDERS section above is ONLY for ID reference (cancel/update), NOT for answering "what reminders do I have?"\n' +
     '• Recurrence values: "daily", "weekly", "weekdays", or null to remove recurrence\n' +
     '• Use web_search for: latest news, current events, stock/crypto prices, weather forecasts, factual lookups, or anything requiring real-time/up-to-date info. User CANNOT web search themselves — only you can trigger it via this tool.\n' +
-    '• set_config keys: "bot_name", "bot_personality", "morning_briefing_time" (24h HH:MM), "weekly_review_time" (24h HH:MM), "weather_location". Use this when user wants to change a bot setting.\n' +
+    '• set_config keys: "bot_name", "bot_personality", "morning_briefing_time", "reflection_time", "weekly_review_time" (24h HH:MM), "weather_location". Use this when user wants to change a bot setting.\n' +
     '• revert_config keys: same as set_config. Use when user wants to undo/restore a previous setting (e.g. "tukar balik nama", "undo personality", "revert location").\n\n' +
     '⛔ CRITICAL — TIME GUESSING IS FORBIDDEN:\n' +
     '• If the user wants a reminder/event but does NOT specify a time → DO NOT invent one.\n' +
@@ -813,6 +876,23 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     'If user says "I want to..." or "I need to..." without a specific time → use create_task, NOT create_reminder.\n';
 
   // ═══════════════════════════════════════════════════════════════════════
+  // SECTION: Automated Features (medium + deep — LLM must know what's auto)
+  // ═══════════════════════════════════════════════════════════════════════
+  const AUTO_FEATURES =
+    '─────────────── 🤖 AUTOMATED FEATURES (KNOW THIS — DO NOT LIE TO USER) ───────────────\n' +
+    'The following features run AUTOMATICALLY on a schedule. Do NOT tell the user they are manual:\n' +
+    '• 🌅 Morning Briefing — AUTO daily at configurable time (default 7:00 AM).\n' +
+    '   Configurable via set_config key "morning_briefing_time" (24h HH:MM).\n' +
+    '• 🧘 Daily Reflection — AUTO daily at configurable time (default 9:00 PM).\n' +
+    '   Configurable via set_config key "reflection_time" (24h HH:MM).\n' +
+    '• 💬 Proactive Check-ins — AUTO every 60 minutes. May send morning/evening\n' +
+    '   check-ins, goal reminders, or general conversation starters based on timing.\n' +
+    '• 📊 Weekly Review — AUTO every Sunday at configurable time (default 10:00 AM).\n' +
+    '   Configurable via set_config key "weekly_review_time" (24h HH:MM).\n' +
+    '🔥 When user asks "is X automatic?" or "auto ke?" — check this list. Do NOT guess.\n' +
+    '🔥 If a feature is NOT listed here, it is MANUAL and requires user to request.\n\n';
+
+  // ═══════════════════════════════════════════════════════════════════════
   // Assemble prompt by tier
   // ═══════════════════════════════════════════════════════════════════════
   let prompt;
@@ -828,7 +908,8 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
       TIME_MEDIUM +
       MEMORY_MEDIUM +
       ACTION_MEDIUM +
-      TOOLS_MEDIUM;
+      TOOLS_MEDIUM +
+      AUTO_FEATURES;
   } else {
     // Deep: full prompt
     prompt = JSON_FULL +
@@ -840,6 +921,7 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
       FACT_LOCK_FULL +
       ACTION_FULL +
       TOOLS_FULL +
+      AUTO_FEATURES +
       DEEP_ONLY;
   }
 

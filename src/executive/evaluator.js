@@ -181,7 +181,8 @@ function fastReflection(userId, decision, llmResponse) {
  */
 function generateProactiveSuggestion(userId, wm, intent) {
   const suggestions = [];
-  const hour = new Date().getHours();
+  const tz = process.env.TIMEZONE || 'UTC';
+  const hour = parseInt(new Intl.DateTimeFormat('en', { timeZone: tz, hour: 'numeric', hour12: false }).format(new Date()), 10);
 
   // ── Suggestion 1: Morning check-in ────────────────────────────────────
   if (hour >= 6 && hour <= 9) {

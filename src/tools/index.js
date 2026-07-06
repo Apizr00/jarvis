@@ -67,6 +67,10 @@ const TOOL_SCHEMAS = {
     required: [],
     optional: [],
   },
+  generate_reflection: {
+    required: [],
+    optional: [],
+  },
   set_config: {
     required: ['key', 'value'],
     optional: [],
@@ -316,6 +320,96 @@ async function safeSendMessage(bot, chatId, text, fallbackTextOverride = null) {
     return false;
   }
 
+  // ── Smart splitting for long messages (> 4000 chars) ──────────────────
+  const MAX_LEN = 4000;
+  if (text.length <= MAX_LEN) {
+    return await sendSingleMessage(bot, chatId, text, fallbackTextOverride);
+  }
+
+  // Split into chunks at paragraph boundaries, then sentence if needed
+  const chunks = splitLongMessage(text, MAX_LEN);
+  console.log('[Tools] 📝 Splitting long message (' + text.length + ' chars) into ' + chunks.length + ' chunks');
+
+  let allSent = true;
+  for (let i = 0; i < chunks.length; i++) {
+    let chunk = chunks[i];
+
+    // Add continuation markers
+    if (chunks.length > 1) {
+      if (i < chunks.length - 1) {
+        chunk += '\n\n_(cont\'d…)_';
+      }
+      if (i > 0) {
+        chunk = '_(…continued)_\n\n' + chunk;
+      }
+    }
+
+    const sent = await sendSingleMessage(bot, chatId, chunk, fallbackTextOverride);
+    if (!sent) allSent = false;
+
+    // Small delay between chunks to avoid rate limiting
+    if (i < chunks.length - 1) {
+      await new Promise(r => setTimeout(r, 200));
+    }
+  }
+
+  return allSent;
+}
+
+/**
+ * Split a long message into chunks at natural boundaries.
+ * Prefers paragraph breaks (\\n\\n), then line breaks (\\n), then sentence breaks.
+ * Falls back to hard character split if no natural boundaries found.
+ */
+function splitLongMessage(text, maxLen) {
+  const chunks = [];
+
+  // Reserve some space for continuation markers
+  const effectiveMax = maxLen - 50;
+
+  let remaining = text;
+  while (remaining.length > 0) {
+    if (remaining.length <= effectiveMax) {
+      chunks.push(remaining);
+      break;
+    }
+
+    // Try paragraph break first
+    let splitAt = remaining.lastIndexOf('\n\n', effectiveMax);
+    if (splitAt > effectiveMax * 0.5) {
+      chunks.push(remaining.slice(0, splitAt).trim());
+      remaining = remaining.slice(splitAt + 2).trim();
+      continue;
+    }
+
+    // Try single newline
+    splitAt = remaining.lastIndexOf('\n', effectiveMax);
+    if (splitAt > effectiveMax * 0.5) {
+      chunks.push(remaining.slice(0, splitAt).trim());
+      remaining = remaining.slice(splitAt + 1).trim();
+      continue;
+    }
+
+    // Try sentence break (. followed by space)
+    splitAt = remaining.lastIndexOf('. ', effectiveMax);
+    if (splitAt > effectiveMax * 0.5) {
+      chunks.push(remaining.slice(0, splitAt + 1).trim());
+      remaining = remaining.slice(splitAt + 2).trim();
+      continue;
+    }
+
+    // Hard split at maxLen
+    chunks.push(remaining.slice(0, effectiveMax).trim());
+    remaining = remaining.slice(effectiveMax).trim();
+  }
+
+  return chunks;
+}
+
+/**
+ * Send a single message (no splitting). Tries Markdown first, then plain text.
+ */
+async function sendSingleMessage(bot, chatId, text, fallbackTextOverride = null) {
   try {
     await bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
     return true;
@@ -708,12 +802,20 @@ async function executeTool(userId, toolCall) {
       return await buildWeeklyReview();
     }
 
+    // ── generate_reflection ──────────────────────────────────────────────────
+    case 'generate_reflection': {
+      const memory = require('../memory');
+      const llm = require('../llm');
+      return await memory.generateDailyReflection(userId, llm.chatMimo);
+    }
+
     // ── set_config ──────────────────────────────────────────────────────────
     case 'set_config': {
       const validKeys = {
         bot_name: 'BOT_NAME',
         bot_personality: 'BOT_PERSONALITY',
         morning_briefing_time: 'MORNING_BRIEFING_TIME',
+        reflection_time: 'REFLECTION_TIME',
         weekly_review_time: 'WEEKLY_REVIEW_TIME',
         weather_location: 'WEATHER_LOCATION',
       };
@@ -731,6 +833,10 @@ async function executeTool(userId, toolCall) {
         'briefing': 'morning_briefing_time',
         'morning_time': 'morning_briefing_time',
         'masa_briefing': 'morning_briefing_time',
+        'reflection_time': 'reflection_time',
+        'reflection': 'reflection_time',
+        'masa_reflection': 'reflection_time',
+        'masa_reflect': 'reflection_time',
         'review_time': 'weekly_review_time',
         'review': 'weekly_review_time',
         'weekly_time': 'weekly_review_time',
@@ -744,7 +850,7 @@ async function executeTool(userId, toolCall) {
       };
 
       if (!args.key || args.value === undefined) {
-        return 'I need both a setting key and value. Try: bot_name, bot_personality, morning_briefing_time, weekly_review_time, weather_location.';
+        return 'I need both a setting key and value. Try: bot_name, bot_personality, morning_briefing_time, reflection_time, weekly_review_time, weather_location.';
       }
 
       let key = args.key.toLowerCase().trim();
@@ -759,11 +865,11 @@ async function executeTool(userId, toolCall) {
 
       const envKey = validKeys[key];
       if (!envKey) {
-        return 'Unknown setting: "' + escapeMd(args.key) + '". Available: bot_name, bot_personality, morning_briefing_time (e.g. "7:00"), weekly_review_time, weather_location.';
+        return 'Unknown setting: "' + escapeMd(args.key) + '". Available: bot_name, bot_personality, morning_briefing_time, reflection_time, weekly_review_time (e.g. "7:00"), weather_location.';
       }
 
       // Validate time formats
-      if ((envKey === 'MORNING_BRIEFING_TIME' || envKey === 'WEEKLY_REVIEW_TIME') && !/^\d{1,2}:\d{2}$/.test(args.value)) {
+      if ((envKey === 'MORNING_BRIEFING_TIME' || envKey === 'REFLECTION_TIME' || envKey === 'WEEKLY_REVIEW_TIME') && !/^\d{1,2}:\d{2}$/.test(args.value)) {
         return 'Time must be in 24h format, e.g. "7:00" or "20:00".';
       }
 
@@ -771,6 +877,7 @@ async function executeTool(userId, toolCall) {
         bot_name: 'Bot Name',
         bot_personality: 'Bot Personality',
         morning_briefing_time: 'Morning Briefing Time',
+        reflection_time: 'Daily Reflection Time',
         weekly_review_time: 'Weekly Review Time',
         weather_location: 'Weather Location',
       };
@@ -792,7 +899,8 @@ async function executeTool(userId, toolCall) {
     case 'revert_config': {
       const validKeys = {
         bot_name: 'BOT_NAME', bot_personality: 'BOT_PERSONALITY',
-        morning_briefing_time: 'MORNING_BRIEFING_TIME', weekly_review_time: 'WEEKLY_REVIEW_TIME',
+        morning_briefing_time: 'MORNING_BRIEFING_TIME', reflection_time: 'REFLECTION_TIME',
+        weekly_review_time: 'WEEKLY_REVIEW_TIME',
         weather_location: 'WEATHER_LOCATION',
       };
       const keyAliases = {
@@ -805,7 +913,7 @@ async function executeTool(userId, toolCall) {
       let key = (args.key || '').toLowerCase().trim();
       if (keyAliases[key]) key = keyAliases[key];
       if (!validKeys[key]) {
-        return 'Unknown setting to revert. Try: bot_name, bot_personality, morning_briefing_time, weekly_review_time, weather_location.';
+        return 'Unknown setting to revert. Try: bot_name, bot_personality, morning_briefing_time, reflection_time, weekly_review_time, weather_location.';
       }
 
       const prevVal = await db.getSetting(userId, 'prev_' + key);
