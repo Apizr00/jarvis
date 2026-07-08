@@ -68,6 +68,8 @@ console.log('');
 console.log('⏰ Test 2: fixHallucinatedTime Early Exit');
 console.log('────────────────────────────────────────');
 
+const { fixHallucinatedTime: actualFixHallucinatedTime } = require('./src/bot/anti-hallucination');
+
 // Mock version matching the actual logic
 function fixHallucinatedTime(text) {
   if (typeof text !== 'string' || text.length === 0) return text;
@@ -120,6 +122,30 @@ test('Malay greeting "apa khabar" → early exit (no time)', () => {
 
 test('"tengah hari nanti" (no digits) → early exit correctly', () => {
   if (fixHallucinatedTime('tengah hari nanti') !== 'tengah hari nanti') throw new Error('Should return unchanged');
+});
+
+test('Routine sleep time stays unchanged near current-time sentence', () => {
+  const tz = process.env.TIMEZONE || 'UTC';
+  const now = new Date();
+  const currentHour24 = parseInt(new Intl.DateTimeFormat('en', { timeZone: tz, hour: 'numeric', hour12: false }).format(now), 10);
+  const currentMinute = parseInt(new Intl.DateTimeFormat('en', { timeZone: tz, minute: '2-digit' }).format(now), 10);
+  const currentTotalMins = currentHour24 * 60 + currentMinute;
+
+  const routineTotalMins = (currentTotalMins + 180) % (24 * 60);
+  const routineHour24 = Math.floor(routineTotalMins / 60);
+  const routineMinute = routineTotalMins % 60;
+  const routineHour12 = routineHour24 % 12 === 0 ? 12 : routineHour24 % 12;
+  const routineSuffix = routineHour24 >= 12 ? 'PM' : 'AM';
+
+  const currentHour12 = currentHour24 % 12 === 0 ? 12 : currentHour24 % 12;
+  const currentSuffix = currentHour24 >= 12 ? 'PM' : 'AM';
+
+  const routineTime = routineHour12 + ':' + String(routineMinute).padStart(2, '0') + ' ' + routineSuffix;
+  const currentTime = currentHour12 + ':' + String(currentMinute).padStart(2, '0') + ' ' + currentSuffix;
+  const message = 'Biasanya awak tidur around ' + routineTime + ' kan? Tapi sekarang dah pukul ' + currentTime + '.';
+
+  const fixed = actualFixHallucinatedTime(message);
+  if (!fixed.includes(routineTime)) throw new Error('Routine time should stay unchanged: ' + fixed);
 });
 
 // ═════════════════════════════════════════════════════════════════

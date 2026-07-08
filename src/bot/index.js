@@ -1335,8 +1335,6 @@ async function createBot() {
 
   // ── Shared text processing (used by both text and voice messages) ─────────
   async function processUserText(bot, chatId, userId, userName, text, messageId = null) {
-    await db.ensureUser(userId, userName);
-
     // ── 🚫 User message dedup: skip if same text within 10 seconds ──────
     if (isDuplicateUserMessage(userId, text)) {
       console.log('[Bot] 🚫 Skipped duplicate message: "' + text.slice(0, 60) + '"');
@@ -1353,6 +1351,10 @@ async function createBot() {
     // Cleanup helper — call when done
     const stopTyping = () => { clearInterval(typingInterval); };
 
+    // Start non-user-visible setup work in parallel while the typing
+    // indicator is already shown.
+    const ensureUserPromise = db.ensureUser(userId, userName);
+
     // ── 📡 Emit message:received event ──────────────────────────────────
     eventBus.emitSync(EVENTS.MESSAGE_RECEIVED, {
       userId,
@@ -1363,12 +1365,15 @@ async function createBot() {
     });
 
     // ── 🔌 Run plugin message hooks (before core processing) ────────────
-    const pluginResults = await pluginRegistry.runMessageHooks({
-      userId,
-      chatId,
-      message: text,
-      bot,
-    });
+    const [, pluginResults] = await Promise.all([
+      ensureUserPromise,
+      pluginRegistry.runMessageHooks({
+        userId,
+        chatId,
+        message: text,
+        bot,
+      }),
+    ]);
     // Log any plugin activity
     for (const pr of pluginResults) {
       console.log('[Bot] Plugin "' + pr.plugin + '" returned:', JSON.stringify(pr.result).slice(0, 100));
