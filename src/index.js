@@ -2,6 +2,7 @@
 // Entry point - boots bot, API server, scheduler, Redis, event bus, agents, and plugins
 require('dotenv').config();
 
+const { logger, errorMetrics } = require('./utils/logger');
 const redis = require('./redis');
 const db = require('./db');
 const { createBot } = require('./bot');
@@ -13,10 +14,32 @@ const { eventBus, EVENTS } = require('./events');
 const { agentRegistry } = require('./agents');
 const { pluginRegistry } = require('./plugins');
 
+// ── Global Error Handlers (uncaught exceptions & unhandled rejections) ────────
+process.on('uncaughtException', (err) => {
+  logger.fatal('Uncaught Exception — process will exit', {
+    error: err.message,
+    stack: err.stack?.split('\n').slice(0, 5),
+    origin: 'uncaughtException',
+  });
+  console.error('💥 UNCAUGHT EXCEPTION:', err);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled Promise Rejection', {
+    error: reason?.message || String(reason),
+    stack: reason?.stack?.split('\n').slice(0, 5),
+    origin: 'unhandledRejection',
+  });
+  console.error('⚠️  UNHANDLED REJECTION:', reason);
+  // Don't exit — allow the process to continue but log aggressively
+});
+
 // ── Validate required env vars ────────────────────────────────────────────────
 const required = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_OWNER_ID', 'DEEPSEEK_API_KEY', 'DATABASE_URL'];
 const missing = required.filter(key => !process.env[key]);
 if (missing.length > 0) {
+  logger.fatal('Missing required environment variables', { missing });
   console.error('❌ Missing required environment variables:', missing.join(', '));
   console.error('   Copy .env.example to .env and fill in the values.');
   process.exit(1);
@@ -35,6 +58,8 @@ async function main() {
   const botName = (await db.getConfig(process.env.TELEGRAM_OWNER_ID, 'bot_name', 'BOT_NAME', 'JARVIS')).toUpperCase();
   console.log('  🤖  ' + botName + '  —  Personal AI Assistant v3.0  🤖');
   console.log('');
+
+  logger.info('Jarvis starting up', { nodeVersion: process.version });
 
   // ── 1. Start Event Bus ─────────────────────────────────────────────────
   eventBus.start();
@@ -116,25 +141,24 @@ async function main() {
   console.log(formatFeaturesCompact());
   console.log('');
 
-  // Graceful shutdown
-  process.on('SIGINT', async () => {
+  // ── Graceful shutdown ──────────────────────────────────────────────────
+  const shutdown = async (signal) => {
+    logger.info('Shutting down Jarvis...', { signal, uptime: process.uptime() });
     console.log('\n👋 Shutting down Jarvis...');
-    eventBus.emitSync(EVENTS.SYSTEM_SHUTDOWN, { reason: 'SIGINT' });
+    eventBus.emitSync(EVENTS.SYSTEM_SHUTDOWN, { reason: signal });
     await pluginRegistry.shutdown();
     await agentRegistry.shutdown();
     eventBus.stop();
+    logger.info('Jarvis shut down successfully', { signal });
     process.exit(0);
-  });
-  process.on('SIGTERM', async () => {
-    eventBus.emitSync(EVENTS.SYSTEM_SHUTDOWN, { reason: 'SIGTERM' });
-    await pluginRegistry.shutdown();
-    await agentRegistry.shutdown();
-    eventBus.stop();
-    process.exit(0);
-  });
+  };
+
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
 
 main().catch(err => {
+  logger.fatal('Fatal startup error', { error: err.message, stack: err.stack?.split('\n').slice(0, 5) });
   console.error('❌ Fatal startup error:', err.message);
   process.exit(1);
 });

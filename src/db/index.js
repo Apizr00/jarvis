@@ -1,7 +1,9 @@
 // src/db/index.js
-// Central database connection pool
+// Central database connection pool with retry support
 require('dotenv').config();
 const { Pool } = require('pg');
+const { withRetry } = require('../utils/retry');
+const { logger } = require('../utils/logger');
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -9,8 +11,24 @@ const pool = new Pool({
 });
 
 pool.on('error', (err) => {
+  logger.error('Unexpected DB pool error', { error: err.message, code: err.code });
   console.error('Unexpected DB error:', err.message);
 });
+
+// ── Retry-wrapped query helper ──────────────────────────────────────────────
+// Gunakan untuk query kritikal yang perlu automatic retry pada transient errors.
+// Contoh: await retryQuery('SELECT ...', [param1])
+const retryQuery = async (text, params, retryOpts = {}) => {
+  return withRetry(
+    () => pool.query(text, params),
+    {
+      maxRetries: retryOpts.maxRetries ?? 2,
+      baseDelayMs: 200,
+      name: 'DB: ' + (typeof text === 'string' ? text.substring(0, 50).replace(/\n/g, ' ') : 'query'),
+      ...retryOpts,
+    }
+  );
+};
 
 // ── Users ─────────────────────────────────────────────────────────────────────
 
@@ -1027,6 +1045,7 @@ async function getRecentlyMentionedPeople(userId, since) {
 
 module.exports = {
   pool,
+  retryQuery,
   ensureUser,
   getUserName,
   createReminder,

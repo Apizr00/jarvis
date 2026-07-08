@@ -2,6 +2,8 @@
 // Optional REST API - useful for debugging and external integrations
 const express = require('express');
 const db = require('../db');
+const { getHealthStatus, formatHealthMessage } = require('./health');
+const { getApiStatus } = require('./status');
 
 const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
 
@@ -52,14 +54,61 @@ function createApiServer() {
   app.get('/', (req, res) => {
     res.json({
       name: 'Jarvis - Personal AI Assistant',
-      version: '2.0.0',
-      routes: ['GET /', 'GET /today', 'POST /notes', 'GET /memory', 'GET /health'],
+      version: '3.0.0',
+      environment: process.env.NODE_ENV || 'development',
+      routes: [
+        'GET  /',
+        'GET  /health          — comprehensive system health (JSON)',
+        'GET  /health/text     — system health (human-readable)',
+        'GET  /status          — all API/component status',
+        'GET  /today           — today\'s events & reminders',
+        'POST /notes           — create a note',
+        'GET  /memory          — full memory dump',
+      ],
     });
   });
 
   // ── GET /health ────────────────────────────────────────────────────────────
-  app.get('/health', (req, res) => {
-    res.json({ status: 'ok', uptime: process.uptime() });
+  // Comprehensive health check: DB, Redis, memory, error metrics
+  app.get('/health', async (req, res) => {
+    try {
+      const health = await getHealthStatus();
+      const statusCode = health.status === 'healthy' ? 200 : 503;
+      res.status(statusCode).json(health);
+    } catch (err) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  // ── GET /health/text ──────────────────────────────────────────────────────
+  // Human-readable health status (for Telegram or terminal)
+  app.get('/health/text', async (req, res) => {
+    try {
+      const health = await getHealthStatus();
+      res.type('text/plain').send(formatHealthMessage(health));
+    } catch (err) {
+      res.status(500).type('text/plain').send('ERROR: ' + err.message);
+    }
+  });
+
+  // ── GET /status ───────────────────────────────────────────────────────────
+  // Full API status check (LLM providers, Telegram, Redis, etc.)
+  app.get('/status', async (req, res) => {
+    try {
+      const statuses = await getApiStatus();
+      res.json({
+        timestamp: new Date().toISOString(),
+        environment: process.env.NODE_ENV || 'development',
+        services: statuses.map(s => ({
+          name: s.name,
+          configured: s.configured,
+          connected: s.connected,
+          detail: s.detail,
+        })),
+      });
+    } catch (err) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
   });
 
   return app;
