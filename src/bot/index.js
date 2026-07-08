@@ -1245,6 +1245,105 @@ async function createBot() {
       return;
     }
 
+    // ── 🔧 View list buttons ──────────────────────────────────────────────
+    // list_reminders, get_today, list_notes, list_tasks, list_goals
+    if (data === 'list_reminders' || data === 'get_today' ||
+      data === 'list_notes' || data === 'list_tasks' || data === 'list_goals') {
+
+      const toolMap = {
+        list_reminders: 'list_reminders',
+        get_today: 'get_today',
+        list_tasks: 'list_tasks',
+        list_goals: 'list_goals',
+      };
+
+      await bot.answerCallbackQuery(callbackQuery.id);
+
+      if (data === 'list_notes') {
+        // list_notes has no dedicated tool — query DB directly
+        try {
+          const notes = await db.getRecentNotes(userId, 15);
+          if (notes.length === 0) {
+            await safeSendMessage(bot, chatId, '📝 No notes saved yet.');
+          } else {
+            let reply = '*📝 All Notes*\n\n';
+            notes.forEach((n, i) => {
+              const date = fmt(n.created_at, 'MMM D, h:mm A');
+              reply += (i + 1) + '\\. ' + escapeMd(n.content) + ' \\_(' + date + ')\\_\n\n';
+            });
+            await safeSendMessage(bot, chatId, reply.trim());
+          }
+        } catch (err) {
+          console.error('list_notes callback error:', err.message);
+          await bot.sendMessage(chatId, '❌ Could not retrieve notes.');
+        }
+        return;
+      }
+
+      // For list_reminders, get_today, list_tasks, list_goals — use executeTool
+      try {
+        const toolName = toolMap[data];
+        const result = await tools.executeTool(userId, { name: toolName, args: {} });
+        const msg = typeof result === 'object' ? result.message : result;
+        await safeSendMessage(bot, chatId, msg);
+      } catch (err) {
+        console.error(data + ' callback error:', err.message);
+        await bot.sendMessage(chatId, '❌ Could not retrieve data. Try again.');
+      }
+      return;
+    }
+
+    // ── 🔧 New-item prompt buttons ───────────────────────────────────────
+    // new_reminder, new_task, new_goal
+    if (data === 'new_reminder' || data === 'new_task' || data === 'new_goal') {
+      await bot.answerCallbackQuery(callbackQuery.id);
+
+      const prompts = {
+        new_reminder: '⏰ *New Reminder*\n\nJust tell me what you want to be reminded about. Contoh:\n• "Remind me to call mom at 3pm"\n• "Ingatkan saya minum air setiap jam 9 pagi"',
+        new_task: '📋 *New Task*\n\nDescribe your task and I\'ll create it. Contoh:\n• "Add task: Finish report by Friday, high priority"\n• "Tambah task: Kemas rumah before weekend"',
+        new_goal: '🎯 *New Goal*\n\nWhat goal do you want to set? Contoh:\n• "Set goal: Learn TypeScript by end of month"\n• "Goal: Kurus 5kg dalam 2 bulan"',
+      };
+
+      await safeSendMessage(bot, chatId, prompts[data]);
+      return;
+    }
+
+    // ── 🔧 Save search result as note ────────────────────────────────────
+    if (data.startsWith('save_search_note:')) {
+      const queryText = decodeURIComponent(data.split(':').slice(1).join(':'));
+      await bot.answerCallbackQuery(callbackQuery.id, { text: '📝 Saved!' });
+
+      try {
+        // Extract the search result text from the message (strip Markdown formatting)
+        const msgText = callbackQuery.message.text || callbackQuery.message.caption || '';
+        // Remove the "🔍 Search: ..." header line and inline keyboard note
+        const cleanText = msgText
+          .replace(/^🔍[^\n]*\n+/s, '')
+          .replace(/\n\n_🔍[^\n]*_$/, '')
+          .trim();
+
+        const noteContent = '🔍 Search: ' + queryText + '\n\n' + (cleanText || msgText);
+        await db.addNote(userId, noteContent);
+
+        // Remove the save button from the message
+        const currentKeyboard = callbackQuery.message.reply_markup?.inline_keyboard || [];
+        const newKeyboard = currentKeyboard
+          .map(row => row.filter(btn => !btn.callback_data.startsWith('save_search_note:')))
+          .filter(row => row.length > 0);
+
+        try {
+          await bot.editMessageReplyMarkup(
+            { inline_keyboard: newKeyboard },
+            { chat_id: chatId, message_id: msgId }
+          );
+        } catch { /* non-critical */ }
+      } catch (err) {
+        console.error('save_search_note callback error:', err.message);
+        await bot.sendMessage(chatId, '❌ Could not save note.');
+      }
+      return;
+    }
+
     // ── Cancel reminder (existing) ───────────────────────────────────────
     if (!data.startsWith('cancel_reminder:')) return;
 
