@@ -1,10 +1,23 @@
 # 🤖 Jarvis — Personal AI Assistant for Telegram
 
-A self-hosted AI assistant that lives in your Telegram. Talk naturally — reminders, calendar, notes, tasks, goals, web search, voice messages, and **proactive check-ins**. Powered by a **9-phase upgrade architecture** for intelligent, context-aware, observable, and safe responses.
+A self-hosted AI assistant that lives in your Telegram. Talk naturally — reminders, calendar, notes, tasks, goals, web search, voice messages, and **proactive check-ins**. Powered by a **10-phase upgrade architecture** for intelligent, context-aware, observable, and safe responses.
 
 **Stack:** Node.js · PostgreSQL · Redis (optional) · DeepSeek + MiMo · Telegram Bot API
 
 **Extensible:** 📡 Event Bus · 🤖 Agent Layer · 🔌 Plugin System
+
+## 🆕 v3.1 — What's New
+
+- **💾 State Persistence** — Bot survives restarts! Working memory, plans, lifecycle saved to DB every 5 min
+- **📊 5D Proactive Scoring** — Pattern signals from behavior detectors now influence proactive decisions
+- **🔗 Smart Follow-Up Cascade** — After add_note → offers reminder; after complete_task → suggests next; 8 rule types
+- **⏱️ Dynamic Timing** — Cooldowns adapt to bursty users (-30%) and active-task phases (+50%)
+- **🎯 Adaptive Scoring** — Learns from response rates: <20% = penalty, >60% = boost, >10 responses = diminishing returns
+- **👤 Personalized Messages** — Proactive messages include your name, current project, recent contacts
+- **🇲🇾 Better BM Intent** — 3 new moods (bosan/grateful), negation handling ("tak sedih" ≠ sad)
+- **🔍 Embedding Search** — Optional semantic memory search via DeepSeek embeddings (graceful fallback)
+- **🤖 Agent Tool Routing** — Tool calls now route through agent layer for retry + event tracking
+- **📁 Modular Bot** — `bot/index.js` split: anti-hallucination, history now separate modules
 
 ---
 
@@ -62,8 +75,19 @@ User Message
 ┌──────────────────────────────────────────────────────────┐
 │  FASA 5: Self Evaluation + Proactive Chat                 │
 │  Response quality scoring, learning tracker               │
-│  📊 OPPORTUNITY SCORING: userState + timing +             │
-│  pastBehavior + goalProximity → 0-100 decision score       │
+│  📊 5D OPPORTUNITY SCORING: userState + timing +          │
+│  pastBehavior + goalProximity + PATTERN SIGNALS → 0-100   │
+│  🔗 CASCADE: auto-suggest next action after tool exec     │
+│  🎯 ADAPTIVE: learns from response rates over time        │
+│  👤 PERSONALIZED: name, project, contacts in messages     │
+│  ⏱️  DYNAMIC: cooldowns adapt to user patterns & phase    │
+└────────────────────┬─────────────────────────────────────┘
+                     ▼
+┌──────────────────────────────────────────────────────────┐
+│  💾 STATE PERSISTENCE                                     │
+│  Auto-save every 5 min: working memory, world model,     │
+│  lifecycle, planner → bot_state DB table                  │
+│  Survives restarts — no context amnesia                   │
 └────────────────────┬─────────────────────────────────────┘
                      ▼
 ┌──────────────────────────────────────────────────────────┐
@@ -104,7 +128,12 @@ User Message
 - **🔒 Fact Lock System** — 3-tier fact classification (verified/inferred/uncertain) controls LLM assertion confidence
 - **💾 Memory Write Strategy** — Importance scoring, exponential decay, conflict resolution, old fact compression
 - **💰 LLM Cost Optimizer** — Token estimation, cost prediction, latency-aware routing, timeout budgets per tier
-- **📊 Proactive Opportunity Scoring** — 4D decision engine: user state + timing + past behavior + goal proximity
+- **📊 5D Proactive Opportunity Scoring** — userState + timing + pastBehavior + goalProximity + **patternSignals**
+- **🔗 Smart Follow-Up Cascade** — Auto-suggests next action: add_note→reminder, complete_task→next task, web_search→save note
+- **💾 State Persistence** — Bot survives restarts! Working memory, world model, plans auto-saved to DB
+- **🎯 Adaptive Scoring** — Learns from response rates; diminishing returns after 10+ responses
+- **👤 Personalized Proactive** — Messages include user name, current project, recent contacts
+- **⏱️ Dynamic Cooldowns** — Adjusts timing: -30% for bursty users, +50% during active tasks
 - **⚖️ Tool Arbitration** — Conflict detection, priority ranking, fallback chaining, dependency resolution
 - **🛡️ Anti-Hallucination** — Multi-layer validator catches fabricated actions, times, reminders, facts
 - **🔍 Pattern Recognition** — Non-LLM system detecting usage, topics, behavior, trends (zero API cost)
@@ -194,9 +223,9 @@ User Message
 
 ---
 
-## 🔬 9 Phase Upgrades
+## 🔬 10 Phase Upgrades
 
-### Phase 1-3: Core Architecture (NOW)
+### Phase 1-3: Core Architecture ✅
 
 | #   | Upgrade           | File                         | Function                                                   |
 | --- | ----------------- | ---------------------------- | ---------------------------------------------------------- |
@@ -204,7 +233,7 @@ User Message
 | 7   | **Observability** | `utils/trace.js`             | Spans, prompt/tool/memory logs, per-phase latency          |
 | 8   | **Fact Lock**     | `llm/validator.js`           | 3 tiers (verified/inferred/uncertain), assertion control   |
 
-### Phase 4-6: Memory & Engagement (SOON)
+### Phase 4-6: Memory & Engagement ✅
 
 | #   | Upgrade             | File                     | Function                                                         |
 | --- | ------------------- | ------------------------ | ---------------------------------------------------------------- |
@@ -212,13 +241,26 @@ User Message
 | 2   | **Memory Strategy** | `memory/index.js`        | Importance scoring, decay (λ per tier), compression, smart write |
 | 3   | **Scenario Tests**  | `test-scenarios.js`      | 12 user journeys, 106 assertions, MockLLM                        |
 
-### Phase 7-9: Optimization & Scale (LATER)
+### Phase 7-9: Optimization & Scale ✅
 
 | #   | Upgrade               | File                     | Function                                                         |
 | --- | --------------------- | ------------------------ | ---------------------------------------------------------------- |
 | 5   | **Cost Optimizer**    | `llm/index.js`           | Token estimation, cost prediction, latency-aware routing         |
-| 9   | **Proactive Scoring** | `executive/proactive.js` | 4D opportunity engine (0-100), engagement tracking               |
+| 9   | **Proactive Scoring** | `executive/proactive.js` | **5D** engine (0-100): +pattern signals, adaptive, personalized  |
 | 4   | **Tool Arbitration**  | `tools/arbitration.js`   | Conflict matrix, ranking, fallback chains, dependency resolution |
+
+### Phase 10: Proactivity & Persistence (v3.1) 🆕
+
+| #   | Upgrade                | File                         | Function                                                       |
+| --- | ---------------------- | ---------------------------- | -------------------------------------------------------------- |
+| 10a | **Pattern→Proactive**  | `executive/proactive.js`     | Pattern signals feed into 5D opportunity scoring               |
+| 10b | **State Persistence**  | `executive/persistence.js`   | Auto-save/load runtime state every 5 min; survive restarts     |
+| 10c | **Bot Modularization** | `bot/anti-hallucination.js`  | Split 2635-line bot into separate modules                      |
+| 10d | **Follow-Up Cascade**  | `executive/cascade.js`       | 8 configurable cascade rules: note→reminder, task→next, etc.   |
+| 10e | **Adaptive + Dynamic** | `executive/proactive.js`     | Scoring learns from rates; cooldowns adapt to user patterns    |
+| 10f | **Agent Tool Routing** | `agents/index.js`            | `dispatchToolCall()` routes tools through agent retry layer    |
+| 10g | **Intent BM Enhance**  | `executive/intent-engine.js` | 3 new moods, negation handling, expanded BM keywords           |
+| 10h | **Embedding Search**   | `memory/index.js`            | Optional DeepSeek embedding semantic search (keyword fallback) |
 
 ---
 
@@ -267,17 +309,21 @@ jarvis/
 │   │   └── builtin/
 │   │       └── jarvis-insights/ # Built-in plugin: /insights, /mood, /weekly
 │   ├── bot/
-│   │   └── index.js            # Telegram bot — all commands + message processing
-│   ├── executive/              # 🧠 5-Fasa + 9 Upgrades
+│   │   ├── index.js            # Telegram bot — message processing + all commands
+│   │   ├── anti-hallucination.js # 🛡️ Greeting + time hallucination guards
+│   │   └── history.js          # 💬 Conversation history, summarization, dedup
+│   ├── executive/              # 🧠 5-Fasa + 10 Upgrades
 │   │   ├── index.js            # Controller — orchestrates all modules
 │   │   ├── state-machine.js    # Phase 1: Explicit execution states + tracing
 │   │   ├── lifecycle.js        # Phase 6: Conversation phase manager
-│   │   ├── intent-engine.js    # Fasa 1: Advanced intent + mood + urgency
-│   │   ├── working-memory.js   # Fasa 2: Brain scratchpad
-│   │   ├── world-model.js      # Fasa 2: User state + domain awareness
-│   │   ├── planner.js          # Fasa 4: Task decomposition + dependencies
+│   │   ├── intent-engine.js    # Fasa 1: Advanced intent + mood + urgency + negation
+│   │   ├── working-memory.js   # Fasa 2: Brain scratchpad (+ persistence)
+│   │   ├── world-model.js      # Fasa 2: User state + domain awareness (+ persistence)
+│   │   ├── planner.js          # Fasa 4: Task decomposition + dependencies (+ persistence)
 │   │   ├── evaluator.js        # Fasa 5: Response quality scoring
-│   │   └── proactive.js        # Fasa 5 + Phase 9: Opportunity-scored check-ins
+│   │   ├── proactive.js        # Fasa 5: 5D opportunity-scored check-ins
+│   │   ├── cascade.js          # 🔗 Smart follow-up cascade rules (Phase 10)
+│   │   └── persistence.js      # 💾 Auto-save/restore runtime state (Phase 10)
 │   ├── llm/
 │   │   ├── index.js            # LLM Router + Phase 5: Cost/latency optimizer
 │   │   ├── shared.js           # System prompt builder + Phase 8: Fact lock rules
@@ -367,6 +413,48 @@ Autonomous task-execution units that sit **above** individual tools. While tools
 Each agent has: exponential backoff retry (configurable), timeout protection, input validation, event bus integration, and status tracking (completed/failed counts, task history).
 
 **Dispatch:** `agentRegistry.dispatch({ userId, action: 'memory:retrieve_context', params: { query: '...' } })` — automatically routes to the correct agent by namespace.
+
+**Tool Routing (v3.1):** `agentRegistry.dispatchToolCall('create_reminder', args, userId)` — routes tool calls through agent layer first for retry + event tracking; falls back to direct execution if no agent matches.
+
+---
+
+## 💾 State Persistence (v3.1)
+
+Bot now survives restarts without losing context. Every 5 minutes, critical runtime state is checkpointed to the `bot_state` database table:
+
+| State          | What's Saved                                                |
+| -------------- | ----------------------------------------------------------- |
+| Working Memory | Current goal, problem, solutions, next steps, context notes |
+| World Model    | Status, active domain, mood, interests, time patterns       |
+| Lifecycle      | Current phase, phase history, message counts                |
+| Planner        | Active plans with steps, dependencies, progress             |
+
+**Flow:** Boot → `loadAll()` hydrates all modules → `setInterval(5 min)` auto-saves → `SIGTERM` final checkpoint.
+
+---
+
+## 🔗 Smart Follow-Up Cascade (v3.1)
+
+After each tool execution, the cascade engine checks 8 configurable rules to suggest natural next actions:
+
+| Trigger               | Suggestion                                     | Priority |
+| --------------------- | ---------------------------------------------- | -------- |
+| `add_note`            | "Nak saya setkan reminder untuk note ni?"      | 8        |
+| `complete_task`       | "Next task: [title] — nak start?"              | 7        |
+| `complete_task` (all) | "🏆 All done! Nak generate reflection?"        | 9        |
+| `complete_goal`       | "🌟 Goal achieved! Next: [goal] — continue?"   | 9        |
+| `web_search`          | "💡 Nak simpan hasil search sebagai note?"     | 5        |
+| `create_reminder`     | "Nak buatkan preparation notes?" (events only) | 6        |
+| `create_plan`         | "First step: [step] — nak set reminder?"       | 7        |
+| User mentions problem | "Nak saya bantu pecahkan jadi action plan?"    | 6        |
+
+Each rule has cooldown periods and conditional checks to avoid nagging.
+
+---
+
+## 🔍 Embedding Search (v3.1 — Optional)
+
+When `DEEPSEEK_API_KEY` is configured, memory search can use semantic embeddings for better relevance matching — especially useful for BM/rojak queries where keyword matching is weak. Gracefully falls back to keyword search if embeddings fail or are unavailable.
 
 ---
 
