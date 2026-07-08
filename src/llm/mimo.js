@@ -16,29 +16,25 @@ const MIMO_URL = MIMO_BASE.endsWith('/v1')
 async function chat(userId, userMessage, conversationHistory, options = {}, prefetched = null) {
   if (!conversationHistory) conversationHistory = [];
 
-  const minimal = options.minimal === true;
   const executiveContext = options.executiveContext || '';
 
-  // Reuse pre-fetched context from llm/index.js, or fetch in parallel
+  // Reuse pre-fetched context from llm/index.js, or fetch directly.
+  // All tiers now get the same data — no more minimal/skipping.
   let facts, upcomingReminders, peopleContext;
   if (prefetched) {
     ({ facts, upcomingReminders, peopleContext } = prefetched);
-  } else if (!minimal) {
+  } else {
     [facts, upcomingReminders, peopleContext] = await Promise.all([
       memory.searchFacts(userId, userMessage),
       db.getUpcomingReminders(userId, 15),
       relationships.getPeopleContext(userId, userMessage, 5),
     ]);
     memory.recordFactAccess(userId, facts.map(f => f.key));
-  } else {
-    facts = [];
-    upcomingReminders = [];
-    peopleContext = '';
   }
 
   const systemPrompt = await buildSystemPrompt(
     userId, facts, process.env.TIMEZONE || 'UTC', upcomingReminders, peopleContext,
-    { minimal, executiveContext }
+    { tier: options.tier, executiveContext }
   );
 
   const messages = [
@@ -76,7 +72,6 @@ async function chat(userId, userMessage, conversationHistory, options = {}, pref
   console.log('[MiMo] Raw response:', rawText.slice(0, 300));
 
   return parseAndValidate(rawText, {
-    minimal,
     upcomingReminders,
     userMessage,
     facts,
@@ -92,28 +87,24 @@ async function chatStream(userId, userMessage, conversationHistory, options = {}
   if (!conversationHistory) conversationHistory = [];
   if (typeof onChunk !== 'function') onChunk = () => { };
 
-  const minimal = options.minimal === true;
   const executiveContext = options.executiveContext || '';
 
   let facts, upcomingReminders, peopleContext;
   if (prefetched) {
     ({ facts, upcomingReminders, peopleContext } = prefetched);
-  } else if (!minimal) {
+  } else {
     [facts, upcomingReminders, peopleContext] = await Promise.all([
       memory.searchFacts(userId, userMessage),
       db.getUpcomingReminders(userId, 15),
       relationships.getPeopleContext(userId, userMessage, 5),
     ]);
     memory.recordFactAccess(userId, facts.map(f => f.key));
-  } else {
-    facts = [];
-    upcomingReminders = [];
-    peopleContext = '';
+    memory.recordFactAccess(userId, facts.map(f => f.key));
   }
 
   const systemPrompt = await buildSystemPrompt(
     userId, facts, process.env.TIMEZONE || 'UTC', upcomingReminders, peopleContext,
-    { minimal, executiveContext }
+    { tier: options.tier, executiveContext }
   );
 
   const messages = [
@@ -186,7 +177,6 @@ async function chatStream(userId, userMessage, conversationHistory, options = {}
   console.log('[MiMo] Stream complete (' + rawText.length + ' chars):', rawText.slice(0, 200));
 
   return parseAndValidate(rawText, {
-    minimal,
     upcomingReminders,
     userMessage,
     facts,

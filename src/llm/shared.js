@@ -28,7 +28,7 @@ function getValidator() {
  */
 function validateParsedResponse(normalized, opts = {}) {
   const validator = getValidator();
-  const { minimal, upcomingReminders = [], userMessage = '', facts = [] } = opts;
+  const { upcomingReminders = [], userMessage = '', facts = [] } = opts;
 
   // ── Always validate cancel_reminder calls ────────────────────────────
   if (normalized.type === 'tool' && normalized.name === 'cancel_reminder') {
@@ -42,41 +42,26 @@ function validateParsedResponse(normalized, opts = {}) {
     }
   }
 
-  // ── Lightweight check for fast-tier: only catch blatant action claims ──
-  if (minimal && normalized.type === 'message') {
-    const actionCheck = validator.detectActionHallucination(normalized.content);
-    if (actionCheck.isHallucination && actionCheck.confidence >= 0.85) {
-      console.warn('[Shared] ⚠️ Fast-tier action hallucination blocked:', actionCheck.reason);
-      return {
-        result: { type: 'message', content: validator.generateFallbackResponse(userMessage) },
-        wasValidated: true,
-      };
+  // ── Full validation for all tiers ─────────────────────────────────
+  // All tiers now use the same thorough validation since data is shared.
+  const validation = validator.validateLLMResponse(normalized, {
+    timezone: process.env.TIMEZONE || 'UTC',
+    userFacts: facts,
+    upcomingReminders: upcomingReminders,
+  });
+
+  if (!validation.isValid && normalized.type === 'message') {
+    console.warn('[Shared] ⚠️ Hallucination detected:', validation.issues.join('; '));
+    if (validation.forceToolCall) {
+      console.log('[Shared] 🔄 Forcing list_reminders tool call to get accurate times');
+      return { result: { type: 'tool', name: 'list_reminders', args: {} }, wasValidated: true };
     }
-    // Fast tier: skip full validation, just do time fix later in bot layer
-    return { result: normalized, wasValidated: true };
+    const fallback = validator.generateFallbackResponse(userMessage);
+    return { result: { type: 'message', content: fallback }, wasValidated: true };
   }
 
-  // ── Full validation for medium/deep tier ─────────────────────────────
-  if (!minimal) {
-    const validation = validator.validateLLMResponse(normalized, {
-      timezone: process.env.TIMEZONE || 'UTC',
-      userFacts: facts,
-      upcomingReminders: upcomingReminders,
-    });
-
-    if (!validation.isValid && normalized.type === 'message') {
-      console.warn('[Shared] ⚠️ Hallucination detected:', validation.issues.join('; '));
-      if (validation.forceToolCall) {
-        console.log('[Shared] 🔄 Forcing list_reminders tool call to get accurate times');
-        return { result: { type: 'tool', name: 'list_reminders', args: {} }, wasValidated: true };
-      }
-      const fallback = validator.generateFallbackResponse(userMessage);
-      return { result: { type: 'message', content: fallback }, wasValidated: true };
-    }
-
-    if (validation.issues.length > 0) {
-      console.log('[Shared] Validation issues (non-critical):', validation.issues.join('; '));
-    }
+  if (validation.issues.length > 0) {
+    console.log('[Shared] Validation issues (non-critical):', validation.issues.join('; '));
   }
 
   return { result: normalized, wasValidated: true };
@@ -442,12 +427,12 @@ function normalizeLLMResponse(parsed) {
  * @param {{minimal?:boolean, executiveContext?:string}} [options]
  */
 async function buildSystemPrompt(userId, facts, timezone, reminders, peopleContext = '', options = {}) {
-  // ── Minimal mode: skip memory/reminders/people for fast-tier responses ──
-  const minimal = options.minimal === true;
+  // ── All tiers get the SAME data. Only prompt structure differs by tier. ──
   const executiveCtx = options.executiveContext || '';
 
-  // ── Determine tier for prompt sizing ──────────────────────────────────────
-  const tier = minimal ? 'fast' : (executiveCtx ? 'deep' : 'medium');
+  // ── Determine tier for prompt STRUCTURE (not data) ────────────────────────
+  // executiveContext is always present now. Use a tier hint if provided.
+  const tier = options.tier || (executiveCtx ? 'deep' : 'medium');
 
   // 🔥 In-memory prompt cache: burst messages within 15s reuse the same prompt
   // Cache key: userId + tier + 15-second time bucket
@@ -458,14 +443,12 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     return cachedPrompt.prompt;
   }
 
-  const factLines = minimal
-    ? '(skipped — fast response)'
-    : (facts.length
-      ? facts.map(f => '- ' + f.key + ': ' + f.value).join('\n')
-      : '(none yet)');
+  const factLines = facts.length
+    ? facts.map(f => '- ' + f.key + ': ' + f.value).join('\n')
+    : '(none yet)';
 
   let reminderLines = '';
-  if (!minimal && reminders && reminders.length > 0) {
+  if (reminders && reminders.length > 0) {
     reminderLines = '\nCURRENT UPCOMING REMINDERS (use these exact IDs for cancel/update):\n' +
       reminders.map(r => {
         const t = fmt(r.remind_at, 'ddd, D MMM [at] h:mm A');
@@ -474,7 +457,7 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
       }).join('\n') + '\n';
   }
 
-  const peopleSection = minimal ? '' : (peopleContext || '');
+  const peopleSection = peopleContext || '';
 
   const now = new Date();
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(now);
@@ -610,9 +593,9 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     personalityBlock +
     'Timezone: ' + timezone + ' | Today: ' + today + ' | Current time: ' + currentTime + ' | Day period: ' + timePeriod + '\n\n' +
     (executiveCtx ? executiveCtx + '\n' : '') +
-    (tier === 'fast' ? '' : 'User facts:\n' + factLines) +
-    (tier === 'fast' ? '' : peopleSection) +
-    (tier === 'fast' ? '' : reminderLines + '\n');
+    'User facts:\n' + factLines +
+    peopleSection +
+    reminderLines + '\n';
 
   // ═══════════════════════════════════════════════════════════════════════
   // SECTION 4: Language (all tiers)

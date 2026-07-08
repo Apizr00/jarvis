@@ -130,18 +130,15 @@ function selectProvider(userMessage, options = {}) {
 
 /**
  * Pre-fetch context (facts, reminders, people) ONCE for both providers.
- * Runs DB calls in parallel for speed. Skips when minimal mode is active.
+ * Runs DB calls in parallel for speed. Always fetches full context —
+ * all tiers receive the same data to prevent information loss.
  *
  * @param {string} userId
  * @param {string} userMessage
- * @param {{minimal?: boolean}} options
+ * @param {object} options
  * @returns {{facts:Array, upcomingReminders:Array, peopleContext:string}}
  */
 async function prepareContext(userId, userMessage, options = {}) {
-  if (options.minimal) {
-    return { facts: [], upcomingReminders: [], peopleContext: '' };
-  }
-
   const [facts, upcomingReminders, peopleContext] = await Promise.all([
     memory.searchFacts(userId, userMessage),
     db.getUpcomingReminders(userId, 15),
@@ -188,22 +185,18 @@ async function chat(userId, userMessage, conversationHistory, options = {}) {
       : ['ilmu', 'deepseek'];
 
   console.log('[LLM] 🎯 Routing: ' + primary + ' (reason: ' + reason + ')' +
-    (options.minimal ? ' [minimal]' : '') +
+    (options.tier ? ' [' + options.tier + ']' : '') +
     (options.executiveContext ? ' [exec]' : ''));
 
   // 🔥 Pre-fetch context ONCE (parallel DB calls) — shared by all providers
   const context = await prepareContext(userId, userMessage, options);
 
-  // ⚡ Dynamic max_tokens by intent tier — smaller = faster LLM response
-  let maxTokens = 800; // default deep
-  if (options.minimal) {
-    maxTokens = 150; // fast tier: greetings, simple Qs
-  } else if (!options.executiveContext) {
-    maxTokens = 400; // medium tier: conversation
-  }
+  // ⚡ Dynamic max_tokens by tier — smaller = faster LLM response
+  const tier = options.tier || 'medium';
+  let maxTokens = tier === 'fast' ? 300 : (tier === 'medium' ? 600 : 800);
 
   const providerOpts = {
-    minimal: options.minimal,
+    tier: options.tier,
     executiveContext: options.executiveContext,
     maxTokens,
   };
@@ -271,15 +264,16 @@ async function chatStream(userId, userMessage, conversationHistory, options = {}
   const { primary, reason } = selectProvider(userMessage, options);
 
   console.log('[LLM] 🌊 Streaming: ' + primary + ' (reason: ' + reason + ')' +
-    (options.minimal ? ' [minimal]' : '') +
+    (options.tier ? ' [' + options.tier + ']' : '') +
     (options.executiveContext ? ' [exec]' : ''));
 
   const context = await prepareContext(userId, userMessage, options);
 
+  const tier = options.tier || 'medium';
   const providerOpts = {
-    minimal: options.minimal,
+    tier: options.tier,
     executiveContext: options.executiveContext,
-    maxTokens: options.minimal ? 150 : (options.executiveContext ? 800 : 400),
+    maxTokens: tier === 'fast' ? 300 : (tier === 'medium' ? 600 : 800),
   };
 
   const providerFn = getProviderFn(primary).chatStream;

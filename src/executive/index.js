@@ -65,7 +65,11 @@ function assessNeeds(intent, userMessage) {
 
   switch (intent.tier) {
     case 'fast':
+      // Fast tier: in-memory only (instant). DB data injected via
+      // prepareContext() inside the LLM call. No self-eval/post-processing
+      // overhead for simple greetings.
       needs.worldModel = true;
+      needs.workingMemory = true;
       return needs;
 
     case 'medium':
@@ -73,6 +77,8 @@ function assessNeeds(intent, userMessage) {
       needs.relationships = true;
       needs.worldModel = true;
       needs.domains = true; // include domain context
+      needs.workingMemory = true; // FIX: show working memory for continuity
+      needs.selfEval = true;      // FIX: evaluate medium-tier responses too
 
       if (/\b(berita|news|terkini|latest|trend|cuaca|weather|saham|stock|harga|price)\b/i.test(lower)) {
         needs.internet = true;
@@ -124,13 +130,13 @@ function assessNeeds(intent, userMessage) {
  *   reason: string
  * }>}
  */
-async function decide(userId, userMessage, sm) {
+async function decide(userId, userMessage, sm, recentMessages = []) {
   // ── Step 1: Advanced intent detection (Fasa 1) ──────────────────────────
   const intentSpan = trace.startSpan('intent_detection', { userId });
   const wm = workingMemory.get(userId);
   const context = {
     workingMemory: wm,
-    recentMessages: [], // populated by bot if available
+    recentMessages, // passed from bot for history-aware escalation
   };
 
   const intent = detectIntentAdvanced(userMessage, context);
@@ -152,6 +158,45 @@ async function decide(userId, userMessage, sm) {
   if (intent.needsEscalation && intent.tier !== 'deep') {
     intent.tier = 'deep';
     intent.reason = intent.escalationReason || intent.reason;
+  }
+
+  // Escalate medium→deep when working memory has meaningful context
+  // (mid-task, goal tracking, problem solving). Casual chat stays medium
+  // for ILMU's speed advantage.
+  if (!intent.needsEscalation && wmActive && intent.tier === 'medium') {
+    const wm = workingMemory.get(userId);
+    const hasMeaningfulContext = wm && (
+      wm.currentGoal ||
+      wm.currentProblem ||
+      wm.currentPlanId ||
+      (wm.contextNotes && wm.contextNotes.length > 20)
+    );
+    if (hasMeaningfulContext) {
+      intent.tier = 'deep';
+      intent.reason = 'wm-active-with-context: ' + (wm.currentGoal || wm.currentProblem || 'ongoing conversation');
+    }
+  }
+
+  // Escalate medium→deep when user's message has tool-like intent
+  // (reminders, events, notes, search, tasks, goals). ILMU-mini is fast
+  // but weak at tool calling — DeepSeek handles tools reliably.
+  if (intent.tier === 'medium') {
+    const toolCategories = [
+      'task_reminder', 'task_event', 'task_note', 'task_memory',
+      'task_search', 'task_planning', 'task_goal', 'task_project',
+    ];
+    if (toolCategories.includes(intent.category)) {
+      intent.tier = 'deep';
+      intent.reason = 'tool-intent: ' + intent.category + ' (DeepSeek for reliable tool calling)';
+    }
+  }
+
+  // Escalate medium→deep when there's recent conversation history.
+  // ILMU-mini is fast for casual chat, but struggles with multi-turn
+  // context. If user has been chatting, DeepSeek maintains continuity.
+  if (intent.tier === 'medium' && recentMessages.length >= 2) {
+    intent.tier = 'deep';
+    intent.reason = 'has-conversation-history (' + recentMessages.length + ' recent msgs)';
   }
 
   // ── Step 3: Urgency override ───────────────────────────────────────────
@@ -202,9 +247,20 @@ async function decide(userId, userMessage, sm) {
 
 // ── 4. Context Builder ──────────────────────────────────────────────────────
 
+// Short-lived cache for exec context — burst messages within 5s reuse the
+// same context block to avoid redundant DB calls.
+const execContextCache = new Map();
+const EXEC_CACHE_TTL_MS = 5000;
+
 /**
  * Build the executive context block that gets injected into the system prompt.
- * Only includes what the decision says is needed.
+ *
+ * Performance strategy:
+ *   - Deep tier: full context with fact-lock classification (DB-heavy).
+ *   - Fast/Medium tier: in-memory only (working memory + world model).
+ *     The DB-heavy data (facts, reminders, people) is already fetched by
+ *     prepareContext() inside the LLM call — no need to duplicate here.
+ *   - Cached for 5s to handle burst messages efficiently.
  *
  * @param {string} userId
  * @param {object} decision - from decide()
@@ -213,31 +269,38 @@ async function decide(userId, userMessage, sm) {
  * @returns {Promise<string>} context block to inject
  */
 async function buildContext(userId, decision, userMessage, sm) {
-  const blocks = [];
+  // ── Check cache for burst messages ──────────────────────────────────────
+  const cacheKey = userId + '|' + decision.tier;
+  const cached = execContextCache.get(cacheKey);
+  if (cached && (Date.now() - cached.ts) < EXEC_CACHE_TTL_MS) {
+    return cached.block;
+  }
 
-  // ── Working Memory ─────────────────────────────────────────────────────
+  const blocks = [];
+  const isDeep = decision.tier === 'deep';
+
+  // ── Working Memory (in-memory, instant — all tiers) ────────────────────
   if (decision.needs.workingMemory) {
     const wmBlock = workingMemory.formatForPrompt(userId);
     if (wmBlock) blocks.push(wmBlock);
   }
 
-  // ── World Model ────────────────────────────────────────────────────────
+  // ── World Model (in-memory, instant — all tiers) ───────────────────────
   if (decision.needs.worldModel) {
     const worldBlock = formatWorldModelForPrompt(userId);
     if (worldBlock) blocks.push(worldBlock);
   }
 
-  // ── Memory Facts ───────────────────────────────────────────────────────
-  if (decision.needs.memory) {
+  // ── Memory Facts (DB-heavy — deep tier only) ───────────────────────────
+  // For fast/medium, facts are already injected via prepareContext() inside
+  // the LLM call. Skipping here avoids duplicate DB calls.
+  if (isDeep && decision.needs.memory) {
     const memSpan = trace.startSpan('memory_load', { userId });
     const facts = await memory.searchFacts(userId, userMessage);
     memory.recordFactAccess(userId, facts.map(f => f.key));
-
-    // Log memory access for observability
     trace.logMemoryAccess(userId, facts.map(f => f.key), facts.length);
 
     if (facts.length > 0) {
-      // ── Fact Lock: classify facts into tiers ──────────────────────────
       let factsBlock;
       try {
         const validator = require('../llm/validator');
@@ -259,16 +322,16 @@ async function buildContext(userId, decision, userMessage, sm) {
     }
   }
 
-  // ── Relationships ──────────────────────────────────────────────────────
-  if (decision.needs.relationships) {
+  // ── Relationships (DB-heavy — deep tier only) ──────────────────────────
+  if (isDeep && decision.needs.relationships) {
     const peopleContext = await relationships.getPeopleContext(userId, userMessage, 5);
     if (peopleContext && peopleContext.trim()) {
       blocks.push(peopleContext);
     }
   }
 
-  // ── Upcoming Reminders (only for deep tier) ────────────────────────────
-  if (decision.tier === 'deep') {
+  // ── Upcoming Reminders (DB-heavy — deep tier only) ─────────────────────
+  if (isDeep) {
     const upcomingReminders = await db.getUpcomingReminders(userId, 15);
     if (upcomingReminders.length > 0) {
       const reminderBlock = 'UPCOMING REMINDERS ────────────────\n' +
@@ -285,7 +348,19 @@ async function buildContext(userId, decision, userMessage, sm) {
     });
   }
 
-  return blocks.join('\n\n');
+  const result = blocks.join('\n\n');
+
+  // ── Cache for burst messages ──────────────────────────────────────────
+  execContextCache.set(cacheKey, { block: result, ts: Date.now() });
+  // Clean old entries periodically
+  if (execContextCache.size > 20) {
+    const cutoff = Date.now() - EXEC_CACHE_TTL_MS;
+    for (const [k, v] of execContextCache) {
+      if (v.ts < cutoff) execContextCache.delete(k);
+    }
+  }
+
+  return result;
 }
 
 // ── 5. Post-Processing Decision ─────────────────────────────────────────────
@@ -314,6 +389,10 @@ function decidePostProcessing(decision, llmResponse) {
       actions.extractFacts = true;
       actions.extractPeople = true;
       actions.updateDomains = true;
+      // FIX: Medium tier now also gets working memory updates and self-eval
+      // so that conversation continuity and quality tracking work properly.
+      actions.updateWorkingMemory = true;
+      actions.runSelfEval = true;
       break;
 
     case 'deep':

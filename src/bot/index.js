@@ -1391,7 +1391,10 @@ async function createBot() {
 
     try {
       // ── 🧠 Executive Decision ──────────────────────────────────────────
-      const decision = await executive.decide(userId, text, sm);
+      // Pass recent message history so the executive can escalate to
+      // DeepSeek when there's ongoing conversation context.
+      const recentMsgs = (getHistory(userId) || []).slice(-6).map(m => m.content);
+      const decision = await executive.decide(userId, text, sm, recentMsgs);
       console.log('[Executive] 📋 Decision: tier=' + decision.tier +
         ' | provider=' + decision.provider +
         ' | needs=' + JSON.stringify(decision.needs) +
@@ -1410,14 +1413,20 @@ async function createBot() {
         traceId,
       });
 
-      // ── Build executive context for deep tier ──────────────────────────
+      // ── Build executive context for ALL tiers ────────────────────────
+      // ALL tiers get the same data (facts, reminders, people, working
+      // memory, world model) to prevent context loss from misclassification.
+      // Only the prompt STRUCTURE differs by tier (fast=short, deep=detailed).
       const llmOptions = {};
-      if (decision.tier === 'fast') {
-        llmOptions.minimal = true; // skip memory/reminders/people
-      } else if (decision.tier === 'deep') {
-        // Inject working memory + world model into LLM context
-        llmOptions.executiveContext = await executive.buildContext(userId, decision, text, sm);
+      llmOptions.executiveContext = await executive.buildContext(userId, decision, text, sm);
+      // Pass executive's provider decision to LLM router so the most
+      // appropriate model is used for each request.
+      if (decision.provider) {
+        llmOptions.provider = decision.provider;
       }
+      // Pass tier so prompt structure stays appropriate (fast=short, deep=detailed)
+      // while ALL tiers get the same underlying data.
+      llmOptions.tier = decision.tier;
 
       // ── Inject pending edit context so LLM knows which item to edit ──
       const edit = getPendingEdit(userId);
