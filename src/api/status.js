@@ -68,7 +68,25 @@ async function getApiStatus(bot) {
     detail: tgToken ? 'Token set' : 'TELEGRAM_BOT_TOKEN missing',
   });
 
-  // ── DeepSeek (Primary LLM) ───────────────────────────────────────────────
+  // ── ILMU (Primary Fast Chat LLM) ─────────────────────────────────────────
+  const ilmuKey = process.env.ILMU_API_KEY;
+  let ilmuConnected = null;
+  if (ilmuKey) {
+    const ilmuBase = (process.env.ILMU_BASE_URL || 'https://api.ilmu.ai').replace(/\/+$/, '');
+    const ilmuUrl = ilmuBase.endsWith('/v1')
+      ? ilmuBase + '/chat/completions'
+      : ilmuBase + '/v1/chat/completions';
+    ilmuConnected = await checkChatEndpoint(ilmuUrl, ilmuKey);
+  }
+  results.push({
+    name: 'ILMU (Primary LLM)',
+    icon: '🇲🇾',
+    configured: !!ilmuKey,
+    connected: ilmuConnected,
+    detail: ilmuKey ? 'ILMU_API_KEY set (' + (process.env.ILMU_MODEL || 'ilmu-mini-v3.3') + ')' : 'ILMU_API_KEY missing',
+  });
+
+  // ── DeepSeek (Deep Reasoning LLM) ────────────────────────────────────────
   const dsKey = process.env.DEEPSEEK_API_KEY;
   let dsConnected = null;
   if (dsKey) {
@@ -107,6 +125,7 @@ async function getApiStatus(bot) {
   try {
     const { getProviderHealth } = require('../llm');
     const health = getProviderHealth();
+    const ilmuHealth = health.ilmu;
     const dsHealth = health.deepseek;
     const mimoHealth = health.mimo;
     results.push({
@@ -114,9 +133,10 @@ async function getApiStatus(bot) {
       icon: '🔀',
       configured: true,
       connected: true,
-      detail: 'DS=' + (dsHealth.inCooldown ? '🔴cooldown' : '🟢active') +
+      detail: '🇲🇾=' + (ilmuHealth.inCooldown ? '🔴cooldown' : '🟢active') +
+        ' | DS=' + (dsHealth.inCooldown ? '🔴cooldown' : '🟢active') +
         ' | MiMo=' + (mimoHealth.inCooldown ? '🔴cooldown' : '🟢active') +
-        ' | DS fails=' + dsHealth.failures + ', MiMo fails=' + mimoHealth.failures,
+        ' | ILMU fails=' + ilmuHealth.failures + ', DS fails=' + dsHealth.failures + ', MiMo fails=' + mimoHealth.failures,
       _isRouting: true,
     });
   } catch {

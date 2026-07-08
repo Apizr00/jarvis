@@ -2,16 +2,18 @@
 // LLM Router — Load balanced with automatic fallback
 //
 // Provider selection:
-//   'deepseek'   → primary DeepSeek, fallback MiMo
-//   'mimo'       → primary MiMo, fallback DeepSeek
-//   'auto'       → intent-based routing (fast/medium → MiMo, deep → DeepSeek)
-//   (default)    → same as 'auto'
+//   'ilmu'      → primary ILMU (fast BM chat), fallback MiMo → DeepSeek
+//   'deepseek'  → primary DeepSeek, fallback MiMo → ILMU
+//   'mimo'      → primary MiMo, fallback ILMU → DeepSeek
+//   'auto'      → intent-based routing (fast/medium → ILMU, deep → DeepSeek)
+//   (default)   → same as 'auto'
 //
-// Each route always has bidirectional fallback — if the chosen provider fails,
-// the other one takes over automatically.
+// Each route always has cascade fallback — if the chosen provider fails,
+// the next one takes over automatically.
 
 const deepseek = require('./deepseek');
 const mimo = require('./mimo');
+const ilmu = require('./ilmu');
 const { detectIntent } = require('./intent');
 const db = require('../db');
 const memory = require('../memory');
@@ -21,6 +23,7 @@ const relationships = require('../memory/relationships');
 // Track recent failures so we can temporarily deprioritize a flaky provider.
 
 const healthState = {
+  ilmu: { failures: 0, lastFailure: 0, cooldownUntil: 0 },
   deepseek: { failures: 0, lastFailure: 0, cooldownUntil: 0 },
   mimo: { failures: 0, lastFailure: 0, cooldownUntil: 0 },
 };
@@ -73,43 +76,56 @@ function recordFailure(provider) {
 /**
  * Determine the best provider based on options and intent.
  * @param {string} userMessage
- * @param {{provider?: 'deepseek'|'mimo'|'auto'}} options
- * @returns {{primary: 'deepseek'|'mimo', reason: string}}
+ * @param {{provider?: 'ilmu'|'deepseek'|'mimo'|'auto'}} options
+ * @returns {{primary: 'ilmu'|'deepseek'|'mimo', reason: string}}
  */
 function selectProvider(userMessage, options = {}) {
   const preferred = options.provider || 'auto';
 
-  // Explicit provider override — use it unless in cooldown
+  // Explicit provider overrides — use it unless in cooldown
+  if (preferred === 'ilmu') {
+    if (isInCooldown('ilmu')) {
+      if (!isInCooldown('mimo')) return { primary: 'mimo', reason: 'ilmu in cooldown, using mimo' };
+      return { primary: 'deepseek', reason: 'ilmu+mimo in cooldown, using deepseek' };
+    }
+    return { primary: 'ilmu', reason: 'explicit ilmu' };
+  }
+
   if (preferred === 'deepseek') {
     if (isInCooldown('deepseek')) {
-      return { primary: 'mimo', reason: 'deepseek in cooldown, using mimo' };
+      if (!isInCooldown('ilmu')) return { primary: 'ilmu', reason: 'deepseek in cooldown, using ilmu' };
+      return { primary: 'mimo', reason: 'deepseek+ilmu in cooldown, using mimo' };
     }
     return { primary: 'deepseek', reason: 'explicit deepseek' };
   }
 
   if (preferred === 'mimo') {
     if (isInCooldown('mimo')) {
-      return { primary: 'deepseek', reason: 'mimo in cooldown, using deepseek' };
+      if (!isInCooldown('ilmu')) return { primary: 'ilmu', reason: 'mimo in cooldown, using ilmu' };
+      return { primary: 'deepseek', reason: 'mimo+ilmu in cooldown, using deepseek' };
     }
     return { primary: 'mimo', reason: 'explicit mimo' };
   }
 
   // ── Auto: intent-based routing ─────────────────────────────────────────
+  //   fast/medium → ILMU mini (cheapest + best BM)
+  //   deep        → DeepSeek (best function calling)
   const intent = detectIntent(userMessage);
 
   if (intent.tier === 'deep') {
-    // Deep tasks → DeepSeek (better function calling)
     if (isInCooldown('deepseek')) {
-      return { primary: 'mimo', reason: 'deep task but deepseek in cooldown' };
+      if (!isInCooldown('mimo')) return { primary: 'mimo', reason: 'deep task but deepseek in cooldown' };
+      return { primary: 'ilmu', reason: 'deep task — deepseek+mimo in cooldown, fallback ilmu' };
     }
     return { primary: 'deepseek', reason: intent.reason };
   }
 
-  // Fast or medium → MiMo (cheaper, good enough for conversation)
-  if (isInCooldown('mimo')) {
-    return { primary: 'deepseek', reason: intent.reason + ' but mimo in cooldown' };
+  // Fast or medium → ILMU mini (cheapest, best BM)
+  if (isInCooldown('ilmu')) {
+    if (!isInCooldown('mimo')) return { primary: 'mimo', reason: intent.reason + ' but ilmu in cooldown' };
+    return { primary: 'deepseek', reason: intent.reason + ' — ilmu+mimo in cooldown' };
   }
-  return { primary: 'mimo', reason: intent.reason };
+  return { primary: 'ilmu', reason: intent.reason + ' (ilmu-mini)' };
 }
 
 /**
@@ -139,6 +155,20 @@ async function prepareContext(userId, userMessage, options = {}) {
 }
 
 /**
+ * Get the provider module by name.
+ * @param {'ilmu'|'deepseek'|'mimo'} name
+ * @returns {{chat: Function, chatStream: Function}}
+ */
+function getProviderFn(name) {
+  switch (name) {
+    case 'ilmu': return ilmu;
+    case 'deepseek': return deepseek;
+    case 'mimo': return mimo;
+    default: return ilmu; // default to cheapest
+  }
+}
+
+/**
  * Chat with the LLM.
  * Supports provider selection with automatic fallback.
  *
@@ -150,13 +180,18 @@ async function prepareContext(userId, userMessage, options = {}) {
  */
 async function chat(userId, userMessage, conversationHistory, options = {}) {
   const { primary, reason } = selectProvider(userMessage, options);
-  const fallback = primary === 'deepseek' ? 'mimo' : 'deepseek';
+  // Cascade fallback chain: ilmu → mimo → deepseek (or deepseek → ilmu → mimo)
+  const fallbackChain = primary === 'deepseek'
+    ? ['ilmu', 'mimo']
+    : primary === 'ilmu'
+      ? ['mimo', 'deepseek']
+      : ['ilmu', 'deepseek'];
 
   console.log('[LLM] 🎯 Routing: ' + primary + ' (reason: ' + reason + ')' +
     (options.minimal ? ' [minimal]' : '') +
     (options.executiveContext ? ' [exec]' : ''));
 
-  // 🔥 Pre-fetch context ONCE (parallel DB calls) — shared by both providers
+  // 🔥 Pre-fetch context ONCE (parallel DB calls) — shared by all providers
   const context = await prepareContext(userId, userMessage, options);
 
   // ⚡ Dynamic max_tokens by intent tier — smaller = faster LLM response
@@ -175,7 +210,7 @@ async function chat(userId, userMessage, conversationHistory, options = {}) {
 
   // ── Try primary provider ─────────────────────────────────────────────────
   try {
-    const providerFn = primary === 'deepseek' ? deepseek.chat : mimo.chat;
+    const providerFn = getProviderFn(primary).chat;
     const startMs = Date.now();
     const result = await providerFn(userId, userMessage, conversationHistory, providerOpts, context);
     recordLatency(primary, Date.now() - startMs);
@@ -183,25 +218,29 @@ async function chat(userId, userMessage, conversationHistory, options = {}) {
     recordSuccess(primary);
     return result;
   } catch (primaryErr) {
-    console.warn('[LLM] ⚠️  ' + primary + ' failed (' + primaryErr.message + '), trying ' + fallback + '...');
+    console.warn('[LLM] ⚠️  ' + primary + ' failed (' + primaryErr.message + '), falling back...');
     recordFailure(primary);
   }
 
-  // ── Try fallback provider (reuses same pre-fetched context!) ───────────
-  try {
-    const fallbackFn = fallback === 'deepseek' ? deepseek.chat : mimo.chat;
-    const startMs = Date.now();
-    const result = await fallbackFn(userId, userMessage, conversationHistory, providerOpts, context);
-    recordLatency(fallback, Date.now() - startMs);
-    result._provider = fallback;
-    console.log('[LLM] ✅ ' + fallback + ' fallback succeeded');
-    recordSuccess(fallback);
-    return result;
-  } catch (fallbackErr) {
-    console.error('[LLM] ❌ Both providers failed. ' + fallback + ' error:', fallbackErr.message);
-    recordFailure(fallback);
-    throw new Error('All LLM providers are unavailable. Please try again later.');
+  // ── Try fallback chain (reuses same pre-fetched context!) ──────────────
+  for (const fb of fallbackChain) {
+    try {
+      const fbFn = getProviderFn(fb).chat;
+      const startMs = Date.now();
+      const result = await fbFn(userId, userMessage, conversationHistory, providerOpts, context);
+      recordLatency(fb, Date.now() - startMs);
+      result._provider = fb;
+      console.log('[LLM] ✅ ' + fb + ' fallback succeeded');
+      recordSuccess(fb);
+      return result;
+    } catch (fbErr) {
+      console.warn('[LLM] ⚠️  ' + fb + ' fallback also failed:', fbErr.message);
+      recordFailure(fb);
+    }
   }
+
+  console.error('[LLM] ❌ All providers exhausted.');
+  throw new Error('All LLM providers are unavailable. Please try again later.');
 }
 
 /**
@@ -209,6 +248,7 @@ async function chat(userId, userMessage, conversationHistory, options = {}) {
  */
 function getProviderHealth() {
   return {
+    ilmu: { ...healthState.ilmu, inCooldown: isInCooldown('ilmu') },
     deepseek: { ...healthState.deepseek, inCooldown: isInCooldown('deepseek') },
     mimo: { ...healthState.mimo, inCooldown: isInCooldown('mimo') },
   };
@@ -242,7 +282,7 @@ async function chatStream(userId, userMessage, conversationHistory, options = {}
     maxTokens: options.minimal ? 150 : (options.executiveContext ? 800 : 400),
   };
 
-  const providerFn = primary === 'deepseek' ? deepseek.chatStream : mimo.chatStream;
+  const providerFn = getProviderFn(primary).chatStream;
 
   try {
     const result = await providerFn(userId, userMessage, conversationHistory, providerOpts, context, onChunk);
@@ -253,29 +293,43 @@ async function chatStream(userId, userMessage, conversationHistory, options = {}
     console.warn('[LLM] ⚠️  ' + primary + ' stream failed (' + err.message + '), trying fallback...');
     recordFailure(primary);
 
-    // Fall back to non-streaming
-    const fallback = primary === 'deepseek' ? 'mimo' : 'deepseek';
-    try {
-      const fallbackFn = fallback === 'deepseek' ? deepseek.chat : mimo.chat;
-      const result = await fallbackFn(userId, userMessage, conversationHistory, providerOpts, context);
-      result._provider = fallback;
-      console.log('[LLM] ✅ ' + fallback + ' fallback succeeded');
-      recordSuccess(fallback);
-      return result;
-    } catch (fallbackErr) {
-      console.error('[LLM] ❌ Both providers failed:', fallbackErr.message);
-      recordFailure(fallback);
-      throw new Error('All LLM providers are unavailable.');
+    // Fall back to non-streaming with cascade
+    const fallbackChain = primary === 'deepseek'
+      ? ['ilmu', 'mimo']
+      : primary === 'ilmu'
+        ? ['mimo', 'deepseek']
+        : ['ilmu', 'deepseek'];
+
+    for (const fb of fallbackChain) {
+      try {
+        const fbFn = getProviderFn(fb).chat;
+        const result = await fbFn(userId, userMessage, conversationHistory, providerOpts, context);
+        result._provider = fb;
+        console.log('[LLM] ✅ ' + fb + ' fallback succeeded');
+        recordSuccess(fb);
+        return result;
+      } catch (fbErr) {
+        console.warn('[LLM] ⚠️  ' + fb + ' fallback also failed:', fbErr.message);
+        recordFailure(fb);
+      }
     }
+
+    console.error('[LLM] ❌ All providers exhausted on stream fallback.');
+    throw new Error('All LLM providers are unavailable.');
   }
 }
 
-/** Force MiMo (for extraction, reflection, casual tasks). Falls back to DeepSeek. */
+/** Force ILMU (for casual chat, BM conversations). Falls back MiMo → DeepSeek. */
+async function chatIlmu(userId, userMessage, conversationHistory) {
+  return chat(userId, userMessage, conversationHistory, { provider: 'ilmu' });
+}
+
+/** Force MiMo (for extraction, reflection, casual tasks). Falls back ILMU → DeepSeek. */
 async function chatMimo(userId, userMessage, conversationHistory) {
   return chat(userId, userMessage, conversationHistory, { provider: 'mimo' });
 }
 
-/** Force DeepSeek (for tool execution, planning). Falls back to MiMo. */
+/** Force DeepSeek (for tool execution, planning). Falls back ILMU → MiMo. */
 async function chatDeepseek(userId, userMessage, conversationHistory) {
   return chat(userId, userMessage, conversationHistory, { provider: 'deepseek' });
 }
@@ -357,10 +411,11 @@ function estimateCost(userMessage, conversationHistory, systemPrompt, provider, 
   // Output tokens (use maxTokens as ceiling)
   const outputTokens = Math.min(maxTokens || 800, 800);
 
-  // Cost per 1M tokens (approximate, as of 2026)
+  // Cost per 1M tokens (approximate, as of 2026, converted to USD)
   const pricing = {
-    deepseek: { input: 0.27, output: 1.10 },  // DeepSeek V3 pricing
-    mimo: { input: 0.15, output: 0.60 },       // MiMo estimated pricing
+    ilmu: { input: 0.05, output: 0.27 },        // ILMU mini ~RM 0.20/1.20 → ~$0.05/0.27
+    deepseek: { input: 0.27, output: 1.10 },     // DeepSeek V3 pricing
+    mimo: { input: 0.15, output: 0.60 },          // MiMo estimated pricing
   };
 
   const p = pricing[provider] || pricing.mimo;
@@ -409,52 +464,61 @@ function selectProviderOptimized(userMessage, options = {}) {
   const intent = detectIntent(userMessage);
   const tier = intent.tier;
 
+  const ilmuLatency = getLatencyStats('ilmu');
   const deepseekLatency = getLatencyStats('deepseek');
   const mimoLatency = getLatencyStats('mimo');
 
-  // ── Fast tier: prefer faster provider ──────────────────────────────────
+  // ── Fast tier: prefer ILMU mini (cheapest, best BM) ────────────────────
   if (tier === 'fast') {
-    // If MiMo is known to be fast and available, use it
-    if (!isInCooldown('mimo') && mimoLatency.avgMs > 0 && deepseekLatency.avgMs > 0) {
-      if (mimoLatency.avgMs < deepseekLatency.avgMs) {
-        return { primary: 'mimo', reason: 'fast tier — mimo is faster (' + mimoLatency.avgMs + 'ms vs ' + deepseekLatency.avgMs + 'ms)', estimatedCostUSD: 0 };
-      }
+    if (!isInCooldown('ilmu')) {
+      return { primary: 'ilmu', reason: 'fast tier — ilmu-mini (cheapest)', estimatedCostUSD: 0 };
     }
-    // Default: MiMo for fast (cheaper)
     if (!isInCooldown('mimo')) {
-      return { primary: 'mimo', reason: 'fast tier — cheaper provider', estimatedCostUSD: 0 };
+      return { primary: 'mimo', reason: 'fast tier — ilmu in cooldown, fallback mimo', estimatedCostUSD: 0 };
     }
-    return { primary: 'deepseek', reason: 'fast tier — mimo in cooldown', estimatedCostUSD: 0 };
+    return { primary: 'deepseek', reason: 'fast tier — ilmu+mimo in cooldown', estimatedCostUSD: 0 };
   }
 
   // ── Medium tier: cost-aware selection ──────────────────────────────────
   if (tier === 'medium') {
-    // If MiMo latency is acceptable (< 5s avg), use it (cheaper)
+    // ILMU mini is cheapest, use if available and latency acceptable
+    if (!isInCooldown('ilmu') && (ilmuLatency.avgMs === 0 || ilmuLatency.avgMs < 5000)) {
+      return { primary: 'ilmu', reason: 'medium tier — ilmu-mini cost-effective (' + (ilmuLatency.avgMs || '?') + 'ms avg)', estimatedCostUSD: 0 };
+    }
+    // Fallback to MiMo
     if (!isInCooldown('mimo') && (mimoLatency.avgMs === 0 || mimoLatency.avgMs < 5000)) {
-      return { primary: 'mimo', reason: 'medium tier — mimo cost-effective (' + (mimoLatency.avgMs || '?') + 'ms avg)', estimatedCostUSD: 0 };
+      return { primary: 'mimo', reason: 'medium tier — mimo (ilmu slow/cooldown)', estimatedCostUSD: 0 };
     }
-    // MiMo too slow or in cooldown → DeepSeek
+    // Last resort DeepSeek
     if (!isInCooldown('deepseek')) {
-      return { primary: 'deepseek', reason: 'medium tier — mimo too slow/in cooldown', estimatedCostUSD: 0 };
+      return { primary: 'deepseek', reason: 'medium tier — ilmu+mimo unavailable', estimatedCostUSD: 0 };
     }
-    return { primary: 'mimo', reason: 'medium tier — deepseek in cooldown', estimatedCostUSD: 0 };
+    return { primary: 'ilmu', reason: 'medium tier — all others in cooldown', estimatedCostUSD: 0 };
   }
 
   // ── Deep tier: prefer strongest model ──────────────────────────────────
   if (!isInCooldown('deepseek')) {
     return { primary: 'deepseek', reason: 'deep tier — strongest model', estimatedCostUSD: 0 };
   }
-  return { primary: 'mimo', reason: 'deep tier — deepseek in cooldown, fallback', estimatedCostUSD: 0 };
+  if (!isInCooldown('mimo')) {
+    return { primary: 'mimo', reason: 'deep tier — deepseek in cooldown', estimatedCostUSD: 0 };
+  }
+  return { primary: 'ilmu', reason: 'deep tier — deepseek+mimo in cooldown, fallback ilmu', estimatedCostUSD: 0 };
 }
 
 /**
  * Get a summary of LLM usage stats for /status.
  */
 function getUsageStats() {
+  const il = getLatencyStats('ilmu');
   const ds = getLatencyStats('deepseek');
   const mm = getLatencyStats('mimo');
 
   return {
+    ilmu: {
+      latency: il,
+      health: { ...healthState.ilmu, inCooldown: isInCooldown('ilmu') },
+    },
     deepseek: {
       latency: ds,
       health: { ...healthState.deepseek, inCooldown: isInCooldown('deepseek') },
@@ -463,12 +527,12 @@ function getUsageStats() {
       latency: mm,
       health: { ...healthState.mimo, inCooldown: isInCooldown('mimo') },
     },
-    totalCalls: (ds.count || 0) + (mm.count || 0),
+    totalCalls: (il.count || 0) + (ds.count || 0) + (mm.count || 0),
   };
 }
 
 module.exports = {
-  chat, chatStream, chatMimo, chatDeepseek, detectIntent, getProviderHealth,
+  chat, chatStream, chatIlmu, chatMimo, chatDeepseek, detectIntent, getProviderHealth,
   // Cost + Latency optimizer
   estimateTokens,
   estimateCost,
