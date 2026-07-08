@@ -150,15 +150,37 @@ function fixHallucinatedTime(text) {
       /\b(now|sekarang|it'?s?\s+now|currently|masa\s+sekarang)\b/i.test(prefix) ||
       /^(it'?s?|is|now|already)\s*$/i.test(prefix);
 
+    // 🔥 Enhanced future context detection — check broader surrounding text
+    const before80 = text.substring(Math.max(0, match.index - 80), match.index).toLowerCase();
+    const after50 = text.substring(match.index, match.index + 50).toLowerCase();
+
+    const futureKeywords = /\b(?:at|nanti|remind|akan|pada|around|about|by|before|until|hingga|sampai|dalam|lagi|next|esok|tomorrow|lusa|minggu|bulan|ingatkan|remind(?:er)?|event|jadual|schedule|meeting|set(?:kan)?|buat(?:kan)?|create|add|tambah|balik\s*kerja|pulang|keluar|masuk|kelas|appointment|temujanji|nanti\s*(?:pukul|jam|kul)|pada\s*(?:pukul|jam|kul)|dalam\s*\d+\s*(?:minit|jam|hari))\b/i;
+
     const isFutureContext =
-      /\b(at|nanti|remind|akan|pada|around|about|by|before|until|hingga|sampai|dalam|lagi|next|esok|tomorrow|lusa|minggu|bulan)\b/i.test(prefixLower) ||
+      futureKeywords.test(prefixLower) ||
       /\b(?:ingatkan|remind(?:er)?|event|jadual|schedule|meeting)\b/i.test(fullMatch);
 
     const isPastContext =
-      /\b(tadi|was|earlier|semalam|kelmarin|yesterday|last)\b/i.test(prefixLower);
+      /\b(tadi|was|earlier|semalam|kelmarin|yesterday|last|baru\s*(?:ni|tadi|saja)|sebentar\s*tadi)\b/i.test(prefixLower);
 
     if (isFutureContext || isPastContext) {
       console.log('[AntiHalluc] ⏰ Skipping time fix — looks like future/past reference: "' + fullMatch + '" (diff=' + diffMins + 'min)');
+      continue;
+    }
+
+    // Check broader 80-char context for future/past
+    if (futureKeywords.test(before80)) {
+      console.log('[AntiHalluc] ⏰ Skipping time fix — broader context suggests future reference: "' + fullMatch + '"');
+      continue;
+    }
+    if (/\b(?:tadi|was|semalam|yesterday|baru\s*(?:ni|tadi))\b/i.test(before80)) {
+      console.log('[AntiHalluc] ⏰ Skipping time fix — broader context suggests past reference: "' + fullMatch + '"');
+      continue;
+    }
+
+    // Check after-context too (e.g., "pukul 5:30 nanti")
+    if (futureKeywords.test(after50)) {
+      console.log('[AntiHalluc] ⏰ Skipping time fix — after-context suggests future reference: "' + fullMatch + '"');
       continue;
     }
 

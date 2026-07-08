@@ -187,27 +187,37 @@ function detectTimeHallucination(content, timezone = 'UTC') {
       const prefix = (match[1] || '').toLowerCase();
       const fullMatch = match[0];
 
-      // Future-reference prefixes
-      const isFutureContext =
-        /\b(at|nanti|remind|akan|pada|around|about|by|before|until|hingga|sampai|dalam|lagi|next|esok|tomorrow|lusa|minggu|bulan)\b/i.test(prefix) ||
-        /\b(?:ingatkan|remind(?:er)?|event|jadual|schedule|meeting)\b/i.test(fullMatch);
+      // ── Check broader context (80 chars before) for future/past indicators ──
+      const before = content.substring(Math.max(0, match.index - 80), match.index).toLowerCase();
 
-      // Past-reference prefixes
-      const isPastContext =
-        /\b(tadi|was|earlier|semalam|kelmarin|yesterday|last)\b/i.test(prefix);
+      // Future-reference keywords — any of these in the 80-char window means skip
+      const futureKeywords = /\b(?:at|nanti|remind|akan|pada|around|about|by|before|until|hingga|sampai|dalam|lagi|next|esok|tomorrow|lusa|minggu|bulan|ingatkan|remind(?:er)?|event|jadual|schedule|meeting|set(?:kan)?|buat(?:kan)?|create|add|tambah|balik\s*kerja|pulang|keluar|masuk|kelas|meeting|appointment|temujanji|nanti\s*(pukul|jam|kul)|pada\s*(pukul|jam|kul)|dalam\s*\d+\s*(minit|jam|hari))\b/i;
+
+      // Past-reference keywords
+      const pastKeywords = /\b(?:tadi|was|earlier|semalam|kelmarin|yesterday|last|baru\s*(?:ni|tadi|saja)|sebentar\s*tadi)\b/i;
+
+      // Check prefix for future/past
+      const isFutureContext = futureKeywords.test(prefix) || futureKeywords.test(fullMatch);
+      const isPastContext = pastKeywords.test(prefix);
 
       if (isFutureContext || isPastContext) {
         // Skip — this is a future/past event time, not a current time hallucination
         continue;
       }
 
-      // For ambiguous cases, check broader context
-      const before = content.substring(Math.max(0, match.index - 40), match.index);
-      if (/(?:nanti|akan|remind|ingatkan|at\s*$|pada\s*$|esok|tomorrow)/i.test(before)) {
-        continue; // future reference
+      // For ambiguous cases, check the broader 80-char before context
+      if (futureKeywords.test(before)) {
+        continue; // future reference detected in surrounding text
       }
-      if (/(?:tadi|was|semalam|yesterday)/i.test(before)) {
-        continue; // past reference
+      if (pastKeywords.test(before)) {
+        continue; // past reference detected in surrounding text
+      }
+
+      // ── Additional guard: if the message is clearly a CONFIRMATION of setting
+      // a future reminder, don't flag the time ──
+      const afterContext = content.substring(match.index, match.index + 60).toLowerCase();
+      if (/(?:nanti|akan|ingatkan|remind|set|dah\s*set|dah\s*create)/i.test(afterContext)) {
+        continue;
       }
 
       wrongTimes.push(match[0]);
@@ -505,6 +515,46 @@ function detectReminderFabrication(content, upcomingReminders = []) {
     fabricatedReminders,
   };
 }
+/**
+ * Detect if the user message is asking to CREATE/SET something (reminder, event, note).
+ * Used to prevent the validator from forcing list_reminders when user wants to create.
+ */
+function detectUserCreateIntent(userMessage) {
+  if (!userMessage) return null;
+  const lower = userMessage.toLowerCase();
+
+  // ── User wants to CREATE a reminder ──
+  // Must have active creation verb + reminder context, not just asking about reminders
+  if (/(?:set|buat|create|add|tambah)\s*(?:kan|lah)?\s*(?:reminder|peringatan|alarm|aku|saya|i|me)?\b/i.test(lower) ||
+    /\b(?:ingatkan|remind)\s+(?:aku|saya|me|i)\b/i.test(lower) ||
+    /\bset\s*(?:kan|lah)?\s+(?:reminder|peringatan)?\b/i.test(lower)) {
+    // Ensure it's NOT asking about existing reminders (list/show/check patterns)
+    if (!/\b(?:apa|list|show|senarai|tunjuk|check|semak|lihat|tengok)\s+(?:reminder|peringatan|schedule|jadual)\b/i.test(lower)) {
+      return 'create_reminder';
+    }
+  }
+
+  // ── User wants to CREATE an event ──
+  if (/(?:set|buat|create|add|tambah|masuk)\s*(?:kan|lah)?\s*(?:event|jadual|schedule|kalendar|calendar|meeting|temujanji)/i.test(lower) ||
+    /\b(?:jadualkan|schedule)\b/i.test(lower)) {
+    return 'create_event';
+  }
+
+  // ── User wants to CREATE a note ──
+  if (/(?:simpan|save|tulis|catat|note|nota|rekod)\s*(?:kan|lah)?\s*(?:nota|note|fact|fakta)?/i.test(lower) ||
+    /\b(?:notakan|catatkan|simpankan)\b/i.test(lower)) {
+    return 'add_note';
+  }
+
+  // ── User wants to SEARCH ──
+  if (/(?:cari|search|google|check|semak|tengok)\s*(?:kan|lah)?\s*(?:dalam|online|internet|web|untuk|tentang|about)?/i.test(lower) ||
+    /\b(?:searchkan|carikan|checkkan)\b/i.test(lower)) {
+    return 'web_search';
+  }
+
+  return null;
+}
+
 function validateLLMResponse(llmResponse, context = {}) {
   const issues = [];
   let isValid = true;
@@ -572,10 +622,36 @@ function validateLLMResponse(llmResponse, context = {}) {
     }
   }
 
-  // If reminder fabrication detected, suggest forcing list_reminders tool
-  const forceToolCall = !isValid && issues.some(i => i.includes('reminder fabrication'))
-    ? { name: 'list_reminders', args: {} }
-    : null;
+  // ── Smart forceToolCall: match user intent instead of blindly forcing list_reminders ──
+  let forceToolCall = null;
+
+  if (!isValid) {
+    const userIntent = detectUserCreateIntent(context.userMessage || '');
+
+    if (issues.some(i => i.includes('reminder fabrication'))) {
+      // If user was trying to CREATE a reminder, force create_reminder NOT list_reminders
+      if (userIntent === 'create_reminder') {
+        console.log('[Validator] 🎯 User wants to CREATE reminder — forcing create_reminder, not list_reminders');
+        forceToolCall = { name: 'create_reminder', args: {} }; // LLM will need to fill args
+      } else {
+        // Only force list_reminders if user was NOT trying to create something
+        forceToolCall = { name: 'list_reminders', args: {} };
+      }
+    } else if (issues.some(i => i.includes('Action hallucination'))) {
+      // If user wanted to create something specific, force that tool
+      if (userIntent === 'create_reminder') {
+        console.log('[Validator] 🎯 Action hallucination on create_reminder intent — forcing create_reminder');
+        forceToolCall = { name: 'create_reminder', args: {} };
+      } else if (userIntent === 'create_event') {
+        forceToolCall = { name: 'create_event', args: {} };
+      } else if (userIntent === 'add_note') {
+        forceToolCall = { name: 'add_note', args: {} };
+      } else if (userIntent === 'web_search') {
+        forceToolCall = { name: 'web_search', args: {} };
+      }
+      // If no specific intent matched, DON'T force a tool — let the fallback message handle it
+    }
+  }
 
   return { isValid, issues, forceToolCall };
 }
@@ -589,10 +665,22 @@ function validateLLMResponse(llmResponse, context = {}) {
 function generateFallbackResponse(userMessage) {
   const lower = userMessage.toLowerCase();
 
+  // ── If user is trying to CREATE a reminder, don't show the list ──
+  const createIntent = detectUserCreateIntent(userMessage);
+  if (createIntent === 'create_reminder') {
+    return 'Maaf, saya tak dapat proses reminder tu. Boleh cuba lagi? Contoh: "Ingatkan saya beli barang pukul 6:00 ptg"';
+  }
+  if (createIntent === 'create_event') {
+    return 'Maaf, saya tak dapat proses event tu. Boleh cuba lagi dengan format yang lebih jelas?';
+  }
+  if (createIntent === 'add_note') {
+    return 'Maaf, saya tak dapat simpan nota tu. Boleh cuba lagi?';
+  }
+
   // If asking about reminders/reminder times → trigger list_reminders
-  // Narrowed: only match when user is clearly asking about reminder-related things
-  if (lower.includes('remind') || lower.includes('peringatan') || lower.includes('ingatkan') ||
-    (lower.includes('#') && /\d+/.test(lower))) {
+  // Narrowed: only match when user is clearly asking ABOUT existing reminders
+  if (/\b(?:list|show|senarai|apa|tunjuk|check|semak)\s*(?:reminder|peringatan|schedule|jadual)/i.test(lower) ||
+    /\b(?:reminder\s*(?:saya|aku|ada|apa)|peringatan\s*(?:saya|aku|ada|apa)|upcoming)/i.test(lower)) {
     return 'Let me check your reminders for accurate times...';
   }
 
@@ -613,14 +701,14 @@ function generateFallbackResponse(userMessage) {
     return 'It\'s ' + hour12 + ':' + minStr + ' ' + period + ' now.';
   }
 
-  // If trying to create/set something
+  // If trying to create/set something — guide user to be more specific
   if (lower.includes('remind') || lower.includes('ingatkan') ||
     (lower.includes('set') && (lower.includes('reminder') || lower.includes('event') || lower.includes('task')))) {
-    return 'I need to confirm a few details first. What would you like me to do?';
+    return 'Saya perlukan masa yang spesifik untuk set reminder. Contoh: "Ingatkan saya meeting pukul 3:00 ptg"';
   }
 
   // Generic safe fallback
-  return 'I want to make sure I understand correctly. Could you clarify what you need?';
+  return 'Saya nak pastikan saya faham betul-betul. Boleh jelaskan apa yang awak nak?';
 }
 
 /**
@@ -927,6 +1015,7 @@ module.exports = {
   detectTimeHallucination,
   detectFactHallucination,
   detectReminderFabrication,
+  detectUserCreateIntent,
   validateLLMResponse,
   generateFallbackResponse,
   validateCancelReminder,
