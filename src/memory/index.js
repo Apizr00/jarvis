@@ -1007,6 +1007,160 @@ async function writeFactWithStrategy(userId, key, value, options = {}) {
   return { action: 'conflict', reason: resolution.reason };
 }
 
+// ── Embedding-Based Semantic Search (Item #10) ─────────────────────────────
+// Optional enhancement: uses DeepSeek embedding API for semantic similarity.
+// Falls back to keyword search when embeddings are unavailable.
+// This is a hybrid approach — keyword first (fast), embedding when needed.
+
+/**
+ * Perform an embedding-based semantic search on memory facts.
+ * Uses DeepSeek's embedding endpoint if DEEPSEEK_API_KEY is configured.
+ * Falls back gracefully to keyword-only search.
+ *
+ * @param {string} userId
+ * @param {string} query - user's message/question
+ * @param {object} [options]
+ * @param {number} [options.limit=8] - max facts to return
+ * @param {boolean} [options.useEmbeddings=true] - whether to attempt embedding search
+ * @returns {Promise<Array>} ranked facts
+ */
+async function semanticSearch(userId, query, options = {}) {
+  const limit = options.limit || 8;
+  const useEmbeddings = options.useEmbeddings !== false;
+
+  // Get all facts first (we need them for both keyword and embedding search)
+  const allFacts = await db.getAllFacts(userId);
+  if (!allFacts || allFacts.length === 0) return [];
+
+  // ── Attempt embedding-based search ────────────────────────────────────
+  if (useEmbeddings && process.env.DEEPSEEK_API_KEY && allFacts.length > 3) {
+    try {
+      // Build fact corpus for embedding comparison
+      const factTexts = allFacts.map(f => f.key + ': ' + f.value);
+
+      // Get embedding for the query using DeepSeek API
+      const queryEmbedding = await getEmbedding(query);
+
+      if (queryEmbedding && queryEmbedding.length > 0) {
+        // Get embeddings for facts (batch if possible)
+        const factEmbeddings = await getEmbeddingsBatch(factTexts);
+
+        if (factEmbeddings && factEmbeddings.length === factTexts.length) {
+          // Calculate cosine similarity and rank
+          const ranked = allFacts.map((fact, i) => ({
+            fact,
+            score: cosineSimilarity(queryEmbedding, factEmbeddings[i]),
+          }));
+
+          ranked.sort((a, b) => b.score - a.score);
+
+          console.log('[Memory] 🔍 Embedding search: top score=' + ranked[0]?.score?.toFixed(3) +
+            ' for "' + query.slice(0, 50) + '"');
+
+          return ranked.slice(0, limit).map(r => ({
+            ...r.fact,
+            relevance: Math.round(r.score * 100) / 100,
+            searchMethod: 'embedding',
+          }));
+        }
+      }
+    } catch (err) {
+      console.warn('[Memory] Embedding search failed, falling back to keyword:', err.message);
+    }
+  }
+
+  // ── Fallback: keyword-based search ────────────────────────────────────
+  return searchFacts(userId, query, limit);
+}
+
+/**
+ * Get embedding vector for a single text using DeepSeek API.
+ * @param {string} text
+ * @returns {Promise<number[]|null>}
+ */
+async function getEmbedding(text) {
+  const apiKey = process.env.DEEPSEEK_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    const response = await fetch('https://api.deepseek.com/v1/embeddings', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + apiKey,
+      },
+      body: JSON.stringify({
+        model: 'deepseek-embedding',
+        input: text,
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data?.data?.[0]?.embedding || null;
+  } catch {
+    return null; // Silently fall back
+  }
+}
+
+/**
+ * Get embeddings for multiple texts (batch or sequential).
+ * @param {string[]} texts
+ * @returns {Promise<Array<number[]>|null>}
+ */
+async function getEmbeddingsBatch(texts) {
+  const apiKey = process.env.DEEPSEEK_API_KEY;
+  if (!apiKey) return null;
+
+  // Try batch endpoint first
+  try {
+    const response = await fetch('https://api.deepseek.com/v1/embeddings', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + apiKey,
+      },
+      body: JSON.stringify({
+        model: 'deepseek-embedding',
+        input: texts,
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      if (data?.data?.length === texts.length) {
+        return data.data.map(d => d.embedding);
+      }
+    }
+  } catch { /* try sequential */ }
+
+  // Fallback: sequential embedding requests
+  const embeddings = [];
+  for (const text of texts) {
+    const emb = await getEmbedding(text);
+    if (!emb) return null;
+    embeddings.push(emb);
+  }
+  return embeddings;
+}
+
+/**
+ * Calculate cosine similarity between two vectors.
+ */
+function cosineSimilarity(a, b) {
+  if (!a || !b || a.length !== b.length) return 0;
+  let dotProduct = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dotProduct += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom === 0 ? 0 : dotProduct / denom;
+}
+
 module.exports = {
   searchFacts,
   extractFactsFromChat,
@@ -1031,4 +1185,6 @@ module.exports = {
   memoryDecayWeight,
   compressOldFacts,
   writeFactWithStrategy,
+  // Embedding search (Item #10)
+  semanticSearch,
 };

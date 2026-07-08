@@ -373,4 +373,47 @@ module.exports = {
   isPlanStalled,
   getStalledPlans,
   suggestNextAction,
+  // Persistence
+  serialize,
+  hydrate,
 };
+
+/**
+ * Serialize planner state for DB persistence.
+ * Only saves active plans (completed/abandoned are historical).
+ * @param {string} userId
+ * @returns {object|null}
+ */
+function serialize(userId) {
+  const plans = planStore.get(userId);
+  if (!plans || plans.length === 0) return null;
+
+  // Only persist active plans
+  const activePlans = plans.filter(p => p.status === 'active');
+  if (activePlans.length === 0) return null;
+
+  return {
+    plans: activePlans,
+    totalPlans: plans.length,
+    activeCount: activePlans.length,
+  };
+}
+
+/**
+ * Hydrate planner state from persisted DB data.
+ * @param {string} userId
+ * @param {object} data
+ */
+function hydrate(userId, data) {
+  if (!data || !data.plans || data.plans.length === 0) return;
+
+  const existingPlans = planStore.get(userId) || [];
+
+  // Keep historical (completed/abandoned) plans, replace active ones
+  const historicalPlans = existingPlans.filter(p => p.status !== 'active');
+  const restoredPlans = data.plans.filter(p => p.status === 'active');
+
+  planStore.set(userId, [...historicalPlans, ...restoredPlans]);
+
+  console.log('[Planner] 💧 Hydrated from DB (' + restoredPlans.length + ' active plans restored, ' + historicalPlans.length + ' historical kept)');
+}

@@ -13,6 +13,7 @@ const { formatFeaturesCompact } = require('./api/features');
 const { eventBus, EVENTS } = require('./events');
 const { agentRegistry } = require('./agents');
 const { pluginRegistry } = require('./plugins');
+const persistence = require('./executive/persistence');
 
 // ── Global Error Handlers (uncaught exceptions & unhandled rejections) ────────
 process.on('uncaughtException', (err) => {
@@ -77,11 +78,27 @@ async function main() {
   // Connect Redis
   await redis.connect();
 
+  // ── Initialize Persistence Layer ───────────────────────────────────────
+  // Wire up executive modules so the persistence orchestrator can call
+  // their serialize/hydrate methods.
+  const workingMemory = require('./executive/working-memory');
+  const worldModel = require('./executive/world-model');
+  const lifecycle = require('./executive/lifecycle');
+  const planner = require('./executive/planner');
+  persistence.initModules(workingMemory, worldModel, lifecycle, planner);
+
+  // ── Load persisted state from DB ───────────────────────────────────────
+  const ownerId = process.env.TELEGRAM_OWNER_ID;
+  await persistence.loadAll(ownerId);
+
   // Start Telegram bot
   const bot = await createBot();
 
   // Start reminder scheduler (needs the bot instance to send messages)
   await startScheduler(bot);
+
+  // ── Start auto-save (checkpoints every 5 minutes) ──────────────────────
+  persistence.startAutoSave(ownerId);
 
   // Start REST API
   const app = createApiServer();
@@ -146,6 +163,7 @@ async function main() {
     logger.info('Shutting down Jarvis...', { signal, uptime: process.uptime() });
     console.log('\n👋 Shutting down Jarvis...');
     eventBus.emitSync(EVENTS.SYSTEM_SHUTDOWN, { reason: signal });
+    await persistence.stopAutoSave(ownerId); // final checkpoint
     await pluginRegistry.shutdown();
     await agentRegistry.shutdown();
     eventBus.stop();

@@ -21,423 +21,38 @@ const patterns = require('../patterns');
 const executive = require('../executive');
 const stateMachine = require('../executive/state-machine');
 const lifecycle = require('../executive/lifecycle');
+const cascade = require('../executive/cascade');
 const trace = require('../utils/trace');
 const { invalidateConfigCache } = require('../llm/shared');
 const { eventBus, EVENTS } = require('../events');
 const { pluginRegistry } = require('../plugins');
 const { agentRegistry } = require('../agents');
+const { fixHallucinatedGreeting, fixHallucinatedTime } = require('./anti-hallucination');
+const historyModule = require('./history');
 
 const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
 
-// ── Greeting hallucination guard ──────────────────────────────────────────────
-// LLMs often default to "Selamat pagi" regardless of actual time.
-// This function detects and fixes wrong time-of-day greetings in the bot's reply.
-function fixHallucinatedGreeting(text) {
-  if (typeof text !== 'string' || text.length === 0) return text;
-
-  // ⚡ Early exit: skip if no greeting keywords
-  if (!/(selamat\s*(pagi|petang|malam|tengah\s*hari))/i.test(text)) return text;
-
-  const tz = process.env.TIMEZONE || 'UTC';
-  const now = new Date();
-  const hour = parseInt(new Intl.DateTimeFormat('en', { timeZone: tz, hour: 'numeric', hour12: false }).format(now), 10);
-
-  // Determine the correct time period
-  let correctPeriod;
-  if (hour >= 5 && hour < 12) {
-    correctPeriod = 'pagi';
-  } else if (hour >= 12 && hour < 14) {
-    correctPeriod = 'tengah hari';
-  } else if (hour >= 14 && hour < 19) {
-    correctPeriod = 'petang';
-  } else {
-    correctPeriod = 'malam';
-  }
-
-  // Patterns for each greeting, with the opening "Selamat X" pattern
-  // We only fix the OPENING greeting (start of message or after punctuation/newline)
-  // "Selamat malam" as farewell at end of message is NOT replaced
-  const greetingPatterns = [
-    { pattern: /\b(Selamat\s+pagi)\b/gi, period: 'pagi' },
-    { pattern: /\b(Selamat\s+tengah\s+hari)\b/gi, period: 'tengah hari' },
-    { pattern: /\b(Selamat\s+petang)\b/gi, period: 'petang' },
-    { pattern: /(?<!\bbye\b|\bgoodbye\b|\bbai\b|\bjumpa\b|\bnight\b)\s*(Selamat\s+malam)\b(?!\s*(?:lah|je|aja|semua|semuanya|dunia|sayang|sayangku))/gi, period: 'malam' },
-  ];
-
-  const replacements = [];
-
-  for (const { pattern, period } of greetingPatterns) {
-    if (period === correctPeriod) continue; // already correct, skip
-
-    let match;
-    pattern.lastIndex = 0;
-    while ((match = pattern.exec(text)) !== null) {
-      // For "selamat malam", only fix if it's used as an opening greeting
-      // (near the start of the message), not as a farewell
-      if (period === 'malam') {
-        // Check if this looks like a farewell context — skip if so
-        const afterMatch = text.substring(match.index + match[0].length, match.index + match[0].length + 30);
-        if (/(?:jumpa|bye|goodbye|bai|tidur|sleep|good\s*night)/i.test(afterMatch)) continue;
-        // Also check if it's very late in the message (farewell tends to be at end)
-        const positionRatio = match.index / text.length;
-        if (positionRatio > 0.7) continue; // likely a farewell, not opening greeting
-      }
-
-      const correctGreeting = 'Selamat ' + correctPeriod;
-      replacements.push({ index: match.index, oldStr: match[1], newStr: correctGreeting });
-      console.log('[Bot] 👋 Fixing hallucinated greeting: "' + match[1] + '" → "' + correctGreeting + '" (hour=' + hour + ', period=' + correctPeriod + ')');
-    }
-  }
-
-  if (replacements.length === 0) return text;
-
-  // Sort by index descending for right-to-left replacement
-  replacements.sort((a, b) => b.index - a.index);
-
-  let fixed = text;
-  for (const r of replacements) {
-    const before = fixed.substring(0, r.index);
-    const after = fixed.substring(r.index + r.oldStr.length);
-    fixed = before + r.newStr + after;
-  }
-
-  return fixed;
-}
-
-// ── Time hallucination guard ────────────────────────────────────────────────
-// LLMs love to make up times. This function scans the bot's reply for any
-// time mention that doesn't match the actual current time, and fixes it.
-// Supports Malay ("pukul 6:50", "jam 6.50") and English ("6:50 am", "6.50pm").
-function fixHallucinatedTime(text) {
-  if (typeof text !== 'string' || text.length === 0) return text;
-
-  // ⚡ Early exit: skip if no digits or time keywords — avoids expensive regex
-  if (!/\d/.test(text)) return text;
-  if (!/(pukul|jam|[.:]\d|pagi|petang|malam|am|pm|tengah)/i.test(text)) return text;
-
-  const tz = process.env.TIMEZONE || 'UTC';
-  const now = new Date();
-
-  // Get current hour and minute in configured timezone
-  const hour = parseInt(new Intl.DateTimeFormat('en', { timeZone: tz, hour: 'numeric', hour12: false }).format(now), 10);
-  const minute = parseInt(new Intl.DateTimeFormat('en', { timeZone: tz, minute: '2-digit' }).format(now), 10);
-  const actualTotalMins = hour * 60 + minute;
-
-  // Pattern: optional time-word prefix + HH:MM or HH.MM + optional AM/PM/suffix
-  const timePattern = /(pukul|jam|dah\s+(?:pukul|jam)\s+|around\s+|about\s+|at\s+|it'?s?\s+|is\s+|now\s+|already\s+)?(\d{1,2})[:.](\d{2})(?!\d)\s*(pagi|am|a\.m\.?|petang|malam|pm|p\.m\.?)?/gi;
-
-  // Collect all replacements (index, oldStr, newStr) to apply from right to left
-  const replacements = [];
-
-  let match;
-  while ((match = timePattern.exec(text)) !== null) {
-    const fullMatch = match[0];
-    const prefix = (match[1] || '');
-    const matchedHour = parseInt(match[2], 10);
-    const matchedMinute = parseInt(match[3], 10);
-    const period = (match[4] || '').toLowerCase();
-
-    // Convert to 24h for comparison
-    let matched24h = matchedHour;
-    if (/(petang|malam|pm|p\.m)/i.test(period)) {
-      if (matchedHour !== 12) matched24h = matchedHour + 12;
-    } else if (/(pagi|am|a\.m)/i.test(period)) {
-      if (matchedHour === 12) matched24h = 0;
-    }
-
-    const matchedTotalMins = matched24h * 60 + matchedMinute;
-    const diffMins = Math.abs(matchedTotalMins - actualTotalMins);
-
-    // Only fix if > 2 minutes off
-    if (diffMins <= 2) continue;
-
-    // ── Guard: only fix times that are clearly meant to be CURRENT time ──
-    // Future/past references like "remind at 12:30", "nanti pukul 6",
-    // "tadi pukul 3" should NOT be replaced with the current time.
-    // We check the prefix (captured by the regex) and surrounding context.
-    const prefixLower = prefix.toLowerCase();
-    const isCurrentTimeContext =
-      /^(dah\s+)?(pukul|jam)\s*$/i.test(prefix) ||   // "dah pukul X", "pukul X" (bare)
-      /\b(now|sekarang|it'?s?\s+now|currently|masa\s+sekarang)\b/i.test(prefix) ||
-      /^(it'?s?|is|now|already)\s*$/i.test(prefix);    // "it's X", "is X", "now X"
-
-    // Future-reference prefixes: "at X", "nanti pukul X", "remind at X"
-    const isFutureContext =
-      /\b(at|nanti|remind|akan|pada|around|about|by|before|until|hingga|sampai|dalam|lagi|next|esok|tomorrow|lusa|minggu|bulan)\b/i.test(prefixLower) ||
-      /\b(?:ingatkan|remind(?:er)?|event|jadual|schedule|meeting)\b/i.test(fullMatch);
-
-    // Past-reference prefixes
-    const isPastContext =
-      /\b(tadi|was|earlier|semalam|kelmarin|yesterday|last)\b/i.test(prefixLower);
-
-    // Skip replacement if this time is clearly a future/past reference
-    if (isFutureContext || isPastContext) {
-      console.log('[Bot] ⏰ Skipping time fix — looks like future/past reference: "' + fullMatch + '" (diff=' + diffMins + 'min)');
-      continue;
-    }
-
-    // Only fix if it's likely a current-time hallucination (bare "pukul X" or similar)
-    if (!isCurrentTimeContext) {
-      // For ambiguous cases (no clear prefix), check broader context around this match
-      const before = text.substring(Math.max(0, match.index - 40), match.index);
-      if (/(?:nanti|akan|remind|ingatkan|at\s*$|pada\s*$|esok|tomorrow)/i.test(before)) {
-        console.log('[Bot] ⏰ Skipping time fix — broader context suggests future reference: "' + fullMatch + '"');
-        continue;
-      }
-      if (/(?:tadi|was|semalam|yesterday)/i.test(before)) {
-        console.log('[Bot] ⏰ Skipping time fix — broader context suggests past reference: "' + fullMatch + '"');
-        continue;
-      }
-    }
-
-    // Format the correct time
-    const correctHour12 = hour % 12 === 0 ? 12 : hour % 12;
-    const correctMinStr = minute.toString().padStart(2, '0');
-    const separator = fullMatch.includes(':') ? ':' : '.';
-
-    // Preserve original format as much as possible
-    let replacement = prefix + correctHour12 + separator + correctMinStr;
-    if (period) replacement += ' ' + period;
-
-    replacements.push({ index: match.index, oldStr: fullMatch, newStr: replacement });
-  }
-
-  // Also check "tengah hari" / "tengah malam" mentions
-  const tengahHariRe = /\btengah\s*hari\b/gi;
-  const tengahMalamRe = /\btengah\s*malam\b/gi;
-  const isNoon = hour === 12;
-  const isMidnight = hour === 0;
-
-  if (!isNoon) {
-    while ((match = tengahHariRe.exec(text)) !== null) {
-      const correctTime = 'pukul ' + hour + ':' + minute.toString().padStart(2, '0');
-      replacements.push({ index: match.index, oldStr: match[0], newStr: correctTime });
-    }
-  }
-  if (!isMidnight) {
-    while ((match = tengahMalamRe.exec(text)) !== null) {
-      const correctTime = 'pukul ' + hour + ':' + minute.toString().padStart(2, '0');
-      replacements.push({ index: match.index, oldStr: match[0], newStr: correctTime });
-    }
-  }
-
-  // ── Relative time hallucination: "dalam X minit" / "X minit lagi" near current time ──
-  // If text mentions the current time AND says "dalam 5 minit", but it's actually now,
-  // the relative phrase is hallucinated. Replace with "sekarang" / "now".
-  const relativePattern = /(?:dalam|tinggal|lagi)\s+(\d+)\s*(?:minit|minute|min|minit\s+lagi|minutes?\s+(?:left|from\s+now))/gi;
-  const hasCurrentTimeMention = (() => {
-    const currentMinStr = minute.toString().padStart(2, '0');
-    const hr12 = hour % 12 === 0 ? 12 : hour % 12;
-    return text.includes(hr12 + ':' + currentMinStr) || text.includes(hr12 + '.' + currentMinStr);
-  })();
-
-  if (hasCurrentTimeMention) {
-    let relMatch;
-    relativePattern.lastIndex = 0;
-    while ((relMatch = relativePattern.exec(text)) !== null) {
-      const minsOff = parseInt(relMatch[1], 10);
-      if (minsOff >= 3) {
-        console.log('[Bot] ⏰ Suspicious relative time: "' + relMatch[0] + '" near current time mention — may be hallucinated');
-        // Replace relative phrase with "sekarang"
-        replacements.push({
-          index: relMatch.index,
-          oldStr: relMatch[0],
-          newStr: /\bminit\b/i.test(relMatch[0]) ? 'sekarang' : 'now',
-        });
-      }
-    }
-  }
-
-  if (replacements.length === 0) return text;
-
-  // Sort by index descending so we can replace from right to left
-  replacements.sort((a, b) => b.index - a.index);
-
-  let fixed = text;
-  for (const r of replacements) {
-    const before = fixed.substring(0, r.index);
-    const after = fixed.substring(r.index + r.oldStr.length);
-    fixed = before + r.newStr + after;
-    console.log('[Bot] ⏰ Fixing hallucinated time: "' + r.oldStr + '" → "' + r.newStr + '" (actual=' + hour + ':' + minute.toString().padStart(2, '0') + ')');
-  }
-
-  console.log('[Bot] ⏰ Corrected message:', fixed.slice(0, 200));
-  return fixed;
-}
-
 // Simple in-memory conversation history per user (last 10 turns)
-// Populated from DB on startup, kept in sync with DB on every message
-const conversationHistory = {};
+// NOTE: Now managed by ./history.js — these are kept for backward compat
+// with existing code that accesses them directly.
+const conversationHistory = {}; // shadowed by history.js internals
+const pendingEdits = {};        // shadowed by history.js internals
+const SUMMARIZE_THRESHOLD = historyModule.SUMMARIZE_THRESHOLD;
+const KEEP_RECENT = historyModule.KEEP_RECENT;
+const recentUserMessages = new Map();
 
-/**
- * Load recent chat history from DB into in-memory cache.
- * Called once at bot startup to restore context.
- */
-async function loadHistoryFromDB(userId) {
-  try {
-    const rows = await db.getRecentChatHistory(userId, 20);
-    if (rows.length > 0) {
-      conversationHistory[userId] = rows;
-      console.log('[Bot] 📜 Loaded ' + rows.length + ' history messages from DB for user ' + userId);
-    }
-  } catch (err) {
-    console.warn('[Bot] Could not load chat history from DB:', err.message);
-  }
-}
-
-// Track which item the user is currently editing (set by inline button click)
-// Format: { userId: { type: 'reminder'|'event', id: number, label: string, timestamp: number } }
-const pendingEdits = {};
-
-function setPendingEdit(userId, type, id, label) {
-  pendingEdits[userId] = { type, id, label, timestamp: Date.now() };
-  // Auto-expire after 2 minutes
-  setTimeout(() => {
-    const current = pendingEdits[userId];
-    if (current && current.timestamp === pendingEdits[userId]?.timestamp) {
-      delete pendingEdits[userId];
-    }
-  }, 2 * 60 * 1000);
-}
-
-function getPendingEdit(userId) {
-  const edit = pendingEdits[userId];
-  if (!edit) return null;
-  if (Date.now() - edit.timestamp > 2 * 60 * 1000) {
-    delete pendingEdits[userId];
-    return null;
-  }
-  return edit;
-}
-
-function clearPendingEdit(userId) {
-  delete pendingEdits[userId];
-}
-
-function getHistory(userId) {
-  if (!conversationHistory[userId]) conversationHistory[userId] = [];
-  return conversationHistory[userId];
-}
-
-function addToHistory(userId, role, content) {
-  const history = getHistory(userId);
-  history.push({ role, content });
-  // Keep last 20 messages (doubled from 10 — prevents context loss in deep conversations)
-  if (history.length > 20) history.splice(0, history.length - 20);
-
-  // 💾 Persist to DB (fire-and-forget — don't block the response)
-  db.saveChatMessage(userId, role, content).catch(err => {
-    console.warn('[Bot] Failed to persist chat message:', err.message);
-  });
-}
-
-function clearHistory(userId) {
-  delete conversationHistory[userId];
-  console.log('[Bot] 🧹 Cleared conversation history for ' + userId);
-}
-
-// ── Conversation Summarization (prevents context amnesia) ──────────────────
-// When history exceeds 15 messages, compress older messages into a topic
-// summary so the LLM retains awareness of earlier conversation without
-// blowing through token limits. The last 12 messages are always preserved
-// verbatim for accurate recent context.
-
-const SUMMARIZE_THRESHOLD = 15;  // trigger summarization when > 15 messages
-const KEEP_RECENT = 12;          // always keep last N messages verbatim
-
-/**
- * Build a lightweight topic summary from older messages.
- * Only extracts user messages — assistant replies are too verbose.
- * No LLM call needed — regex-based, runs in <1ms.
- */
-function buildTopicSummary(messages) {
-  const userMessages = messages.filter(m => m.role === 'user').map(m => m.content);
-  if (userMessages.length === 0) return '';
-
-  // Extract key noun phrases and topics (simple heuristic)
-  const topics = [];
-  const seen = new Set();
-
-  for (const msg of userMessages) {
-    // Extract capitalized words, quoted phrases, and meaningful segments
-    const clean = msg.replace(/[^\w\s@#\-]/g, ' ').replace(/\s+/g, ' ').trim();
-    const words = clean.split(' ').filter(w => w.length > 3 && !/^(?:nak|saya|aku|kau|dia|kami|kita|mereka|yang|dengan|pada|untuk|dalam|akan|telah|sudah|boleh|mesti|perlu|juga|sahaja|saja|pun|lagi|dah|ni|tu|ke|tak|kan|lah|nya|ini|itu|ada|tiada|bukan|tidak|ya|dan|atau|the|and|for|with|this|that|from|have|what|when|your|just|like|about)$/i.test(w)).slice(0, 5);
-    for (const w of words) {
-      if (!seen.has(w.toLowerCase())) {
-        seen.add(w.toLowerCase());
-        topics.push(w);
-        if (topics.length >= 8) break;
-      }
-    }
-    if (topics.length >= 8) break;
-  }
-
-  return topics.length > 0 ? '[Earlier topics: ' + topics.join(', ') + ']' : '';
-}
-
-/**
- * Get effective history for LLM context — auto-summarizes when too long.
- * Returns a history array optimized for token efficiency.
- */
-function getEffectiveHistory(userId) {
-  const history = getHistory(userId);
-  if (history.length <= SUMMARIZE_THRESHOLD) return history;
-
-  // Check if already summarized recently
-  const firstMsg = history[0];
-  const alreadySummarized = firstMsg && firstMsg.role === 'system' &&
-    /^\[Earlier/.test(firstMsg.content);
-
-  if (alreadySummarized) {
-    // Keep the summary + last KEEP_RECENT messages
-    const recent = history.slice(-KEEP_RECENT);
-    return [firstMsg, ...recent];
-  }
-
-  // Build summary from older messages and replace history in-place
-  const older = history.slice(0, history.length - KEEP_RECENT);
-  const summary = buildTopicSummary(older);
-  const recent = history.slice(-KEEP_RECENT);
-
-  if (summary) {
-    const newHistory = [{ role: 'system', content: summary }, ...recent];
-    conversationHistory[userId] = newHistory;
-    console.log('[Bot] 📝 Summarized ' + older.length + ' older messages → ' + summary.slice(0, 100));
-    return newHistory;
-  }
-
-  // No useful summary — just trim (keep last 15)
-  const trimmed = history.slice(-15);
-  conversationHistory[userId] = trimmed;
-  return trimmed;
-}
-
-// ── User Message Deduplication ─────────────────────────────────────────────
-// Prevents re-processing the same user message within a short window.
-// If user sends "hi" twice in 10 seconds, skip the second LLM call.
-
-const recentUserMessages = new Map(); // userId → { text, timestamp, response }
-
-function isDuplicateUserMessage(userId, text) {
-  const entry = recentUserMessages.get(userId);
-  if (!entry) return false;
-  // Same text within 10 seconds → duplicate
-  if (entry.text === text && Date.now() - entry.timestamp < 10000) {
-    return true;
-  }
-  return false;
-}
-
-function cacheUserMessageResponse(userId, text, response) {
-  recentUserMessages.set(userId, { text, timestamp: Date.now(), response });
-  // Clean old entries periodically
-  if (recentUserMessages.size > 50) {
-    const cutoff = Date.now() - 30000;
-    for (const [k, v] of recentUserMessages) {
-      if (v.timestamp < cutoff) recentUserMessages.delete(k);
-    }
-  }
-}
+// ── Delegated functions (thin wrappers to ./history.js) ──────────────────
+const loadHistoryFromDB = historyModule.loadHistoryFromDB;
+const getHistory = historyModule.getHistory;
+const addToHistory = historyModule.addToHistory;
+const clearHistory = historyModule.clearHistory;
+const getEffectiveHistory = historyModule.getEffectiveHistory;
+const buildTopicSummary = (msgs) => historyModule.getEffectiveHistory; // deprecated, use getEffectiveHistory
+const setPendingEdit = historyModule.setPendingEdit;
+const getPendingEdit = historyModule.getPendingEdit;
+const clearPendingEdit = historyModule.clearPendingEdit;
+const isDuplicateUserMessage = historyModule.isDuplicateUserMessage;
+const cacheUserMessageResponse = historyModule.cacheUserMessageResponse;
 
 async function createBot() {
   const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
@@ -2064,16 +1679,26 @@ async function createBot() {
           console.log('[Bot] 🔌 Tool call intercepted by plugin "' + interceptResult.plugin + '"');
           result = interceptResult.result;
         } else {
-          // Execute tool
+          // Execute tool (try agent layer first, fall back to direct)
           console.log('[Bot] Executing tool:', llmResponse.name, JSON.stringify(llmResponse.args).slice(0, 200));
           const toolStartMs = Date.now();
           try {
-            result = await tools.executeTool(userId, {
-              name: llmResponse.name,
-              args: llmResponse.args,
-            });
+            // ── Try agent routing first (Item #6: Agent Layer Integration) ──
+            const agentResult = await agentRegistry.dispatchToolCall(
+              llmResponse.name, llmResponse.args, userId
+            );
+            if (agentResult && agentResult.success) {
+              result = agentResult.result;
+              console.log('[Bot] ✅ Handled by agent: ' + (agentResult.agent || 'unknown'));
+            } else {
+              // Fall back to direct tool execution
+              result = await tools.executeTool(userId, {
+                name: llmResponse.name,
+                args: llmResponse.args,
+              });
+            }
             const toolDurationMs = Date.now() - toolStartMs;
-            console.log('[Bot] Tool result:', typeof result === 'object' ? (result.type || 'object') : result.slice(0, 150));
+            console.log('[Bot] Tool result:', typeof result === 'object' ? (result.type || 'object') : String(result).slice(0, 150));
 
             // 📡 Emit tool:executed event
             eventBus.emitSync(EVENTS.TOOL_EXECUTED, {
@@ -2180,39 +1805,18 @@ async function createBot() {
           return; // Done — wait for user to click button or type "ya"
         }
 
-        // ── Smart Follow-up: after add_note, check if it implies a reminder ──
+        // ── Smart Follow-Up Cascade (replaces hardcoded note→reminder logic) ──
         let followupResult = null;
-        if (llmResponse.name === 'add_note' && llmResponse.args.content) {
-          const noteContent = llmResponse.args.content;
-          const followupPrompt =
-            '📝 The user just saved this note: "' + noteContent + '"\n\n' +
-            'YOUR JOB: Determine if this note implies a follow-up task that should become a reminder.\n\n' +
-            'Examples that SHOULD create a reminder:\n' +
-            '• "follow up with Ali on Friday" → reminder: "Follow up with Ali" on Friday\n' +
-            '• "call client tomorrow 3pm" → reminder: "Call client" tomorrow at 3pm\n' +
-            '• "send report by Monday" → reminder: "Send report" on Monday\n\n' +
-            'Examples that should NOT:\n' +
-            '• "React Native looks promising" → no reminder\n' +
-            '• "idea for blog post" → no reminder (just an idea)\n' +
-            '• "buy groceries" → no specific time, so no reminder\n\n' +
-            'If a reminder IS needed, output: {"type":"tool","name":"create_reminder","args":{"text":"...","time":"ISO-8601"}}\n' +
-            'If NOT needed, output: {"type":"message","content":"SKIP"}';
-
-          try {
-            const followupHistory = [{ role: 'user', content: followupPrompt }];
-            const followupResponse = await llm.chatDeepseek(userId, noteContent, followupHistory);
-            console.log('[Bot] Follow-up check result:', followupResponse.type, followupResponse.name || '');
-
-            if (followupResponse.type === 'tool' && followupResponse.name === 'create_reminder') {
-              followupResult = await tools.executeTool(userId, {
-                name: 'create_reminder',
-                args: followupResponse.args,
-              });
-              console.log('[Bot] Smart follow-up reminder created');
-            }
-          } catch (fuErr) {
-            console.warn('[Bot] Smart follow-up check failed (non-fatal):', fuErr.message);
+        try {
+          const cascadeSuggestion = await cascade.getCascadeSuggestion(
+            userId, llmResponse.name, llmResponse.args, text
+          );
+          if (cascadeSuggestion) {
+            followupResult = cascadeSuggestion;
+            console.log('[Bot] 🔗 Cascade triggered: ' + cascadeSuggestion.type);
           }
+        } catch (cascadeErr) {
+          console.warn('[Bot] Cascade check failed (non-fatal):', cascadeErr.message);
         }
 
         // ── Web Search: re-summarize results in the user's language via LLM ──

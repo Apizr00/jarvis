@@ -156,4 +156,59 @@ function isActive(userId) {
   return !!(wm.currentGoal || wm.currentProblem || wm.nextSteps.length > 0);
 }
 
-module.exports = { get, update, reset, touch, formatForPrompt, isActive };
+module.exports = {
+  get, update, reset, touch, formatForPrompt, isActive,
+  // Persistence
+  serialize,
+  hydrate,
+};
+
+/**
+ * Serialize working memory for DB persistence.
+ * @param {string} userId
+ * @returns {object|null} serializable data or null if empty/nothing meaningful
+ */
+function serialize(userId) {
+  const raw = store.get(userId);
+  if (!raw) return null;
+
+  // Only persist if there's meaningful content
+  const hasContent = raw.currentGoal || raw.currentProblem ||
+    raw.possibleSolutions.length > 0 || raw.nextSteps.length > 0 ||
+    raw.contextNotes;
+
+  if (!hasContent && raw.messageCount < 3) return null;
+
+  return {
+    currentGoal: raw.currentGoal,
+    currentProblem: raw.currentProblem,
+    possibleSolutions: raw.possibleSolutions,
+    rejectedIdeas: raw.rejectedIdeas,
+    nextSteps: raw.nextSteps,
+    contextNotes: raw.contextNotes,
+    lastUpdated: raw.lastUpdated instanceof Date ? raw.lastUpdated.toISOString() : raw.lastUpdated,
+    messageCount: raw.messageCount,
+  };
+}
+
+/**
+ * Hydrate working memory from persisted DB data.
+ * @param {string} userId
+ * @param {object} data - previously serialized data
+ */
+function hydrate(userId, data) {
+  if (!data) return;
+
+  store.set(userId, {
+    currentGoal: data.currentGoal || '',
+    currentProblem: data.currentProblem || '',
+    possibleSolutions: data.possibleSolutions || [],
+    rejectedIdeas: data.rejectedIdeas || [],
+    nextSteps: data.nextSteps || [],
+    contextNotes: data.contextNotes || '',
+    lastUpdated: data.lastUpdated ? new Date(data.lastUpdated) : new Date(),
+    messageCount: data.messageCount || 0,
+  });
+
+  console.log('[WorkingMemory] 💧 Hydrated from DB (msgs: ' + (data.messageCount || 0) + ')');
+}

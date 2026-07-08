@@ -1043,6 +1043,78 @@ async function getRecentlyMentionedPeople(userId, since) {
   return rows;
 }
 
+// ── Bot State Persistence ───────────────────────────────────────────────────
+// Used by the persistence module to save/restore executive runtime state
+// (working memory, world model, lifecycle, planner) across restarts.
+
+/**
+ * Save a bot state snapshot for a user. Upserts on (user_id, state_type).
+ * @param {string} userId
+ * @param {string} stateType - e.g. 'working_memory', 'world_model', 'lifecycle', 'planner'
+ * @param {object} stateData - JSON-serializable state data
+ */
+async function saveBotState(userId, stateType, stateData) {
+  await pool.query(
+    `INSERT INTO bot_state (user_id, state_type, state_data, updated_at)
+     VALUES ($1, $2, $3, NOW())
+     ON CONFLICT (user_id, state_type) DO UPDATE
+       SET state_data = $3, updated_at = NOW()`,
+    [String(userId), stateType, JSON.stringify(stateData)]
+  );
+}
+
+/**
+ * Load a specific bot state for a user.
+ * @param {string} userId
+ * @param {string} stateType
+ * @returns {Promise<object|null>} parsed state data or null if not found
+ */
+async function loadBotState(userId, stateType) {
+  const { rows } = await pool.query(
+    `SELECT state_data, updated_at FROM bot_state
+     WHERE user_id = $1 AND state_type = $2`,
+    [String(userId), stateType]
+  );
+  if (rows.length === 0) return null;
+  return {
+    ...(typeof rows[0].state_data === 'string' ? JSON.parse(rows[0].state_data) : rows[0].state_data),
+    _savedAt: rows[0].updated_at,
+  };
+}
+
+/**
+ * Load all bot states for a user.
+ * @param {string} userId
+ * @returns {Promise<object>} map of stateType → stateData
+ */
+async function loadAllBotStates(userId) {
+  const { rows } = await pool.query(
+    `SELECT state_type, state_data, updated_at FROM bot_state
+     WHERE user_id = $1`,
+    [String(userId)]
+  );
+  const states = {};
+  for (const row of rows) {
+    states[row.state_type] = {
+      ...(typeof row.state_data === 'string' ? JSON.parse(row.state_data) : row.state_data),
+      _savedAt: row.updated_at,
+    };
+  }
+  return states;
+}
+
+/**
+ * Delete a bot state entry.
+ * @param {string} userId
+ * @param {string} stateType
+ */
+async function deleteBotState(userId, stateType) {
+  await pool.query(
+    `DELETE FROM bot_state WHERE user_id = $1 AND state_type = $2`,
+    [String(userId), stateType]
+  );
+}
+
 module.exports = {
   pool,
   retryQuery,
@@ -1110,4 +1182,9 @@ module.exports = {
   deleteRelationship,
   searchRelationships,
   getRecentlyMentionedPeople,
+  // Bot State Persistence
+  saveBotState,
+  loadBotState,
+  loadAllBotStates,
+  deleteBotState,
 };

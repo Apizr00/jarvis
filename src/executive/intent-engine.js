@@ -99,23 +99,30 @@ const DEEP_PATTERNS = {
   ],
 };
 
-// ── Mood/Sentiment Indicators ──────────────────────────────────────────────
+// ── Mood/Sentiment Indicators (Enhanced BM) ────────────────────────────────
 const MOOD_PATTERNS = {
-  happy: [/seronok|happy|gembira|best|bestnya|nice|bagusnya|excited|teruja|yay/i],
-  sad: [/sedih|sad|down|murung|kecewa|disappointed|frustrated|frust/i],
-  angry: [/marah|angry|geram|bengang|annoyed|menyampah|fed\s*up/i],
-  tired: [/penat|letih|tired|exhausted|ngantuk|sleepy|tak\s*larat/i],
-  anxious: [/risau|bimbang|anxious|worried|nervous|gugup|scared|takut/i],
-  motivated: [/semangat|motivated|bersemangat|pumped|ready|bersedia|jom/i],
-  confused: [/confused|keliru|tak\s*faham|don't\s*understand|confusing|pening/i],
+  happy: [/seronok|happy|gembira|best|bestnya|nice|bagusnya|excited|teruja|yay|syok|syoknya|best\s*gila|puas\s*hati|berbaloi/i],
+  sad: [/sedih|sad|down|murung|kecewa|disappointed|frustrated|frust|kecewa\s*sangat|down\s*gila|sayu|pilu|sebak/i],
+  angry: [/marah|angry|geram|bengang|annoyed|menyampah|fed\s*up|menyampah\s*gila|panas\s*hati|naik\s*darah/i],
+  tired: [/penat|letih|tired|exhausted|ngantuk|sleepy|tak\s*larat|lesu|tak\s*bertenaga|drained|burnout|burn\s*out/i],
+  anxious: [/risau|bimbang|anxious|worried|nervous|gugup|scared|takut|gelisah|resah|cemas|panik|panic/i],
+  motivated: [/semangat|motivated|bersemangat|pumped|ready|bersedia|jom|on\s*fire|let's\s*go|letsgo|power|powerr/i],
+  confused: [/confused|keliru|tak\s*faham|don't\s*understand|confusing|pening|blur|tak\s*pasti|serba\s*salah|bingung/i],
+  bored: [/bosan|boring|bored|tak\s*tahu\s*nak\s*buat\s*apa|nothing\s*to\s*do|sunyi|sepi/i],
+  grateful: [/bersyukur|grateful|thankful|alhamdulillah|syukur|terharu|touched|appreciate|hargai/i],
 };
 
-// ── Urgency Indicators ─────────────────────────────────────────────────────
+// ── Negation words (for negation-aware mood detection) ─────────────────────
+// "tak sedih" = NOT sad, "bukan marah" = NOT angry, "kurang happy" = less happy
+const NEGATION_WORDS = /\b(tak|tidak|bukan|kurang|bukanlah|takde|tiada|bukan\s*nya)\s+/i;
+
+// ── Urgency Indicators (Enhanced BM) ──────────────────────────────────────
 const URGENCY_PATTERNS = [
   /\b(urgent|kecemasan|emergency|segera|asap|cepat|now|sekarang\s*juga)\b/i,
-  /\b(penting|critical|kritikal|must|mesti|wajib|perlu\s*cepat)\b/i,
-  /\!{2,}/, // multiple exclamation marks
-  /\b(HELP|TOLONG|EMERGENCY)\b/,
+  /\b(penting|critical|kritikal|must|mesti|wajib|perlu\s*cepat|perlu\s*segera)\b/i,
+  /\!{2,}/,
+  /\b(HELP|TOLONG|EMERGENCY|BAKAR|KEBAKARAN|KECEMASAN)\b/,
+  /\b(cepat\s*cepat|lekas|sekarang\s*ni|right\s*now|stat|immediately)\b/i,
 ];
 
 // ── Context-Aware Escalation ────────────────────────────────────────────────
@@ -154,7 +161,8 @@ function scorePatterns(text, patterns) {
 }
 
 /**
- * Detect mood from text.
+ * Detect mood from text with negation awareness (Item #9).
+ * "tak sedih" ≠ sad mood, "bukan marah" ≠ angry.
  * @param {string} text
  * @returns {{mood: string, confidence: number}}
  */
@@ -162,10 +170,24 @@ function detectMood(text) {
   let bestMood = 'neutral';
   let bestConf = 0;
 
+  // Check if the text has a negation prefix near mood words
+  const hasNegation = NEGATION_WORDS.test(text);
+
   for (const [mood, patterns] of Object.entries(MOOD_PATTERNS)) {
     for (const pattern of patterns) {
       if (pattern.test(text)) {
-        const conf = 0.6; // each mood hit is moderate confidence
+        // ── Negation handling ────────────────────────────────────────────
+        // If a negation word precedes the mood keyword, reduce confidence
+        let conf = 0.6;
+        if (hasNegation) {
+          // Check if negation is near this specific match
+          const matchPos = text.search(pattern);
+          const beforeMatch = text.substring(Math.max(0, matchPos - 15), matchPos);
+          if (NEGATION_WORDS.test(beforeMatch)) {
+            conf = 0.15; // Strong negation → weak signal
+          }
+        }
+
         if (conf > bestConf) {
           bestMood = mood;
           bestConf = conf;

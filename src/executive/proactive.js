@@ -14,6 +14,13 @@ const worldModel = require('./world-model');
 const planner = require('./planner');
 const workingMemory = require('./working-memory');
 const lifecycle = require('./lifecycle');
+const patterns = require('../patterns');
+const relationships = require('../memory/relationships');
+
+// ── Pattern Signal Cache ─────────────────────────────────────────────────
+// Avoid hitting DB on every score calculation. Cache for 5 minutes.
+const patternSignalCache = new Map(); // userId → { patterns, expiry }
+const PATTERN_CACHE_TTL = 5 * 60 * 1000; // 5 min
 
 /**
  * Get the current hour (0-23) in the configured timezone.
@@ -50,15 +57,25 @@ const COOLDOWNS = {
   general: 3 * 60 * 60 * 1000,            // 3 hours
 };
 
-/**
- * Check if we can send a proactive message of this type.
- */
-function canSendProactive(userId, type) {
+// ── Adaptive Cooldown (Item #5: Dynamic Proactive Timing) ──────────────────
+
+async function getDynamicCooldown(userId, type) {
+  const baseCooldown = COOLDOWNS[type] || COOLDOWNS.general;
+  try {
+    const usagePatterns = await patterns.getPatterns(userId, { type: 'usage', minConfidence: 0.4, limit: 10 });
+    const isBursty = usagePatterns.some(p => p.name === 'Bursty User' || p.name.includes('Burst'));
+    if (isBursty) return Math.round(baseCooldown * 0.7);
+  } catch { /* ignore */ }
+  const lc = lifecycle.get(userId);
+  if (lc && lc.phase === 'active_task') return Math.round(baseCooldown * 1.5);
+  return baseCooldown;
+}
+
+async function canSendProactive(userId, type) {
   const key = userId + ':' + type;
   const lastSent = lastProactiveSent.get(key);
   if (!lastSent) return true;
-
-  const cooldown = COOLDOWNS[type] || COOLDOWNS.general;
+  const cooldown = await getDynamicCooldown(userId, type);
   return (Date.now() - lastSent) > cooldown;
 }
 
@@ -156,33 +173,34 @@ function scoreTiming(type) {
 }
 
 /**
- * Score past behavior: did user respond to previous messages of this type?
- * @param {string} userId
- * @param {string} type
- * @returns {number} 0-25
+ * Score past behavior with adaptive scoring (Item #8).
+ * Adjusts weights based on overall response rate trends across all types.
  */
 function scorePastBehavior(userId, type) {
   const eng = engagementHistory.get(userId);
-  if (!eng || !eng[type]) return 12; // no history → neutral
+  if (!eng || !eng[type]) return 12;
 
   const history = eng[type];
   let score = 12;
 
-  // User responded to this type before → boost
   if (history.responded > 0) {
     const responseRate = history.responded / Math.max(history.sent || 1, 1);
-    score += Math.round(responseRate * 10); // up to +10 for high response rate
+    score += Math.round(responseRate * 10);
+
+    // Adaptive: check overall response rate across all types
+    const allTypes = Object.values(eng);
+    const totalSent = allTypes.reduce((s, t) => s + (t.sent || 0), 0);
+    const totalResp = allTypes.reduce((s, t) => s + (t.responded || 0), 0);
+    if (totalSent >= 5) {
+      const overallRate = totalResp / Math.max(totalSent, 1);
+      if (overallRate < 0.2) score -= 5;
+      if (overallRate > 0.6) score += 3;
+    }
   }
 
-  // User ignored last 3 of this type → penalize
-  if (history.sent >= 3 && history.responded === 0) {
-    score -= 10;
-  }
-
-  // Recent response (within 24h) → strong positive signal
-  if (history.lastResponse && Date.now() - history.lastResponse < 24 * 60 * 60_000) {
-    score += 5;
-  }
+  if (history.sent >= 3 && history.responded === 0) score -= 12;
+  if (history.lastResponse && Date.now() - history.lastResponse < 24 * 60 * 60_000) score += 5;
+  if (history.responded > 10) score -= 2; // diminishing returns
 
   return Math.max(0, Math.min(25, score));
 }
@@ -217,25 +235,210 @@ function scoreGoalProximity(userId) {
   return Math.min(25, score);
 }
 
+// ── Pattern Signal Dimension (Fasa 5 Upgrade) ───────────────────────────────
+// Integrates detected patterns from the Pattern Recognition Engine into
+// proactive scoring. This makes the bot smarter about WHEN and WHAT to send
+// based on learned user behavior.
+
+/**
+ * Get cached pattern signals for a user. Refreshes every 5 minutes.
+ * Returns a simplified lookup map: { patternName → { confidence, data } }
+ * @param {string} userId
+ * @returns {Promise<Map<string, object>>}
+ */
+async function getCachedPatternSignals(userId) {
+  const cached = patternSignalCache.get(userId);
+  if (cached && cached.expiry > Date.now()) {
+    return cached.patterns;
+  }
+
+  try {
+    const allPatterns = await patterns.getPatterns(userId, {
+      minConfidence: 0.3,
+      limit: 50,
+    });
+
+    const map = new Map();
+    for (const p of allPatterns) {
+      map.set(p.name, { confidence: p.confidence, data: p.data, type: p.pattern_type });
+    }
+
+    patternSignalCache.set(userId, { patterns: map, expiry: Date.now() + PATTERN_CACHE_TTL });
+    return map;
+  } catch (err) {
+    console.warn('[Proactive] Pattern signal fetch failed:', err.message);
+    // Return empty map on failure — graceful degradation
+    return new Map();
+  }
+}
+
+/**
+ * Score how detected patterns should influence proactive messaging.
+ * Positive score = send more of this type. Negative = suppress.
+ *
+ * Pattern → Proactive Type mappings:
+ *   "Task Collector" (low completion)       → +8 task_nudge
+ *   "Task Champion" (high completion)       → +3 task_nudge
+ *   "Routine Builder" (recurring reminders)  → +5 morning_checkin, evening_reflection
+ *   "Avid Note-Taker"                       → +4 general
+ *   "Goal Achiever" / "Multi-Goal Juggler"   → +5 goal_reminder
+ *   "Activity Spike Today"                   → -10 all (user already engaged)
+ *   "Activity Dip"                           → +8 general, task_nudge
+ *   "Engagement Decreasing"                  → +5 general
+ *   Reminder Focus: [category]               → boost related type
+ *   "Peak Hours: [range]"                    → adjust timing outside peak
+ *
+ * @param {string} userId
+ * @param {string} type - proactive message type
+ * @returns {Promise<number>} -15 to +15 (clamped)
+ */
+async function scorePatternSignal(userId, type) {
+  const signals = await getCachedPatternSignals(userId);
+  if (signals.size === 0) return 0; // no patterns detected yet → neutral
+
+  let score = 0;
+
+  // ── Usage Pattern Signals ────────────────────────────────────────────
+  for (const [name, sig] of signals) {
+    if (sig.type !== 'usage') continue;
+
+    // Activity spike → user is very engaged, reduce all proactive
+    if (name.includes('Activity Spike')) {
+      score -= Math.round(sig.confidence * 12);
+    }
+
+    // Activity dip → user might need a nudge
+    if (name.includes('Activity Dip') || name.includes('Low Activity')) {
+      if (type === 'general' || type === 'task_nudge') {
+        score += Math.round(sig.confidence * 10);
+      }
+    }
+
+    // Activity trend decreasing → re-engage
+    if (name.includes('Activity Decreasing') || name.includes('Engagement Decreasing')) {
+      if (type === 'general' || type === 'goal_reminder') {
+        score += Math.round(sig.confidence * 8);
+      }
+    }
+
+    // Peak hours detected → if current time is NOT peak, boost (user likely free)
+    if (name.startsWith('Peak Hours')) {
+      const hour = getCurrentHour();
+      const peakRange = sig.data?.peak_range || '';
+      const [start, end] = peakRange.split('-').map(Number);
+      if (!isNaN(start) && !isNaN(end)) {
+        const inPeak = hour >= start && hour <= end;
+        if (!inPeak) {
+          // Outside peak → user might be more receptive
+          score += Math.round(sig.confidence * 5);
+        }
+      }
+    }
+  }
+
+  // ── Behavior Pattern Signals ─────────────────────────────────────────
+  for (const [name, sig] of signals) {
+    if (sig.type !== 'behavior') continue;
+
+    // Task management patterns
+    if (name === 'Task Collector') {
+      // Low completion rate → nudge more about tasks
+      if (type === 'task_nudge') score += 8;
+      if (type === 'goal_reminder') score += 4;
+    }
+    if (name === 'Task Champion') {
+      // High completion rate → positive reinforcement
+      if (type === 'task_nudge') score += 3;
+    }
+
+    // Routine/habit patterns
+    if (name === 'Routine Builder') {
+      // User likes recurring reminders → morning/evening check-ins more welcome
+      if (type === 'morning_checkin' || type === 'evening_reflection') {
+        score += Math.round(sig.confidence * 6);
+      }
+    }
+
+    // Note-taking patterns
+    if (name === 'Avid Note-Taker') {
+      if (type === 'general') score += 4;
+    }
+
+    // Goal patterns
+    if (name === 'Goal Achiever' || name === 'Multi-Goal Juggler') {
+      if (type === 'goal_reminder') score += 5;
+    }
+
+    // Reminder category focus → boost related domain messages
+    if (name.startsWith('Reminder Focus:')) {
+      const category = sig.data?.category?.toLowerCase() || '';
+      if (category === 'health' && type === 'general') score += 4;
+      if (category === 'work' && (type === 'task_nudge' || type === 'goal_reminder')) score += 4;
+      if (category === 'learning' && type === 'task_nudge') score += 3;
+      if (category === 'personal' && type === 'general') score += 3;
+    }
+  }
+
+  // ── Trend Pattern Signals ────────────────────────────────────────────
+  for (const [name, sig] of signals) {
+    if (sig.type !== 'trend') continue;
+
+    // Task velocity slowing → backlog building
+    if (name.includes('Task Velocity') || name.includes('Backlog')) {
+      if (type === 'task_nudge') score += Math.round(sig.confidence * 8);
+    }
+
+    // Reminder adherence dropping → user might be overwhelmed
+    if (name.includes('Reminder Adherence') && sig.data?.adherence_rate < 0.5) {
+      if (type === 'goal_reminder') score += Math.round(sig.confidence * 5);
+    }
+
+    // Feature adoption → user trying new things, suggest related
+    if (name.includes('Feature Adoption')) {
+      if (type === 'general') score += 3;
+    }
+  }
+
+  // ── Topic Pattern Signals ────────────────────────────────────────────
+  const wm = worldModel.get(userId);
+  for (const [name, sig] of signals) {
+    if (sig.type !== 'topic') continue;
+
+    // Top themes align with user's active domain → boost
+    if (name.includes('Top Theme') || name.includes('Primary Topic')) {
+      const theme = sig.data?.theme?.toLowerCase() || '';
+      if (theme === wm.activeDomain || theme === 'health' || theme === 'learning') {
+        if (type === 'general' || type === 'task_nudge') {
+          score += Math.round(sig.confidence * 4);
+        }
+      }
+    }
+  }
+
+  // Clamp to -15..+15 to prevent any single dimension from dominating
+  return Math.max(-15, Math.min(15, score));
+}
+
 /**
  * Calculate composite opportunity score (0-100) for a proactive message candidate.
- * Combines: user state + timing + past behavior + goal proximity.
+ * Combines: user state + timing + past behavior + goal proximity + pattern signals.
  *
  * @param {string} userId
  * @param {string} type - message type
- * @returns {{total: number, breakdown: object, shouldSend: boolean}}
+ * @returns {Promise<{total: number, breakdown: object, shouldSend: boolean}>}
  */
-function calculateOpportunityScore(userId, type) {
+async function calculateOpportunityScore(userId, type) {
   const userState = scoreUserState(userId);
   const timing = scoreTiming(type);
   const pastBehavior = scorePastBehavior(userId, type);
   const goalProximity = scoreGoalProximity(userId);
+  const patternSignal = await scorePatternSignal(userId, type);
 
-  const total = userState + timing + pastBehavior + goalProximity;
+  const total = userState + timing + pastBehavior + goalProximity + patternSignal;
 
   return {
     total,
-    breakdown: { userState, timing, pastBehavior, goalProximity },
+    breakdown: { userState, timing, pastBehavior, goalProximity, patternSignal },
     shouldSend: total >= 35, // threshold — only send if reasonably likely to be welcome
   };
 }
@@ -279,43 +482,46 @@ async function generateProactiveCandidates(userId, bot) {
   const candidates = [];
   const wm = worldModel.get(userId);
   const hour = getCurrentHour();
-  const dayOfWeek = getCurrentDayOfWeek(); // 0=Sun, 6=Sat
+  const dayOfWeek = getCurrentDayOfWeek();
+  const name = await db.getUserName(userId) || 'Boss';
 
-  // ── 1. Morning check-in ──────────────────────────────────────────────
-  if (hour >= 6 && hour <= 9 && canSendProactive(userId, 'morning_checkin')) {
-    const name = await db.getUserName(userId) || 'Boss';
-    candidates.push({
-      type: 'morning_checkin',
-      message: '☀️ Selamat pagi, ' + name + '! ☀️\n\n' +
-        'Hari ni ' + getDayName(dayOfWeek) + '. Ada apa-apa plan untuk hari ni?\n' +
-        'Nak saya check jadual atau setkan reminder?',
-      priority: 8,
-    });
+  // ── Personalized context (Item #7) ────────────────────────────────────
+  let relevantPeople = '';
+  try {
+    const people = await relationships.getRecentlyMentionedPeople(userId, new Date(Date.now() - 7 * 24 * 60 * 60_000).toISOString());
+    if (people.length > 0) {
+      const topPeople = people.slice(0, 3).map(p => p.name).join(', ');
+      relevantPeople = topPeople;
+    }
+  } catch { /* ignore */ }
+
+  // ── 1. Morning check-in (personalized) ────────────────────────────────
+  if (hour >= 6 && hour <= 9 && await canSendProactive(userId, 'morning_checkin')) {
+    let msg = '☀️ Selamat pagi, ' + name + '! ☀️\n\nHari ni ' + getDayName(dayOfWeek) + '.';
+    if (wm.currentProject) msg += '\n\n📋 Current project: *' + wm.currentProject + '*';
+    if (relevantPeople) msg += '\n👥 Recent contacts: ' + relevantPeople;
+    msg += '\n\nAda apa-apa plan untuk hari ni? Nak saya check jadual atau setkan reminder?';
+    candidates.push({ type: 'morning_checkin', message: msg, priority: 8 });
   }
 
-  // ── 2. Evening reflection ────────────────────────────────────────────
-  if (hour >= 20 && hour <= 22 && canSendProactive(userId, 'evening_reflection')) {
-    candidates.push({
-      type: 'evening_reflection',
-      message: '🌙 Dah malam ni! 🌙\n\n' +
-        'How was your day today? Nak saya generate reflection ke?\n' +
-        'Atau nak plan untuk esok? Just let me know!',
-      priority: 7,
-    });
+  // ── 2. Evening reflection (personalized) ──────────────────────────────
+  if (hour >= 20 && hour <= 22 && await canSendProactive(userId, 'evening_reflection')) {
+    let msg = '🌙 Dah malam ni, ' + name + '! 🌙\n\nHow was your day today?';
+    if (wm.currentProject) msg += '\nMade progress on *' + wm.currentProject + '*?';
+    msg += '\n\nNak saya generate reflection ke atau plan untuk esok?';
+    candidates.push({ type: 'evening_reflection', message: msg, priority: 7 });
   }
 
   // ── 3. Goal progress check ────────────────────────────────────────────
-  if (wm.currentProject && canSendProactive(userId, 'goal_reminder')) {
+  if (wm.currentProject && await canSendProactive(userId, 'goal_reminder')) {
     const activePlan = planner.getActivePlan(userId);
     if (activePlan) {
       const nextStep = planner.getNextStep(userId, activePlan.planId);
       if (nextStep) {
         candidates.push({
           type: 'goal_reminder',
-          message: '📋 Quick check-in on your goal: *' + activePlan.goal + '*\n\n' +
-            'Progress: ' + activePlan.progress + '%\n' +
-            'Next step: ' + nextStep.description + '\n\n' +
-            'Nak saya tolong track atau update progress?',
+          message: '📋 Quick check-in, ' + name + '!\n\nGoal: *' + activePlan.goal + '*\n' +
+            'Progress: ' + activePlan.progress + '%\nNext step: ' + nextStep.description + '\n\nNak saya tolong track?',
           priority: 9,
         });
       }
@@ -324,63 +530,53 @@ async function generateProactiveCandidates(userId, bot) {
 
   // ── 4. Stalled tasks ──────────────────────────────────────────────────
   const stalled = planner.getStalledPlans(userId, 12);
-  if (stalled.length > 0 && canSendProactive(userId, 'task_nudge')) {
+  if (stalled.length > 0 && await canSendProactive(userId, 'task_nudge')) {
     const plan = stalled[0];
     const hoursStalled = Math.round((Date.now() - new Date(plan.updatedAt).getTime()) / 3600000);
     candidates.push({
       type: 'task_nudge',
-      message: '⏰ Hei! Plan ni dah ' + hoursStalled + ' jam tak update:\n\n' +
-        '*"' + plan.goal + '"* (' + plan.progress + '%)\n\n' +
-        'Nak sambung ke nak adjust? Saya boleh bantu pecahkan task atau setkan reminder.',
+      message: '⏰ Hei ' + name + '! Plan ni dah ' + hoursStalled + ' jam tak update:\n\n' +
+        '*"' + plan.goal + '"* (' + plan.progress + '%)\n\nNak sambung ke nak adjust?',
       priority: 9,
     });
   }
 
   // ── 5. Weekend suggestions ────────────────────────────────────────────
-  if ((dayOfWeek === 0 || dayOfWeek === 6) && hour >= 10 && hour <= 12 && canSendProactive(userId, 'general')) {
+  if ((dayOfWeek === 0 || dayOfWeek === 6) && hour >= 10 && hour <= 12 && await canSendProactive(userId, 'general')) {
     candidates.push({
       type: 'general',
-      message: '🎉 Weekend! Ada plan best ke hari ni?\n\n' +
-        'Kalau takde plan, saya boleh suggest:\n' +
-        '• Movie recommendations 🎬\n' +
-        '• Tempat makan best 🍜\n' +
-        '• Activities untuk weekend 🏃\n\n' +
-        'Just let me know!',
+      message: '🎉 Weekend, ' + name + '! Ada plan best ke?\n\n' +
+        'Saya boleh suggest:\n• Movie recommendations 🎬\n• Tempat makan best 🍜\n• Activities 🏃',
       priority: 5,
     });
   }
 
   // ── 6. Learning reminders ─────────────────────────────────────────────
-  if (wm.activeDomain === 'learning' && canSendProactive(userId, 'task_nudge')) {
+  if (wm.activeDomain === 'learning' && await canSendProactive(userId, 'task_nudge')) {
     candidates.push({
       type: 'task_nudge',
-      message: '📚 Quick study check! Ada apa-apa topik yang nak saya bantu research atau explain?\n\n' +
-        'Saya boleh:\n' +
-        '• Cari resources online\n' +
-        '• Buatkan study schedule\n' +
-        '• Ringkaskan topik kompleks',
+      message: '📚 Quick study check! Ada topik nak saya bantu research atau explain?\n\n' +
+        'Saya boleh:\n• Cari resources online\n• Buatkan study schedule\n• Ringkaskan topik kompleks',
       priority: 6,
     });
   }
 
   // ── 7. Health/fitness reminders ───────────────────────────────────────
-  if (wm.activeDomain === 'health' && canSendProactive(userId, 'general')) {
+  if (wm.activeDomain === 'health' && await canSendProactive(userId, 'general')) {
     if (hour >= 7 && hour <= 9) {
       candidates.push({
         type: 'general',
-        message: '💪 Morning! Dah exercise ke belum hari ni?\n\nEven quick 10-min stretch helps! Nak saya suggest short workout?',
+        message: '💪 Morning ' + name + '! Dah exercise ke belum?\n\nEven quick 10-min stretch helps! Nak saya suggest short workout?',
         priority: 6,
       });
     }
   }
 
   // ── 8. After-work wind-down ───────────────────────────────────────────
-  if (hour >= 18 && hour <= 19 && dayOfWeek >= 1 && dayOfWeek <= 5 && canSendProactive(userId, 'general')) {
+  if (hour >= 18 && hour <= 19 && dayOfWeek >= 1 && dayOfWeek <= 5 && await canSendProactive(userId, 'general')) {
     candidates.push({
       type: 'general',
-      message: '🏠 Habis kerja! Time to unwind.\n\n' +
-        'Nak suggestions untuk lepak petang ni?\n' +
-        'Atau nak saya tolong plan untuk esok?',
+      message: '🏠 Habis kerja, ' + name + '! Time to unwind.\n\nNak suggestions untuk lepak petang ni?',
       priority: 4,
     });
   }
@@ -417,11 +613,11 @@ async function getBestProactiveMessage(userId, bot) {
 
   if (candidates.length === 0) return null;
 
-  // ── Score each candidate with opportunity scoring ─────────────────────
-  const scored = candidates.map(c => ({
+  // ── Score each candidate with opportunity scoring (async) ────────────
+  const scored = await Promise.all(candidates.map(async (c) => ({
     ...c,
-    opportunity: calculateOpportunityScore(userId, c.type),
-  }));
+    opportunity: await calculateOpportunityScore(userId, c.type),
+  })));
 
   // Sort by opportunity score (highest first)
   scored.sort((a, b) => b.opportunity.total - a.opportunity.total);
@@ -447,7 +643,8 @@ async function getBestProactiveMessage(userId, bot) {
     ' (state=' + best.opportunity.breakdown.userState +
     ', time=' + best.opportunity.breakdown.timing +
     ', past=' + best.opportunity.breakdown.pastBehavior +
-    ', goal=' + best.opportunity.breakdown.goalProximity + ')');
+    ', goal=' + best.opportunity.breakdown.goalProximity +
+    ', pattern=' + best.opportunity.breakdown.patternSignal + ')');
 
   return { type: best.type, message: best.message, score: best.opportunity.total };
 }
@@ -503,13 +700,16 @@ module.exports = {
   getBestProactiveMessage,
   maybeSendProactiveMessage,
   canSendProactive,
+  getDynamicCooldown,
   recordProactiveSent,
-  // Opportunity scoring (Fasa 3 upgrade)
+  // Opportunity scoring (Fasa 5 upgrade — 5D + adaptive + personalized)
   calculateOpportunityScore,
   scoreUserState,
   scoreTiming,
   scorePastBehavior,
   scoreGoalProximity,
+  scorePatternSignal,
+  getCachedPatternSignals,
   recordEngagementSent,
   recordEngagementResponse,
 };

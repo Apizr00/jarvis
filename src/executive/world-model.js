@@ -296,4 +296,86 @@ function getInsights(userId) {
   return insights;
 }
 
-module.exports = { get, update, formatForPrompt, getInsights, deriveDomain, deriveStatusFromTime };
+module.exports = {
+  get, update, formatForPrompt, getInsights, deriveDomain, deriveStatusFromTime,
+  // Persistence
+  serialize,
+  hydrate,
+};
+
+/**
+ * Serialize world model for DB persistence.
+ * @param {string} userId
+ * @returns {object|null}
+ */
+function serialize(userId) {
+  const wm = store.get(userId);
+  if (!wm) return null;
+
+  return {
+    status: wm.status,
+    statusConfidence: wm.statusConfidence,
+    statusLastUpdated: wm.statusLastUpdated,
+    activeDomain: wm.activeDomain,
+    domainConfidence: wm.domainConfidence,
+    currentProject: wm.currentProject,
+    currentTask: wm.currentTask,
+    focusLevel: wm.focusLevel,
+    interests: wm.interests,
+    recentTopics: wm.recentTopics,
+    typicalWakeTime: wm.typicalWakeTime,
+    typicalSleepTime: wm.typicalSleepTime,
+    peakProductivityHours: wm.peakProductivityHours,
+    lowEnergyHours: wm.lowEnergyHours,
+    preferredLanguage: wm.preferredLanguage,
+    budgetConcern: wm.budgetConcern,
+    recentPurchases: wm.recentPurchases,
+    lastExercise: wm.lastExercise,
+    exerciseRoutine: wm.exerciseRoutine,
+    currentMood: wm.currentMood,
+    moodHistory: wm.moodHistory,
+    messageCount: wm.messageCount,
+    sessionStart: wm.sessionStart,
+    lastActive: wm.lastActive,
+    totalSessions: wm.totalSessions,
+  };
+}
+
+/**
+ * Hydrate world model from persisted DB data.
+ * @param {string} userId
+ * @param {object} data
+ */
+function hydrate(userId, data) {
+  if (!data) return;
+
+  store.set(userId, {
+    status: data.status || 'unknown',
+    statusConfidence: data.statusConfidence || 0,
+    statusLastUpdated: data.statusLastUpdated || null,
+    activeDomain: data.activeDomain || 'general',
+    domainConfidence: data.domainConfidence || 0.5,
+    currentProject: data.currentProject || '',
+    currentTask: data.currentTask || '',
+    focusLevel: data.focusLevel || 'medium',
+    interests: data.interests || [],
+    recentTopics: data.recentTopics || [],
+    typicalWakeTime: data.typicalWakeTime || '',
+    typicalSleepTime: data.typicalSleepTime || '',
+    peakProductivityHours: data.peakProductivityHours || [],
+    lowEnergyHours: data.lowEnergyHours || [],
+    preferredLanguage: data.preferredLanguage || 'rojak',
+    budgetConcern: data.budgetConcern || '',
+    recentPurchases: data.recentPurchases || [],
+    lastExercise: data.lastExercise || null,
+    exerciseRoutine: data.exerciseRoutine || '',
+    currentMood: data.currentMood || 'neutral',
+    moodHistory: data.moodHistory || [],
+    messageCount: data.messageCount || 0,
+    sessionStart: data.sessionStart || new Date().toISOString(),
+    lastActive: data.lastActive || new Date().toISOString(),
+    totalSessions: data.totalSessions || 0,
+  });
+
+  console.log('[WorldModel] 💧 Hydrated from DB (status: ' + (data.status || 'unknown') + ', domain: ' + (data.activeDomain || 'general') + ')');
+}

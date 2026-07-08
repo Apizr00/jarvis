@@ -794,6 +794,61 @@ class AgentRegistry {
   }
 
   /**
+   * Route a tool call through the agent layer when possible.
+   * Maps common tool names to agent namespaces for automatic routing.
+   * Falls back to null if no agent handles this tool — caller should
+   * use direct tool execution as fallback.
+   *
+   * @param {string} toolName - e.g., 'create_reminder', 'add_note', 'web_search'
+   * @param {object} args - tool arguments
+   * @param {string} userId
+   * @returns {Promise<{success: boolean, result?: any, agent?: string} | null>}
+   */
+  async dispatchToolCall(toolName, args, userId) {
+    // Map tool names to agent namespace:action
+    const toolAgentMap = {
+      // Memory domain
+      set_fact: 'memory:store_fact',
+      delete_fact: 'memory:forget_fact',
+      get_memory: 'memory:retrieve_context',
+      list_facts: 'memory:retrieve_context',
+
+      // Task domain
+      create_task: 'task:create_task',
+      update_task: 'task:update_task',
+      complete_task: 'task:complete_task',
+      cancel_task: 'task:cancel_task',
+      list_tasks: 'task:list_tasks',
+      start_task: 'task:start_task',
+
+      // Reminder domain
+      create_reminder: 'reminder:create_reminder',
+      cancel_reminder: 'reminder:cancel_reminder',
+      list_reminders: 'reminder:list_reminders',
+      snooze_reminder: 'reminder:snooze_reminder',
+      get_today: 'reminder:get_upcoming',
+
+      // Search domain
+      web_search: 'search:web_search',
+
+      // Weather domain
+      get_weather: 'weather:get_weather',
+    };
+
+    const action = toolAgentMap[toolName];
+    if (!action) return null; // No agent handles this → caller uses direct tool
+
+    const result = await this.dispatch({
+      userId,
+      action,
+      params: args,
+      context: { toolName },
+    });
+
+    return result;
+  }
+
+  /**
    * Get status of all agents for monitoring/API.
    */
   getStatus() {

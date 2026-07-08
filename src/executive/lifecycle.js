@@ -377,4 +377,48 @@ module.exports = {
   getPhaseGreeting,
   formatLifecycle,
   reset,
+  // Persistence
+  serialize,
+  hydrate,
 };
+
+/**
+ * Serialize lifecycle state for DB persistence.
+ * @param {string} userId
+ * @returns {object|null}
+ */
+function serialize(userId) {
+  const lc = lifecycleStore.get(userId);
+  if (!lc) return null;
+
+  return {
+    phase: lc.phase,
+    enteredPhaseAt: lc.enteredPhaseAt,
+    messageCountInPhase: lc.messageCountInPhase,
+    lastMessageAt: lc.lastMessageAt,
+    totalMessages: lc.totalMessages,
+    phaseHistory: lc.phaseHistory,
+    metadata: lc.metadata,
+  };
+}
+
+/**
+ * Hydrate lifecycle state from persisted DB data.
+ * @param {string} userId
+ * @param {object} data
+ */
+function hydrate(userId, data) {
+  if (!data) return;
+
+  const lc = new LifecycleState(userId, data.phase || PHASES.IDLE);
+  lc.enteredPhaseAt = data.enteredPhaseAt || new Date().toISOString();
+  lc.messageCountInPhase = data.messageCountInPhase || 0;
+  lc.lastMessageAt = data.lastMessageAt || new Date().toISOString();
+  lc.totalMessages = data.totalMessages || 0;
+  lc.phaseHistory = data.phaseHistory || [];
+  lc.metadata = data.metadata || {};
+
+  lifecycleStore.set(userId, lc);
+
+  console.log('[Lifecycle] 💧 Hydrated from DB (phase: ' + lc.phase + ', msgs: ' + lc.totalMessages + ')');
+}

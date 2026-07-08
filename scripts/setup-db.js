@@ -163,6 +163,18 @@ async function setup() {
       ON relationships (user_id, name);
     CREATE INDEX IF NOT EXISTS idx_relationships_user_mentioned
       ON relationships (user_id, last_mentioned_at DESC);
+
+    CREATE TABLE IF NOT EXISTS bot_state (
+      id SERIAL PRIMARY KEY,
+      user_id TEXT REFERENCES users(id),
+      state_type TEXT NOT NULL,
+      state_data JSONB NOT NULL DEFAULT '{}',
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(user_id, state_type)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_bot_state_user
+      ON bot_state (user_id, state_type);
   `);
 
   // ── Migration: add recurrence column for existing databases ─────────────
