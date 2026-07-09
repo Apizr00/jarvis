@@ -124,7 +124,9 @@ export default function ChatPanel() {
     <aside className={panelClass}>
       <div
         className="chat-panel-header"
-        onClick={() => { if (!isChatPage) setCollapsed(!collapsed); }}
+        onClick={() => {
+          if (!isChatPage) setCollapsed(!collapsed);
+        }}
       >
         <div className="chat-panel-title">
           <span className={`status-dot ${wsConnected ? "ok" : "error"}`} />
@@ -133,7 +135,10 @@ export default function ChatPanel() {
         {!isChatPage && (
           <div className="chat-panel-actions">
             <ModelSelector model={model} onChange={setModel} />
-            <button className="btn-icon" title={collapsed ? "Expand" : "Collapse"}>
+            <button
+              className="btn-icon"
+              title={collapsed ? "Expand" : "Collapse"}
+            >
               {collapsed ? "◀" : "▶"}
             </button>
           </div>
