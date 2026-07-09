@@ -154,6 +154,83 @@ function createWebSocketServer(httpServer, deps = {}) {
   return wss;
 }
 
+// ── Tool Buttons ─────────────────────────────────────────────────────────────
+// Replicates Telegram bot's inline keyboard for each tool type.
+
+function buildToolButtons(toolName, toolResult) {
+  const id = toolResult?.id;
+  const meta = toolResult?.meta || {};
+
+  const buttons = [];
+
+  switch (toolName) {
+    case 'create_reminder':
+    case 'update_reminder':
+      buttons.push([
+        { text: '✏️ Edit', action: `edit_reminder:${id}` },
+        { text: '❌ Cancel', action: `cancel_reminder:${id}` },
+      ]);
+      buttons.push([{ text: '📋 View All Reminders', action: 'list_reminders' }]);
+      break;
+
+    case 'create_event':
+    case 'update_event':
+      buttons.push([
+        { text: '✏️ Edit', action: `edit_event:${id}` },
+        { text: '❌ Cancel', action: `cancel_event:${id}` },
+      ]);
+      buttons.push([{ text: '📅 View Today', action: 'get_today' }]);
+      break;
+
+    case 'add_note':
+      buttons.push([{ text: '❌ Delete', action: `delete_note:${id}` }]);
+      buttons.push([{ text: '📝 View All Notes', action: 'list_notes' }]);
+      break;
+
+    case 'create_task':
+    case 'update_task':
+      buttons.push([
+        { text: '🚀 Start', action: `start_task:${id}` },
+        { text: '✅ Done', action: `complete_task:${id}` },
+      ]);
+      buttons.push([
+        { text: '❌ Cancel', action: `cancel_task:${id}` },
+        { text: '📋 All Tasks', action: 'list_tasks' },
+      ]);
+      break;
+
+    case 'create_goal':
+      buttons.push([
+        { text: '🏆 Complete', action: `complete_goal:${id}` },
+        { text: '🗑️ Abandon', action: `abandon_goal:${id}` },
+      ]);
+      buttons.push([{ text: '🎯 All Goals', action: 'list_goals' }]);
+      break;
+
+    case 'set_fact':
+      buttons.push([{ text: '❌ Forget', action: `forget_fact:${encodeURIComponent(meta.key || '')}` }]);
+      break;
+
+    case 'list_reminders':
+      buttons.push([{ text: '➕ Set New Reminder', action: 'new_reminder' }]);
+      break;
+
+    case 'list_tasks':
+      buttons.push([{ text: '➕ New Task', action: 'new_task' }, { text: '🎯 Goals', action: 'list_goals' }]);
+      break;
+
+    case 'list_goals':
+      buttons.push([{ text: '➕ New Goal', action: 'new_goal' }, { text: '📋 Tasks', action: 'list_tasks' }]);
+      break;
+
+    case 'web_search':
+      buttons.push([{ text: '📝 Save as Note', action: 'save_search_note' }]);
+      break;
+  }
+
+  return buttons;
+}
+
 // ── Chat Handler ─────────────────────────────────────────────────────────────
 
 async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
@@ -257,12 +334,18 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
         }
       }
 
-      // Send tool result
+      // Send tool result with action buttons (matching Telegram inline keyboards)
       const toolMessage = typeof toolResult === 'string' ? toolResult : (toolResult?.message || '✅ Done.');
+      const buttons = buildToolButtons(result.name, toolResult);
+
       if (!aborted && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           type: 'tool_result',
-          payload: { conversationId: convId, tool: result.name, content: toolMessage, error: toolMessage.startsWith('❌'), timestamp: new Date().toISOString() },
+          payload: {
+            conversationId: convId, tool: result.name, content: toolMessage,
+            error: toolMessage.startsWith('❌'), buttons,
+            timestamp: new Date().toISOString(),
+          },
         }));
       }
 

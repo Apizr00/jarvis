@@ -1,7 +1,7 @@
 import ReactMarkdown from "react-markdown";
 import "./MessageBubble.css";
 
-export default function MessageBubble({ message, isStreaming }) {
+export default function MessageBubble({ message, isStreaming, onButtonClick }) {
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
   const isTool = message.role === "tool";
@@ -80,9 +80,25 @@ export default function MessageBubble({ message, isStreaming }) {
             >
               📋
             </button>
-            <button className="btn-icon" title="Speak">
-              🔊
-            </button>
+          </div>
+        )}
+
+        {/* Tool action buttons — replicate Telegram inline keyboard */}
+        {!isStreaming && message.buttons && message.buttons.length > 0 && (
+          <div className="message-buttons">
+            {message.buttons.map((row, i) => (
+              <div key={i} className="message-button-row">
+                {row.map((btn, j) => (
+                  <button
+                    key={j}
+                    className="btn btn-sm message-action-btn"
+                    onClick={() => onButtonClick?.(btn.action, btn.text)}
+                  >
+                    {btn.text}
+                  </button>
+                ))}
+              </div>
+            ))}
           </div>
         )}
       </div>

@@ -64,6 +64,7 @@ export default function ChatPage() {
             msg.payload.tool,
             msg.payload.content,
             msg.payload.error,
+            msg.payload.buttons,
           );
           break;
         case "error":
@@ -95,6 +96,10 @@ export default function ChatPage() {
     wsRef.current.send(
       JSON.stringify({ type: "chat", payload: { message: text, model } }),
     );
+  };
+
+  const handleButtonClick = (action, label) => {
+    sendMessage(`${label} (${action})`);
   };
 
   const cancelStream = () => {
@@ -147,7 +152,11 @@ export default function ChatPage() {
           </div>
         )}
         {messages.map((msg, i) => (
-          <MessageBubble key={i} message={msg} />
+          <MessageBubble
+            key={i}
+            message={msg}
+            onButtonClick={handleButtonClick}
+          />
         ))}
         {streaming && (
           <MessageBubble

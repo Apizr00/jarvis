@@ -77,6 +77,7 @@ export default function ChatPanel() {
             msg.payload.tool,
             msg.payload.content,
             msg.payload.error,
+            msg.payload.buttons,
           );
           break;
         case "error":
@@ -112,6 +113,11 @@ export default function ChatPanel() {
     },
     [streaming, model],
   );
+
+  const handleButtonClick = (action, label) => {
+    // Send button action as a chat message — LLM will interpret it
+    sendMessage(`${label} (${action})`);
+  };
 
   const cancelStream = () => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -185,7 +191,11 @@ export default function ChatPanel() {
             </div>
           )}
           {messages.map((msg, i) => (
-            <MessageBubble key={i} message={msg} />
+            <MessageBubble
+              key={i}
+              message={msg}
+              onButtonClick={handleButtonClick}
+            />
           ))}
           {streaming && (
             <MessageBubble

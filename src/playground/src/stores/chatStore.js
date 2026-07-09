@@ -50,9 +50,9 @@ export const useChatStore = create((set, get) => ({
     });
   },
 
-  addToolResult: (tool, content, error) => {
+  addToolResult: (tool, content, error, buttons) => {
     set((s) => {
-      const updated = [...s.messages, { role: error ? 'system' : 'assistant', content, tool, toolResult: true, timestamp: new Date().toISOString() }];
+      const updated = [...s.messages, { role: error ? 'system' : 'assistant', content, tool, toolResult: true, buttons: buttons || [], timestamp: new Date().toISOString() }];
       saveMessages(updated);
       return { messages: updated };
     });

@@ -136,3 +136,38 @@
     opacity: 0;
   }
 }
+
+.message-buttons {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.message-button-row {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.message-action-btn {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 0.78rem;
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.message-action-btn:hover {
+  background: var(--accent-light);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.message-action-btn:active {
+  transform: scale(0.96);
+}
