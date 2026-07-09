@@ -16,6 +16,20 @@
   min-width: 48px;
 }
 
+.chat-panel.fully-hidden {
+  width: 0;
+  min-width: 0;
+  border-left: none;
+  overflow: hidden;
+}
+
+/* Mobile: when fully hidden, hide completely */
+@media (max-width: 768px) {
+  .chat-panel.fully-hidden {
+    display: none;
+  }
+}
+
 .chat-panel-header {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);

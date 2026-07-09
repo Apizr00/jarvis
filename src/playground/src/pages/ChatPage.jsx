@@ -1,5 +1,6 @@
-import { useState, useRef, useEffect } from "react";
+import { useRef, useEffect } from "react";
 import { useAuthStore } from "../stores/authStore";
+import { useChatStore } from "../stores/chatStore";
 import MessageBubble from "../components/Chat/MessageBubble";
 import ChatInput from "../components/Chat/ChatInput";
 import ModelSelector from "../components/Chat/ModelSelector";
@@ -8,14 +9,23 @@ import "./ChatPage.css";
 const WS_URL = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws`;
 
 export default function ChatPage() {
-  const [messages, setMessages] = useState([]);
-  const [streaming, setStreaming] = useState(false);
-  const [streamingText, setStreamingText] = useState("");
-  const [model, setModel] = useState("auto");
-  const [wsConnected, setWsConnected] = useState(false);
   const wsRef = useRef(null);
   const messagesEndRef = useRef(null);
   const token = useAuthStore((s) => s.token);
+
+  // Shared store — survives tab switches, shared with ChatPanel sidebar
+  const messages = useChatStore((s) => s.messages);
+  const streaming = useChatStore((s) => s.streaming);
+  const streamingText = useChatStore((s) => s.streamingText);
+  const model = useChatStore((s) => s.model);
+  const wsConnected = useChatStore((s) => s.wsConnected);
+  const addMessage = useChatStore((s) => s.addMessage);
+  const appendStreamText = useChatStore((s) => s.appendStreamText);
+  const finalizeStream = useChatStore((s) => s.finalizeStream);
+  const setStreaming = useChatStore((s) => s.setStreaming);
+  const clearStreamText = useChatStore((s) => s.clearStreamText);
+  const setModel = useChatStore((s) => s.setModel);
+  const setWsConnected = useChatStore((s) => s.setWsConnected);
 
   useEffect(() => {
     if (!token) return;
@@ -39,31 +49,18 @@ export default function ChatPage() {
       const msg = JSON.parse(event.data);
       switch (msg.type) {
         case "chunk":
-          setStreamingText((prev) => prev + msg.payload.text);
+          appendStreamText(msg.payload.text);
           break;
         case "done":
-          setMessages((prev) => [
-            ...prev,
-            {
-              role: "assistant",
-              content: msg.payload.fullText,
-              timestamp: new Date().toISOString(),
-              model: msg.payload.metadata?.model,
-            },
-          ]);
-          setStreamingText("");
-          setStreaming(false);
+          finalizeStream(msg.payload.fullText, msg.payload.metadata || {});
           break;
         case "error":
-          setMessages((prev) => [
-            ...prev,
-            {
-              role: "system",
-              content: `Error: ${msg.payload.message}`,
-              timestamp: new Date().toISOString(),
-            },
-          ]);
-          setStreamingText("");
+          addMessage({
+            role: "system",
+            content: `Error: ${msg.payload.message}`,
+            timestamp: new Date().toISOString(),
+          });
+          clearStreamText();
           setStreaming(false);
           break;
       }
@@ -76,12 +73,13 @@ export default function ChatPage() {
       connect();
       return;
     }
-    setMessages((prev) => [
-      ...prev,
-      { role: "user", content: text, timestamp: new Date().toISOString() },
-    ]);
+    addMessage({
+      role: "user",
+      content: text,
+      timestamp: new Date().toISOString(),
+    });
     setStreaming(true);
-    setStreamingText("");
+    clearStreamText();
     wsRef.current.send(
       JSON.stringify({ type: "chat", payload: { message: text, model } }),
     );
@@ -92,7 +90,7 @@ export default function ChatPage() {
       wsRef.current.send(JSON.stringify({ type: "cancel", payload: {} }));
     }
     setStreaming(false);
-    setStreamingText("");
+    clearStreamText();
   };
 
   useEffect(() => {

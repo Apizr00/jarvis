@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useLocation } from "react-router-dom";
 import { useAuthStore } from "../../stores/authStore";
+import { useChatStore } from "../../stores/chatStore";
 import MessageBubble from "./MessageBubble";
 import ChatInput from "./ChatInput";
 import ModelSelector from "./ModelSelector";
@@ -8,17 +10,28 @@ import "./ChatPanel.css";
 const WS_URL = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws`;
 
 export default function ChatPanel() {
+  const location = useLocation();
+  const isChatPage = location.pathname === "/chat";
   const [collapsed, setCollapsed] = useState(window.innerWidth < 768);
-  const [messages, setMessages] = useState([]);
-  const [streaming, setStreaming] = useState(false);
-  const [streamingText, setStreamingText] = useState("");
-  const [model, setModel] = useState("auto");
-  const [wsConnected, setWsConnected] = useState(false);
   const wsRef = useRef(null);
   const messagesEndRef = useRef(null);
   const token = useAuthStore((s) => s.token);
 
-  // Connect WebSocket
+  // Use shared store — survives tab switches
+  const messages = useChatStore((s) => s.messages);
+  const streaming = useChatStore((s) => s.streaming);
+  const streamingText = useChatStore((s) => s.streamingText);
+  const model = useChatStore((s) => s.model);
+  const wsConnected = useChatStore((s) => s.wsConnected);
+  const addMessage = useChatStore((s) => s.addMessage);
+  const appendStreamText = useChatStore((s) => s.appendStreamText);
+  const finalizeStream = useChatStore((s) => s.finalizeStream);
+  const setStreaming = useChatStore((s) => s.setStreaming);
+  const clearStreamText = useChatStore((s) => s.clearStreamText);
+  const setModel = useChatStore((s) => s.setModel);
+  const setWsConnected = useChatStore((s) => s.setWsConnected);
+
+  // Connect WebSocket — shared across both ChatPanel and ChatPage
   useEffect(() => {
     if (!token) return;
     connect();
@@ -26,6 +39,11 @@ export default function ChatPanel() {
       if (wsRef.current) wsRef.current.close();
     };
   }, [token]);
+
+  // Auto-collapse sidebar when on full Chat page (both show same conversation)
+  useEffect(() => {
+    if (isChatPage) setCollapsed(true);
+  }, [isChatPage]);
 
   function connect() {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
@@ -36,48 +54,27 @@ export default function ChatPanel() {
     ws.onopen = () => setWsConnected(true);
     ws.onclose = () => {
       setWsConnected(false);
-      setTimeout(connect, 5000); // Reconnect after 5s
+      setTimeout(connect, 5000);
     };
     ws.onerror = () => setWsConnected(false);
 
     ws.onmessage = (event) => {
       const msg = JSON.parse(event.data);
       switch (msg.type) {
-        case "connected":
-          break;
         case "chunk":
-          setStreamingText((prev) => prev + msg.payload.text);
+          appendStreamText(msg.payload.text);
           break;
         case "done":
-          setMessages((prev) => [
-            ...prev,
-            {
-              role: "assistant",
-              content: msg.payload.fullText,
-              timestamp: new Date().toISOString(),
-              model: msg.payload.metadata?.model,
-            },
-          ]);
-          setStreamingText("");
-          setStreaming(false);
+          finalizeStream(msg.payload.fullText, msg.payload.metadata || {});
           break;
         case "error":
-          setMessages((prev) => [
-            ...prev,
-            {
-              role: "system",
-              content: `Error: ${msg.payload.message}`,
-              timestamp: new Date().toISOString(),
-            },
-          ]);
-          setStreamingText("");
+          addMessage({
+            role: "system",
+            content: `Error: ${msg.payload.message}`,
+            timestamp: new Date().toISOString(),
+          });
+          clearStreamText();
           setStreaming(false);
-          break;
-        case "typing":
-          break;
-        case "event":
-          break;
-        case "pong":
           break;
       }
     };
@@ -90,23 +87,15 @@ export default function ChatPanel() {
         connect();
         return;
       }
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "user",
-          content: text,
-          timestamp: new Date().toISOString(),
-        },
-      ]);
+      addMessage({
+        role: "user",
+        content: text,
+        timestamp: new Date().toISOString(),
+      });
       setStreaming(true);
-      setStreamingText("");
-
+      clearStreamText();
       wsRef.current.send(
-        JSON.stringify({
-          type: "chat",
-          payload: { message: text, model },
-        }),
+        JSON.stringify({ type: "chat", payload: { message: text, model } }),
       );
     },
     [streaming, model],
@@ -117,35 +106,41 @@ export default function ChatPanel() {
       wsRef.current.send(JSON.stringify({ type: "cancel", payload: {} }));
     }
     setStreaming(false);
-    setStreamingText("");
+    clearStreamText();
   };
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streamingText]);
 
+  // Determine panel class
+  const panelClass = isChatPage
+    ? "chat-panel fully-hidden"
+    : collapsed
+      ? "chat-panel collapsed"
+      : "chat-panel";
+
   return (
-    <aside className={`chat-panel ${collapsed ? "collapsed" : ""}`}>
+    <aside className={panelClass}>
       <div
         className="chat-panel-header"
-        onClick={() => setCollapsed(!collapsed)}
+        onClick={() => { if (!isChatPage) setCollapsed(!collapsed); }}
       >
         <div className="chat-panel-title">
           <span className={`status-dot ${wsConnected ? "ok" : "error"}`} />
           <span>💬 Jarvis Chat</span>
         </div>
-        <div className="chat-panel-actions">
-          <ModelSelector model={model} onChange={setModel} />
-          <button
-            className="btn-icon"
-            title={collapsed ? "Expand" : "Collapse"}
-          >
-            {collapsed ? "◀" : "▶"}
-          </button>
-        </div>
+        {!isChatPage && (
+          <div className="chat-panel-actions">
+            <ModelSelector model={model} onChange={setModel} />
+            <button className="btn-icon" title={collapsed ? "Expand" : "Collapse"}>
+              {collapsed ? "◀" : "▶"}
+            </button>
+          </div>
+        )}
       </div>
 
-      {!collapsed && (
+      {!collapsed && !isChatPage && (
         <>
           <div className="chat-messages">
             {messages.length === 0 && !streaming && (
