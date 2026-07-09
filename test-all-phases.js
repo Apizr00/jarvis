@@ -498,10 +498,10 @@ async function runAllTests() {
     assert(candidates.every(c => c.message.length > 0), 'All should have messages');
   });
 
-  test('Proactive cooldown system', () => {
+  test('Proactive cooldown system', async () => {
     const userId = TEST_USER + '_proactive_cooldown';
     proactive.recordProactiveSent(userId, 'morning_checkin');
-    const canSend = proactive.canSendProactive(userId, 'morning_checkin');
+    const canSend = await proactive.canSendProactive(userId, 'morning_checkin');
     assert(canSend === false, 'Should not be able to send again immediately');
   });
 

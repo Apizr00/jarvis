@@ -118,6 +118,9 @@ function fixHallucinatedTime(text) {
   // Pattern: optional time-word prefix + HH:MM or HH.MM + optional AM/PM/suffix
   const timePattern = /(pukul|jam|dah\s+(?:pukul|jam)\s+|around\s+|about\s+|at\s+|it'?s?\s+|is\s+|now\s+|already\s+)?(\d{1,2})[:.](\d{2})(?!\d)\s*(pagi|am|a\.m\.?|petang|malam|pm|p\.m\.?)?/gi;
 
+  const hasCurrentMarker = (value) => /\b(?:sekarang|masa\s+sekarang|currently|right\s+now|now|dah\s+lewat)\b/i.test(value);
+  const routineKeywords = /\b(?:biasanya|biasa(?:nya)?|selalu|selalunya|kebiasaan|rutin|habit|usually|normally|typically|sleep|tidur|bangun|wake(?:\s+up)?|bedtime|jam\s+tidur)\b/i;
+
   // Collect all replacements (index, oldStr, newStr) to apply from right to left
   const replacements = [];
 
@@ -145,20 +148,66 @@ function fixHallucinatedTime(text) {
 
     // ── Guard: only fix times that are clearly meant to be CURRENT time ──
     const prefixLower = prefix.toLowerCase();
+
+    // Keep context checks inside the same sentence so nearby routine text
+    // does not leak across sentences and trigger false corrections.
+    let sentenceStart = 0;
+    for (const ch of ['.', '!', '?', '\n']) {
+      const idx = text.lastIndexOf(ch, match.index - 1);
+      if (idx >= 0) sentenceStart = Math.max(sentenceStart, idx + 1);
+    }
+
+    let sentenceEnd = text.length;
+    for (const ch of ['.', '!', '?', '\n']) {
+      const idx = text.indexOf(ch, match.index + fullMatch.length);
+      if (idx >= 0) sentenceEnd = Math.min(sentenceEnd, idx);
+    }
+
+    const before80 = text.substring(Math.max(0, match.index - 80), match.index).toLowerCase();
+    const sentenceBefore = text.substring(sentenceStart, match.index).toLowerCase();
+    const sentenceAfter = text.substring(match.index + fullMatch.length, Math.min(text.length, sentenceEnd + 1)).toLowerCase();
+    const surroundingText = (sentenceBefore + ' ' + sentenceAfter).trim();
+    const strongCurrentPrefix = /^(dah\s+(?:pukul|jam)\s+|it'?s?\s+|is\s+|now\s+|already\s+)$/i.test(prefix);
+    const weakClockPrefix = /^(pukul|jam)\s*$/i.test(prefix);
+    const hasRoutineContext = routineKeywords.test(surroundingText);
     const isCurrentTimeContext =
-      /^(dah\s+)?(pukul|jam)\s*$/i.test(prefix) ||
-      /\b(now|sekarang|it'?s?\s+now|currently|masa\s+sekarang)\b/i.test(prefix) ||
-      /^(it'?s?|is|now|already)\s*$/i.test(prefix);
+      strongCurrentPrefix ||
+      hasCurrentMarker(prefix) ||
+      hasCurrentMarker(surroundingText) ||
+      (weakClockPrefix && !hasRoutineContext);
+
+    const futureKeywords = /\b(?:at|nanti|remind|akan|pada|around|about|by|before|until|hingga|sampai|dalam|lagi|next|esok|tomorrow|lusa|minggu|bulan|ingatkan|remind(?:er)?|event|jadual|schedule|meeting|set(?:kan)?|buat(?:kan)?|create|add|tambah|balik\s*kerja|pulang|keluar|masuk|kelas|appointment|temujanji|nanti\s*(?:pukul|jam|kul)|pada\s*(?:pukul|jam|kul)|dalam\s*\d+\s*(?:minit|jam|hari))\b/i;
 
     const isFutureContext =
-      /\b(at|nanti|remind|akan|pada|around|about|by|before|until|hingga|sampai|dalam|lagi|next|esok|tomorrow|lusa|minggu|bulan)\b/i.test(prefixLower) ||
+      futureKeywords.test(prefixLower) ||
       /\b(?:ingatkan|remind(?:er)?|event|jadual|schedule|meeting)\b/i.test(fullMatch);
 
     const isPastContext =
-      /\b(tadi|was|earlier|semalam|kelmarin|yesterday|last)\b/i.test(prefixLower);
+      /\b(tadi|was|earlier|semalam|kelmarin|yesterday|last|baru\s*(?:ni|tadi|saja)|sebentar\s*tadi)\b/i.test(prefixLower);
 
     if (isFutureContext || isPastContext) {
       console.log('[AntiHalluc] ⏰ Skipping time fix — looks like future/past reference: "' + fullMatch + '" (diff=' + diffMins + 'min)');
+      continue;
+    }
+
+    if (hasRoutineContext && !strongCurrentPrefix && !hasCurrentMarker(surroundingText)) {
+      console.log('[AntiHalluc] ⏰ Skipping time fix — looks like routine/habit reference: "' + fullMatch + '"');
+      continue;
+    }
+
+    // Check same-sentence context for future/past
+    if (futureKeywords.test(sentenceBefore)) {
+      console.log('[AntiHalluc] ⏰ Skipping time fix — broader context suggests future reference: "' + fullMatch + '"');
+      continue;
+    }
+    if (/\b(?:tadi|was|semalam|yesterday|baru\s*(?:ni|tadi))\b/i.test(sentenceBefore)) {
+      console.log('[AntiHalluc] ⏰ Skipping time fix — broader context suggests past reference: "' + fullMatch + '"');
+      continue;
+    }
+
+    // Check after-context too (e.g., "pukul 5:30 nanti")
+    if (futureKeywords.test(sentenceAfter)) {
+      console.log('[AntiHalluc] ⏰ Skipping time fix — after-context suggests future reference: "' + fullMatch + '"');
       continue;
     }
 
@@ -191,13 +240,13 @@ function fixHallucinatedTime(text) {
   const isNoon = hour === 12;
   const isMidnight = hour === 0;
 
-  if (!isNoon) {
+  if (!isNoon && hasCurrentMarker(text)) {
     while ((match = tengahHariRe.exec(text)) !== null) {
       const correctTime = 'pukul ' + hour + ':' + minute.toString().padStart(2, '0');
       replacements.push({ index: match.index, oldStr: match[0], newStr: correctTime });
     }
   }
-  if (!isMidnight) {
+  if (!isMidnight && hasCurrentMarker(text)) {
     while ((match = tengahMalamRe.exec(text)) !== null) {
       const correctTime = 'pukul ' + hour + ':' + minute.toString().padStart(2, '0');
       replacements.push({ index: match.index, oldStr: match[0], newStr: correctTime });

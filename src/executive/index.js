@@ -26,9 +26,6 @@ const evaluator = require('./evaluator');
 const stateMachine = require('./state-machine');
 const lifecycle = require('./lifecycle');
 const trace = require('../utils/trace');
-const db = require('../db');
-const memory = require('../memory');
-const relationships = require('../memory/relationships');
 
 // ── 1. World Model ──────────────────────────────────────────────────────────
 // Delegated to world-model.js (Fasa 2 enhanced)
@@ -256,10 +253,10 @@ const EXEC_CACHE_TTL_MS = 5000;
  * Build the executive context block that gets injected into the system prompt.
  *
  * Performance strategy:
- *   - Deep tier: full context with fact-lock classification (DB-heavy).
- *   - Fast/Medium tier: in-memory only (working memory + world model).
- *     The DB-heavy data (facts, reminders, people) is already fetched by
- *     prepareContext() inside the LLM call — no need to duplicate here.
+ *   - All tiers: only add in-memory executive context here.
+ *   - DB-heavy data (facts, reminders, people) is fetched once by
+ *     prepareContext() inside the LLM call and then injected into the
+ *     system prompt there.
  *   - Cached for 5s to handle burst messages efficiently.
  *
  * @param {string} userId
@@ -277,7 +274,6 @@ async function buildContext(userId, decision, userMessage, sm) {
   }
 
   const blocks = [];
-  const isDeep = decision.tier === 'deep';
 
   // ── Working Memory (in-memory, instant — all tiers) ────────────────────
   if (decision.needs.workingMemory) {
@@ -289,55 +285,6 @@ async function buildContext(userId, decision, userMessage, sm) {
   if (decision.needs.worldModel) {
     const worldBlock = formatWorldModelForPrompt(userId);
     if (worldBlock) blocks.push(worldBlock);
-  }
-
-  // ── Memory Facts (DB-heavy — deep tier only) ───────────────────────────
-  // For fast/medium, facts are already injected via prepareContext() inside
-  // the LLM call. Skipping here avoids duplicate DB calls.
-  if (isDeep && decision.needs.memory) {
-    const memSpan = trace.startSpan('memory_load', { userId });
-    const facts = await memory.searchFacts(userId, userMessage);
-    memory.recordFactAccess(userId, facts.map(f => f.key));
-    trace.logMemoryAccess(userId, facts.map(f => f.key), facts.length);
-
-    if (facts.length > 0) {
-      let factsBlock;
-      try {
-        const validator = require('../llm/validator');
-        const { factLockPrompt } = validator.buildFactLockContext(facts);
-        if (factLockPrompt) {
-          factsBlock = 'USER FACTS (Fact-Locked) ──────────\n' + factLockPrompt;
-        } else {
-          factsBlock = 'USER FACTS ──────────────────────\n' +
-            facts.map(f => '• ' + f.key + ': ' + f.value).join('\n');
-        }
-      } catch {
-        factsBlock = 'USER FACTS ──────────────────────\n' +
-          facts.map(f => '• ' + f.key + ': ' + f.value).join('\n');
-      }
-      blocks.push(factsBlock);
-      memSpan.end({ factCount: facts.length, tiered: true });
-    } else {
-      memSpan.end({ factCount: 0 });
-    }
-  }
-
-  // ── Relationships (DB-heavy — deep tier only) ──────────────────────────
-  if (isDeep && decision.needs.relationships) {
-    const peopleContext = await relationships.getPeopleContext(userId, userMessage, 5);
-    if (peopleContext && peopleContext.trim()) {
-      blocks.push(peopleContext);
-    }
-  }
-
-  // ── Upcoming Reminders (DB-heavy — deep tier only) ─────────────────────
-  if (isDeep) {
-    const upcomingReminders = await db.getUpcomingReminders(userId, 15);
-    if (upcomingReminders.length > 0) {
-      const reminderBlock = 'UPCOMING REMINDERS ────────────────\n' +
-        upcomingReminders.map(r => '• #' + r.id + ': ' + r.text + ' at ' + r.remind_at).join('\n');
-      blocks.push(reminderBlock);
-    }
   }
 
   // ── State machine transition ──────────────────────────────────────────

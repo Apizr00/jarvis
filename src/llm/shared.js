@@ -48,13 +48,28 @@ function validateParsedResponse(normalized, opts = {}) {
     timezone: process.env.TIMEZONE || 'UTC',
     userFacts: facts,
     upcomingReminders: upcomingReminders,
+    userMessage: userMessage,  // 🔥 Pass user message so validator can detect create intent
   });
 
   if (!validation.isValid && normalized.type === 'message') {
     console.warn('[Shared] ⚠️ Hallucination detected:', validation.issues.join('; '));
     if (validation.forceToolCall) {
-      console.log('[Shared] 🔄 Forcing list_reminders tool call to get accurate times');
-      return { result: { type: 'tool', name: 'list_reminders', args: {} }, wasValidated: true };
+      const forcedName = validation.forceToolCall.name;
+      // 🔥 CRITICAL: Only force tool calls that have complete args (e.g., list_reminders).
+      // For create_reminder/create_event/add_note/web_search with empty args,
+      // let the hallucinated message pass through — the bot's retry mechanism
+      // will catch the action keywords and re-prompt the LLM correctly.
+      const hasEmptyArgs = !validation.forceToolCall.args || Object.keys(validation.forceToolCall.args).length === 0;
+      const isCreateTool = ['create_reminder', 'create_event', 'add_note', 'web_search'].includes(forcedName);
+
+      if (isCreateTool && hasEmptyArgs) {
+        console.log('[Shared] ⚠️ Forced tool ' + forcedName + ' has empty args — passing hallucinated message through for bot retry');
+        // Pass the original hallucinated message through — bot/index.js will handle retry
+        return { result: normalized, wasValidated: true };
+      }
+
+      console.log('[Shared] 🔄 Forcing ' + forcedName + ' tool call instead of hallucinated message');
+      return { result: { type: 'tool', name: forcedName, args: validation.forceToolCall.args }, wasValidated: true };
     }
     const fallback = validator.generateFallbackResponse(userMessage);
     return { result: { type: 'message', content: fallback }, wasValidated: true };
@@ -162,6 +177,33 @@ function parseXmlParams(toolName, innerXml) {
 }
 
 function parseAndValidate(rawText, opts = {}) {
+  // ── Helper: sanitize raw text that looks like JSON ────────────────────
+  const sanitizeRawText = (text) => {
+    // If text looks like JSON, try to extract readable content
+    if (/^\s*[\{\[]/.test(text) || /```(?:json)?[\s\S]*```/.test(text)) {
+      // Try to parse as JSON
+      try {
+        const cleaned = text.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
+        const parsed = JSON.parse(cleaned);
+        const readable = extractReadableContent(parsed);
+        if (readable) return readable;
+      } catch { }
+      // Try regex extraction as last resort
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          const parsed = JSON.parse(jsonMatch[0]);
+          const readable = extractReadableContent(parsed);
+          if (readable) return readable;
+        } catch { }
+      }
+      // If it's JSON-like but unreadable, return safe fallback
+      console.warn('[Shared] ⚠️ Raw response looks like JSON but could not extract content');
+      return 'Maaf, saya ada masalah format response. Boleh tanya semula?';
+    }
+    return text;
+  };
+
   // ── Try 1: strip markdown fences then parse ───────────────────────────
   try {
     const cleaned = rawText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
@@ -172,7 +214,6 @@ function parseAndValidate(rawText, opts = {}) {
       return result;
     }
     // Valid JSON but unrecognized structure — try to extract readable content
-    // If that also fails, return a safe fallback instead of raw JSON
     console.log('[Shared] Valid JSON but unrecognized structure after normalization, extracting readable content');
     const readable = extractReadableContent(parsed);
     if (readable) {
@@ -180,7 +221,7 @@ function parseAndValidate(rawText, opts = {}) {
     }
     // Truly unrecoverable — return a safe fallback, NOT raw JSON
     console.warn('[Shared] ⚠️ Could not extract readable content from LLM response');
-    return { type: 'message', content: 'I received that but had trouble formatting my response. Could you rephrase?' };
+    return { type: 'message', content: 'Maaf, response saya tak dapat diproses. Boleh tanya semula?' };
   } catch (e) {
     // ── Try 2: extract JSON object with regex ───────────────────────────
     const jsonMatch = rawText.match(/\{[\s\S]*\}/);
@@ -192,7 +233,12 @@ function parseAndValidate(rawText, opts = {}) {
           const { result } = validateParsedResponse(normalized, opts);
           return result;
         }
-        console.log('[Shared] Regex-extracted JSON but unrecognized structure');
+        // 🔥 FIX: Regex-extracted JSON but unrecognized — try to extract readable content
+        console.log('[Shared] Regex-extracted JSON but unrecognized structure, extracting readable content');
+        const readable = extractReadableContent(extracted);
+        if (readable) {
+          return { type: 'message', content: readable };
+        }
       } catch (_) {
         console.log('[Shared] Regex extraction found but JSON.parse failed');
       }
@@ -205,8 +251,10 @@ function parseAndValidate(rawText, opts = {}) {
       return result;
     }
 
-    console.log('[Shared] No JSON or XML tool call found in response, treating as plain message');
-    return { type: 'message', content: rawText };
+    // ── Final fallback: sanitize raw text (prevent JSON leakage) ────────
+    console.log('[Shared] No JSON or XML tool call found in response, sanitizing raw text');
+    const sanitized = sanitizeRawText(rawText);
+    return { type: 'message', content: sanitized };
   }
 }
 
@@ -389,6 +437,37 @@ function normalizeLLMResponse(parsed) {
     }
   }
 
+  // 🔥 Handle objects with "model" key FIRST (LLM describing itself — common hallucination pattern)
+  // This must come BEFORE the generic extractableKeys to ensure complete reconstruction
+  if (parsed.model && typeof parsed.model === 'string') {
+    const parts = [];
+    if (parsed.model) parts.push('Model: ' + parsed.model);
+    if (parsed.provider) parts.push('Provider: ' + parsed.provider);
+    if (parsed.description && typeof parsed.description === 'string') parts.push(parsed.description);
+    if (parsed.capabilities) parts.push('Capabilities: ' + (Array.isArray(parsed.capabilities) ? parsed.capabilities.join(', ') : parsed.capabilities));
+    if (parts.length > 0) {
+      console.log('[Shared] 🔄 Reconstructed message from model-description JSON');
+      return { type: 'message', content: parts.join('. ') };
+    }
+  }
+
+  // Handle nested model_info, model_details, etc.
+  for (const modelKey of ['model_info', 'model_details', 'ai_info', 'bot_info', 'system_info']) {
+    if (parsed[modelKey] && typeof parsed[modelKey] === 'object' && !Array.isArray(parsed[modelKey])) {
+      const info = parsed[modelKey];
+      const parts = [];
+      if (info.name) parts.push(info.name);
+      if (info.model) parts.push(info.model);
+      if (info.provider) parts.push('by ' + info.provider);
+      if (info.description) parts.push(info.description);
+      if (info.version) parts.push('v' + info.version);
+      if (parts.length > 0) {
+        console.log('[Shared] 🔄 Reconstructed message from ' + modelKey + ' JSON');
+        return { type: 'message', content: parts.join('. ') };
+      }
+    }
+  }
+
   // 🔥 Last resort: try to extract meaningful string content from any key
   // Prevents raw JSON from being shown to the user when the LLM deviates
   // from the expected {"type":"message","content":"..."} format.
@@ -396,17 +475,55 @@ function normalizeLLMResponse(parsed) {
   //   {"summary":"...", "sources":[...]} → extract "summary"
   //   {"answer":"...", "results":[...]} → extract "answer"
   //   {"text":"...", "data":{...}} → extract "text"
-  const extractableKeys = ['summary', 'answer', 'text', 'message', 'reply', 'response', 'content', 'description'];
+  //   {"model_info":{...}} → extract nested description or model name
+  const extractableKeys = [
+    'summary', 'answer', 'text', 'message', 'reply', 'response', 'content', 'description',
+    'output', 'result', 'body', 'info', 'details', 'data', 'analysis',
+  ];
   for (const key of extractableKeys) {
-    if (parsed[key] && typeof parsed[key] === 'string' && parsed[key].trim().length > 0) {
+    const val = parsed[key];
+    if (val && typeof val === 'string' && val.trim().length > 0) {
       console.log('[Shared] 🔄 Extracted content from key "' + key + '" — LLM used non-standard JSON format');
-      return { type: 'message', content: parsed[key].trim() };
+      return { type: 'message', content: val.trim() };
+    }
+    // Handle nested object with description/content field
+    if (val && typeof val === 'object' && !Array.isArray(val)) {
+      for (const subKey of ['description', 'content', 'text', 'message', 'summary', 'info', 'detail', 'reply', 'name', 'output', 'answer', 'body']) {
+        if (val[subKey] && typeof val[subKey] === 'string' && val[subKey].trim().length > 0) {
+          console.log('[Shared] 🔄 Extracted nested content from "' + key + '.' + subKey + '" — LLM used non-standard JSON format');
+          return { type: 'message', content: val[subKey].trim() };
+        }
+      }
     }
   }
 
-  // If the object has ANY string value that looks like natural language (>20 chars)
+  // 🔥 Scan ALL keys for nested objects that contain readable strings
+  // This catches deeply nested structures like {"data":{"info":{"description":"..."}}}
   for (const key of keys) {
-    if (typeof parsed[key] === 'string' && parsed[key].length > 20) {
+    const val = parsed[key];
+    if (val && typeof val === 'object' && !Array.isArray(val)) {
+      // Recursively search one level deeper
+      for (const subKey of Object.keys(val)) {
+        const subVal = val[subKey];
+        if (subVal && typeof subVal === 'string' && subVal.trim().length > 10) {
+          console.log('[Shared] 🔄 Extracted content from "' + key + '.' + subKey + '" (deep scan)');
+          return { type: 'message', content: subVal.trim() };
+        }
+        if (subVal && typeof subVal === 'object' && !Array.isArray(subVal)) {
+          for (const deepKey of ['description', 'content', 'text', 'message', 'summary', 'info', 'detail', 'reply', 'name', 'output', 'answer', 'body']) {
+            if (subVal[deepKey] && typeof subVal[deepKey] === 'string' && subVal[deepKey].trim().length > 0) {
+              console.log('[Shared] 🔄 Extracted deep content from "' + key + '.' + subKey + '.' + deepKey + '"');
+              return { type: 'message', content: subVal[deepKey].trim() };
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // If the object has ANY string value that looks like natural language (>15 chars)
+  for (const key of keys) {
+    if (typeof parsed[key] === 'string' && parsed[key].length > 15) {
       console.log('[Shared] 🔄 Extracted content from key "' + key + '" (fallback) — LLM used unexpected format');
       return { type: 'message', content: parsed[key] };
     }
@@ -540,7 +657,15 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     '• Greetings ("hi", "hello", "apa khabar")\n' +
     '• Answering factual questions ("what is photosynthesis?")\n' +
     '• Asking clarifying questions ("What time do you want the reminder?")\n' +
-    '• Casual chat with NO action involved\n\n';
+    '• Casual chat with NO action involved\n' +
+    '🔥 JSON FORMAT ENFORCEMENT (READ 3 TIMES):\n' +
+    'Your JSON MUST use EXACTLY these keys: "type", and either "content" (for messages) OR "name"+"args" (for tools).\n' +
+    'You MUST NOT invent new keys like "model", "provider", "model_info", "capabilities", "source", "metadata", etc.\n' +
+    'You MUST NOT output JSON objects with custom structures. ONLY the two formats listed above are valid.\n' +
+    'A JSON like {"model":"Gemini","provider":"Google"} will BREAK the system and confuse the user.\n' +
+    '🔥 If the user asks "what model are you using?" or similar meta questions about yourself:\n' +
+    '  Answer with format B: {"type":"message","content":"Saya guna model AI terkini yang power dan laju!"}\n' +
+    '  Do NOT output a JSON with model details. Just reply naturally in the "content" field.\n\n';
 
   // ═══════════════════════════════════════════════════════════════════════
   // SECTION 2: Anti-hallucination guardrails (medium + deep only)

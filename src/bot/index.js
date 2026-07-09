@@ -1335,8 +1335,6 @@ async function createBot() {
 
   // ── Shared text processing (used by both text and voice messages) ─────────
   async function processUserText(bot, chatId, userId, userName, text, messageId = null) {
-    await db.ensureUser(userId, userName);
-
     // ── 🚫 User message dedup: skip if same text within 10 seconds ──────
     if (isDuplicateUserMessage(userId, text)) {
       console.log('[Bot] 🚫 Skipped duplicate message: "' + text.slice(0, 60) + '"');
@@ -1353,6 +1351,10 @@ async function createBot() {
     // Cleanup helper — call when done
     const stopTyping = () => { clearInterval(typingInterval); };
 
+    // Start non-user-visible setup work in parallel while the typing
+    // indicator is already shown.
+    const ensureUserPromise = db.ensureUser(userId, userName);
+
     // ── 📡 Emit message:received event ──────────────────────────────────
     eventBus.emitSync(EVENTS.MESSAGE_RECEIVED, {
       userId,
@@ -1363,12 +1365,15 @@ async function createBot() {
     });
 
     // ── 🔌 Run plugin message hooks (before core processing) ────────────
-    const pluginResults = await pluginRegistry.runMessageHooks({
-      userId,
-      chatId,
-      message: text,
-      bot,
-    });
+    const [, pluginResults] = await Promise.all([
+      ensureUserPromise,
+      pluginRegistry.runMessageHooks({
+        userId,
+        chatId,
+        message: text,
+        bot,
+      }),
+    ]);
     // Log any plugin activity
     for (const pr of pluginResults) {
       console.log('[Bot] Plugin "' + pr.plugin + '" returned:', JSON.stringify(pr.result).slice(0, 100));
@@ -1447,6 +1452,33 @@ async function createBot() {
       // 🔥 Use summarized history to prevent context amnesia in long chats
       const history = getEffectiveHistory(userId);
 
+      // ── 🧠 Context Switch Detection ────────────────────────────────────
+      // If the last assistant message was asking a clarification question
+      // (e.g., "What topic to search?") and the user's new message is a
+      // completely different intent (e.g., "Set reminder"), inject a
+      // context-reset marker to prevent the LLM from confusing intents.
+      if (history.length >= 2) {
+        const lastAssistant = [...history].reverse().find(h => h.role === 'assistant');
+        const lastUser = [...history].reverse().find(h => h.role === 'user');
+
+        if (lastAssistant && lastUser) {
+          const assistantAskedQuestion = /(?:\?|apa\s*(?:topik|nama|tajuk|yang)|what\s*(?:topic|name|would)|nak\s*(?:cari|search|tahu)\s*(?:apa|tentang|pasal)|boleh\s*(?:bagi|beri|specify|nyatakan)|maksud\s*(?:awak|tu)|clarify|specific)/i.test(lastAssistant.content);
+          const userNewIsCommand = /\b(?:set|buat|create|add|tambah|ingatkan|remind|simpan|save|cari|search|padam|delete|cancel|jadual|schedule)\b/i.test(text);
+          const isDifferentIntent = assistantAskedQuestion && userNewIsCommand;
+
+          if (isDifferentIntent) {
+            console.log('[Bot] 🔄 Context switch detected — last assistant asked a question but user gave new command');
+            // Inject a context separator before the user's latest message
+            history.push({
+              role: 'system',
+              content: '[CONTEXT RESET] The user has ignored your previous question and is now giving a NEW, UNRELATED command. Treat this as a FRESH instruction. Do NOT reference your previous question or continue the previous topic. Focus ONLY on what the user is saying NOW.',
+            });
+            console.log('[Bot]    Last assistant said: ' + lastAssistant.content.slice(0, 100));
+            console.log('[Bot]    User now says: ' + text.slice(0, 100));
+          }
+        }
+      }
+
       // ── 🧠 Thinking steps for deep tier — show what the bot is doing ──
       let thinkingMsg = null;
       let thinkingStep = 0;
@@ -1524,14 +1556,16 @@ async function createBot() {
       // ── Recovery: if LLM returned a message that looks like a fake action, retry once ──
       // Narrowed regex: only catch CLEAR hallucinated action claims, not normal conversation.
       // A hallucinated action message typically says "I've done X" or "Done! X created" etc.
-      const actionKeywords = /\b(?:i've\s+(?:created|set|saved|added|updated|cancelled|deleted|removed|changed|recorded)|i\s+have\s+(?:created|set|saved|added)|i\s+will\s+(?:remind|create|set|save|add|cancel|delete)|dah\s+(?:set|buat|masuk|confirm|simpan|ingat|create|save|cancel|delete|tambah|jadual|schedule)|sudah\s+(?:set|create|tambah|save|cancel|delete)|telah\s+(?:set|create|tambah|save|cancel)|akan\s+(?:set|create|tambah|ingatkan)|all\s+set|got\s+it|done!|siap\s+dah|okay\s+dah)\b/i;
+      const actionKeywords = /\b(?:i've\s+(?:created|set|saved|added|updated|cancelled|deleted|removed|changed|recorded|noted|written|scheduled|planned)|i\s+have\s+(?:created|set|saved|added)|i\s+will\s+(?:remind|create|set|save|add|cancel|delete|notify|alert|send)|i'll\s+(?:remind|create|set|save|add|notify)|let\s+me\s+(?:remind|create|set|save|add|check|notify|schedule)|dah\s+(?:set|buat|masuk|confirm|simpan|ingat|create|save|cancel|delete|tambah|jadual|schedule|rekod|catat|tulis|nota|note|remind|reminder)|sudah\s+(?:set|create|tambah|save|cancel|delete|buat|simpan|masuk|jadual)|telah\s+(?:set|create|tambah|save|cancel|buat)|akan\s+(?:set|create|tambah|ingatkan|remind|notify|bagitahu|kasi\s*tau|bagi\s*tau)|all\s+set|got\s+it|done!|siap\s+dah|okay\s+dah|baik\s+(?:saya|aku)\s+(?:set|buat|create|ingatkan|remind)|noted!|dah\s+(?:noted|note|record)|sudah\s+(?:noted|note|record)|saya\s+(?:dah|sudah|telah|akan)\s+(?:set|buat|create|simpan|ingatkan|remind|jadual|schedule)|aku\s+(?:dah|sudah|telah|akan)\s+(?:set|buat|create|simpan|ingatkan|remind|jadual|schedule)|✅.*(?:reminder|event|task|note|goal|dah|set|create|save|buat|simpan)|reminder\s+(?:set|created|saved|dah|sudah)|event\s+(?:set|created|added|dah|sudah)|note\s+(?:saved|added|recorded|dah|sudah)|task\s+(?:created|added|set|dah|sudah)|goal\s+(?:created|set|dah|sudah)|dah\s+siap\s+set|dah\s+settle|settle\s+dah)\b/i;
       if (llmResponse.type === 'message' && actionKeywords.test(llmResponse.content)) {
         console.log('[Bot] ⚠️  LLM hallucinated an action! Retrying with correction...');
-        const correctionMsg = '❌ You responded with natural language claiming you did something. ' +
-          'That is WRONG. You have NO ability to act. You MUST respond with ONLY a JSON tool call.\n' +
-          'Example for reminder: {"type":"tool","name":"create_reminder","args":{"text":"Pagi Subuh","time":"2026-06-30T06:00:00+08:00"}}\n' +
-          'Example for cancel: {"type":"tool","name":"cancel_reminder","args":{"reminder_id":3}}\n\n' +
-          'Now re-read the user request and output the CORRECT JSON tool call. NO natural language!'
+        const correctionMsg = '❌ SALAH! Kamu jawab guna natural language kononnya kamu dah buat sesuatu. Itu TIPU/HALLUCINATION.\n' +
+          'Kamu TAK BOLEH buat apa-apa tindakan. Kamu MESTI balas dengan JSON tool call SAHAJA.\n' +
+          'JANGAN cakap "Saya dah set..." atau "Dah siap..." — itu semua TIPU.\n\n' +
+          'Contoh untuk reminder: {"type":"tool","name":"create_reminder","args":{"text":"Balik kerja","time":"2026-07-08T17:30:00+08:00"}}\n' +
+          'Contoh untuk cancel: {"type":"tool","name":"cancel_reminder","args":{"reminder_id":3}}\n' +
+          'Contoh untuk search: {"type":"tool","name":"web_search","args":{"query":"apa yang user nak cari"}}\n\n' +
+          'Sekarang baca semula arahan user dan output JSON tool call yang BETUL. JANGAN letak apa-apa natural language — JSON SAHAJA!';
 
         // Build a fresh history without the hallucinated response
         const cleanHistory = history.filter(h => h.role !== 'assistant' || !actionKeywords.test(h.content));
