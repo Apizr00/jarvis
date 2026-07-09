@@ -1,0 +1,74 @@
+.notes-page {
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.notes-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.notes-header h2 {
+  font-size: 1.2rem;
+}
+
+.note-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.note-title-input {
+  font-size: 1rem;
+  font-weight: 600;
+}
+.note-content-input {
+  font-size: 0.9rem;
+  resize: vertical;
+  min-height: 120px;
+}
+.note-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.notes-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.note-card {
+  padding: 16px;
+}
+.note-card-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.note-card-body {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.note-card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.note-card-date {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}

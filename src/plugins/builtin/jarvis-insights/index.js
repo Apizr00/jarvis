@@ -69,6 +69,50 @@ async function onInit(pluginCtx) {
   }
 
   ctx.logger.info('Loaded ' + moodLog.length + ' mood entries, ' + messageCount + ' messages tracked');
+
+  // ── Register Playground Widgets ───────────────────────────────────────
+  if (typeof ctx.registerWidget === 'function') {
+    // Mood chart widget
+    ctx.registerWidget({
+      id: 'mood-chart',
+      title: 'Mood Tracker',
+      icon: '📊',
+      type: 'chart',
+      description: 'Carta mood harian berdasarkan interaksi dengan Jarvis.',
+      defaultSize: { w: 2, h: 1 },
+      refreshInterval: 600000, // 10 minutes
+      endpoint: '/api/plugins/jarvis-insights/mood-data',
+      config: { chartType: 'bar' },
+    });
+
+    // Weekly summary widget
+    ctx.registerWidget({
+      id: 'weekly-summary',
+      title: 'Weekly Summary',
+      icon: '📋',
+      type: 'card',
+      description: 'Ringkasan mingguan interaksi dan aktiviti.',
+      defaultSize: { w: 2, h: 1 },
+      refreshInterval: 3600000, // 1 hour
+      endpoint: '/api/plugins/jarvis-insights/weekly-data',
+      config: {},
+    });
+
+    // Usage stats widget
+    ctx.registerWidget({
+      id: 'usage-stats',
+      title: 'Usage Stats',
+      icon: '📈',
+      type: 'list',
+      description: 'Statistik penggunaan Jarvis.',
+      defaultSize: { w: 1, h: 1 },
+      refreshInterval: 300000, // 5 minutes
+      endpoint: '/api/plugins/jarvis-insights/usage-data',
+      config: {},
+    });
+
+    ctx.logger.info('Insights widgets registered for playground');
+  }
 }
 
 /**

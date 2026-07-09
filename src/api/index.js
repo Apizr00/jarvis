@@ -7,12 +7,24 @@ const { getHealthStatus, formatHealthMessage } = require('./health');
 const { getApiStatus } = require('./status');
 const prayerTimes = require('./prayertimes');
 const { logger } = require('../utils/logger');
+const { requireAuth, telegramAuthHandler, meHandler } = require('./auth');
+const pluginsApi = require('./plugins');
+const tasksApi = require('./tasks');
 
 const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
 
 function createApiServer() {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: '10mb' }));
+
+  // ── CORS ──────────────────────────────────────────────────────────────────
+  app.use((req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    if (req.method === 'OPTIONS') return res.status(204).end();
+    next();
+  });
 
   // ── Serve static files from public/ ─────────────────────────────────────
   app.use(express.static(path.join(__dirname, 'public')));
@@ -172,6 +184,194 @@ function createApiServer() {
       res.status(500).json({ status: 'error', message: err.message });
     }
   });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── AUTH ROUTES ───────────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // POST /api/auth/telegram — verify Telegram Login Widget hash, issue JWT
+  app.post('/api/auth/telegram', telegramAuthHandler);
+
+  // GET /api/auth/me — returns current user from JWT
+  app.get('/api/auth/me', requireAuth, meHandler);
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── PLUGIN ROUTES (protected) ─────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // GET /api/plugins/manifest — all enabled plugins with widget/page registrations
+  app.get('/api/plugins/manifest', pluginsApi.getManifest);
+
+  // GET /api/plugins — all plugins with status
+  app.get('/api/plugins', requireAuth, pluginsApi.getAllPlugins);
+
+  // POST /api/plugins/:name/toggle — enable/disable
+  app.post('/api/plugins/:name/toggle', requireAuth, pluginsApi.togglePlugin);
+
+  // GET /api/plugins/:name/config — get plugin config
+  app.get('/api/plugins/:name/config', requireAuth, pluginsApi.getPluginConfig);
+
+  // PUT /api/plugins/:name/config — update plugin config
+  app.put('/api/plugins/:name/config', requireAuth, pluginsApi.updatePluginConfig);
+
+  // POST /api/plugins/:name/reload — hot-reload
+  app.post('/api/plugins/:name/reload', requireAuth, pluginsApi.reloadPlugin);
+
+  // POST /api/plugins/upload — upload new plugin
+  app.post('/api/plugins/upload', requireAuth, pluginsApi.uploadPlugin);
+
+  // GET /api/widgets — all registered widgets
+  app.get('/api/widgets', pluginsApi.getWidgets);
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── TASKS & NOTES ROUTES (protected) ──────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // Tasks
+  app.get('/api/tasks', requireAuth, tasksApi.listTasks);
+  app.post('/api/tasks', requireAuth, tasksApi.createTask);
+  app.put('/api/tasks/:id', requireAuth, tasksApi.updateTask);
+  app.delete('/api/tasks/:id', requireAuth, tasksApi.deleteTask);
+
+  // Notes
+  app.get('/api/notes', requireAuth, tasksApi.listNotes);
+  app.post('/api/notes', requireAuth, tasksApi.createNote);
+  app.put('/api/notes/:id', requireAuth, tasksApi.updateNote);
+  app.delete('/api/notes/:id', requireAuth, tasksApi.deleteNote);
+
+  // Goals
+  app.get('/api/goals', requireAuth, tasksApi.listGoals);
+  app.post('/api/goals', requireAuth, tasksApi.createGoal);
+  app.put('/api/goals/:id', requireAuth, tasksApi.updateGoal);
+  app.delete('/api/goals/:id', requireAuth, tasksApi.deleteGoal);
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── MEMORY ROUTES (protected) ─────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // GET /api/memory/facts — all memory facts (with optional ?search= filter)
+  app.get('/api/memory/facts', requireAuth, async (req, res) => {
+    try {
+      const ownerId = req.user.sub;
+      const { search } = req.query;
+      let facts = await db.getAllFacts(ownerId);
+
+      // Filter by search
+      if (search && facts) {
+        const q = search.toLowerCase();
+        facts = facts.filter(f =>
+          (f.key && f.key.toLowerCase().includes(q)) ||
+          (f.value && String(f.value).toLowerCase().includes(q))
+        );
+      }
+
+      res.json({ facts: facts || [], total: facts?.length || 0 });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // PUT /api/memory/facts/:key — update a memory fact (key is URL-encoded)
+  app.put('/api/memory/facts/:key', requireAuth, async (req, res) => {
+    try {
+      const ownerId = req.user.sub;
+      const key = decodeURIComponent(req.params.key);
+      const { value } = req.body;
+
+      if (value === undefined) {
+        return res.status(400).json({ error: 'value is required' });
+      }
+
+      const updated = await db.setFact(ownerId, key, String(value));
+      res.json({ fact: updated });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // DELETE /api/memory/facts/:key — delete a memory fact
+  app.delete('/api/memory/facts/:key', requireAuth, async (req, res) => {
+    try {
+      const ownerId = req.user.sub;
+      const key = decodeURIComponent(req.params.key);
+      await db.deleteFact(ownerId, key);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── INSIGHTS PLUGIN DATA ENDPOINTS ────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  // These power the jarvis-insights plugin widgets on the playground dashboard.
+
+  // GET /api/plugins/jarvis-insights/mood-data
+  app.get('/api/plugins/jarvis-insights/mood-data', async (req, res) => {
+    try {
+      const ownerId = String(process.env.TELEGRAM_OWNER_ID);
+      const facts = await db.getAllFacts(ownerId);
+      const moodFact = facts.find(f => f.key === 'insights_mood_log');
+      const moodLog = moodFact ? JSON.parse(moodFact.value || '[]') : [];
+      res.json({ moods: moodLog.slice(-50), total: moodLog.length });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/plugins/jarvis-insights/weekly-data
+  app.get('/api/plugins/jarvis-insights/weekly-data', async (req, res) => {
+    try {
+      const ownerId = String(process.env.TELEGRAM_OWNER_ID);
+      const facts = await db.getAllFacts(ownerId);
+      const countFact = facts.find(f => f.key === 'insights_message_count');
+      const messageCount = countFact ? parseInt(countFact.value || '0', 10) : 0;
+      res.json({
+        messageCount,
+        weekStart: new Date(Date.now() - 7 * 86400000).toISOString(),
+        weekEnd: new Date().toISOString(),
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/plugins/jarvis-insights/usage-data
+  app.get('/api/plugins/jarvis-insights/usage-data', async (req, res) => {
+    try {
+      const ownerId = String(process.env.TELEGRAM_OWNER_ID);
+      const facts = await db.getAllFacts(ownerId);
+      const countFact = facts.find(f => f.key === 'insights_message_count');
+      const moodFact = facts.find(f => f.key === 'insights_mood_log');
+      res.json({
+        totalMessages: countFact ? parseInt(countFact.value || '0', 10) : 0,
+        totalMoods: moodFact ? JSON.parse(moodFact.value || '[]').length : 0,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── PLAYGROUND SPA — catch-all for React Router ───────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Serve the React SPA for any non-API, non-static route.
+  // This must come LAST after all API routes and static middleware.
+  const playgroundDir = path.join(__dirname, 'public', 'playground');
+  const fs = require('fs');
+  if (fs.existsSync(playgroundDir)) {
+    // Serve playground static files (JS, CSS, assets)
+    app.use('/assets', express.static(path.join(playgroundDir, 'assets')));
+
+    // Serve index.html for all non-matched routes (SPA client-side routing)
+    app.get('*', (req, res) => {
+      // Skip API routes that weren't matched
+      if (req.path.startsWith('/api/')) {
+        return res.status(404).json({ error: 'Not found' });
+      }
+      res.sendFile(path.join(playgroundDir, 'index.html'));
+    });
+  }
 
   return app;
 }

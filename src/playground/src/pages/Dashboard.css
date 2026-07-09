@@ -1,0 +1,27 @@
+.dashboard-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.state-message {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  padding: 48px 24px;
+  text-align: center;
+}
+
+.state-icon {
+  font-size: 3rem;
+  margin-bottom: 12px;
+}
+.state-title {
+  font-weight: 700;
+  font-size: 1.1rem;
+  margin-bottom: 6px;
+}
+.state-desc {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}

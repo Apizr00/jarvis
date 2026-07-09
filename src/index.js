@@ -181,10 +181,19 @@ async function main() {
   // ── Start auto-save (checkpoints every 5 minutes) ──────────────────────
   persistence.startAutoSave(ownerId);
 
-  // Start REST API
+  // ── Start REST API + WebSocket Server ──────────────────────────────────
   const app = createApiServer();
+  const http = require('http');
+  const server = http.createServer(app);
+
+  // Attach WebSocket server for real-time chat
+  const { createWebSocketServer } = require('./api/websocket');
+  const llm = require('./llm');
+  createWebSocketServer(server, { llm, eventBus });
+  console.log('🔌 WebSocket server attached (path: /ws)');
+
   const port = process.env.PORT || 3000;
-  app.listen(port, () => {
+  server.listen(port, () => {
     console.log('🌐 API server running on http://localhost:' + port);
   });
 

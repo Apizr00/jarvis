@@ -1,0 +1,12 @@
+{
+  "name": "prayertimes-widget",
+  "version": "1.0.0",
+  "description": "JAKIM e-Solat prayer times widget for the Jarvis Playground dashboard",
+  "author": "Jarvis",
+  "main": "index.js",
+  "hooks": ["onInit", "onEnable", "onDisable"],
+  "capabilities": ["widget:prayertimes", "widget:waktu-solat"],
+  "config": {
+    "enabled": true
+  }
+}

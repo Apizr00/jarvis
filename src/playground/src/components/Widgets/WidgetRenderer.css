@@ -1,0 +1,60 @@
+.widget-card {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.widget-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+
+.widget-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.widget-icon {
+  font-size: 1rem;
+}
+
+.widget-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.widget-loading-indicator {
+  color: var(--accent);
+  animation: spin 1s linear infinite;
+  font-size: 0.9rem;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.widget-body {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 40px;
+}
+
+.widget-error {
+  color: var(--red);
+  font-size: 0.8rem;
+  padding: 8px;
+}

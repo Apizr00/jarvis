@@ -1,0 +1,78 @@
+.tasks-page {
+  max-width: 700px;
+  margin: 0 auto;
+}
+.page-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-add-form {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.task-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.task-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius-sm);
+  transition: all var(--transition);
+}
+
+.task-item:hover {
+  background: var(--card-bg-hover);
+}
+.task-item.done {
+  opacity: 0.5;
+}
+.task-item.done .task-title {
+  text-decoration: line-through;
+}
+
+.task-info {
+  min-width: 0;
+  flex: 1;
+}
+.task-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+.task-desc {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  margin-top: 2px;
+}
+.task-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 6px;
+}
+.task-date {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.task-actions {
+  display: flex;
+  gap: 4px;
+}
