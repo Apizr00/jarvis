@@ -195,10 +195,15 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
 
     // Stream response
     let fullText = '';
-    const chunks = await llm.chatStream(userId, message, {
-      systemPrompt,
-      model: requestedModel || 'auto',
-      onChunk: (chunk) => {
+    await llm.chatStream(
+      userId,
+      message,
+      [],                              // conversationHistory (empty for new chat)
+      {
+        systemPrompt,
+        model: requestedModel || 'auto',
+      },
+      (chunk) => {                     // onChunk callback (5th argument)
         if (aborted) throw new Error('ABORTED');
         fullText += chunk;
         if (ws.readyState === WebSocket.OPEN) {
@@ -207,8 +212,8 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
             payload: { text: chunk, conversationId: convId },
           }));
         }
-      },
-    });
+      }
+    );
 
     // ── Done ───────────────────────────────────────────────────────────
     ws.send(JSON.stringify({
