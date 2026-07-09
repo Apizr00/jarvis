@@ -10,6 +10,7 @@ const { getQuote } = require('../tools/quote');
 const patterns = require('../patterns');
 const lifecycle = require('../executive/lifecycle');
 const queueSystem = require('../queue');
+const prayerTimes = require('../api/prayertimes');
 
 let botInstance = null;
 
@@ -19,6 +20,12 @@ let reviewTask = null;
 let cleanupTask = null;
 let reflectionTask = null;
 let patternAnalysisTask = null;
+
+// ── Prayer time notification state ────────────────────────────────────────
+let prayerNotificationTask = null;
+let todaysPrayerTimings = {};     // { fajr: '05:56:00', dhuhr: '13:21:00', ... }
+let notifiedPrayers = new Set();  // Track which prayers already fired today
+let prayerZone = prayerTimes.DEFAULT_ZONE;
 
 // Track recently fired reminder IDs to prevent re-firing within the poll window
 const recentlyFired = new Map();
@@ -117,6 +124,10 @@ async function startScheduler(bot) {
     }
   });
   console.log('💬 Proactive check-in scheduled for every 60 minutes');
+
+  // ── Prayer Time Notifications ────────────────────────────────────────
+  await startPrayerNotifications();
+  console.log('🕌 Prayer time notifications started');
 
   // ── Fasa 5: Quick self-evaluation: every 3 hours ─────────────────────
   const evaluator = require('../executive/evaluator');
@@ -489,5 +500,161 @@ async function sendWeeklyReview() {
     console.error('Weekly review failed:', err.message);
   }
 }
+
+// ── Prayer Time Notification System ──────────────────────────────────────────
+
+/**
+ * Load today's prayer times from JAKIM API and prepare notification schedule.
+ * Called at startup and daily at midnight.
+ */
+async function refreshPrayerTimings() {
+  try {
+    const zone = process.env.PRAYER_ZONE || 'WLY01';
+    prayerZone = zone;
+    const data = await prayerTimes.getPrayerTimes(zone, true); // force fresh fetch
+
+    todaysPrayerTimings = {};
+    notifiedPrayers = new Set();
+
+    for (const key of prayerTimes.OBLIGATORY_PRAYERS) {
+      if (data.timings[key]) {
+        todaysPrayerTimings[key] = data.timings[key];
+      }
+    }
+
+    const found = Object.keys(todaysPrayerTimings).length;
+    console.log(`[Scheduler] 🕌 Prayer times loaded for ${zone}: ${found}/5 prayers found (${data.date})`);
+
+    if (found < 5) {
+      console.warn(`[Scheduler] ⚠️ Only ${found}/5 obligatory prayers available for ${zone}`);
+    }
+
+    return data;
+  } catch (err) {
+    console.error('[Scheduler] ❌ Failed to load prayer times:', err.message);
+    // If we have stale data from cache, keep using it
+    if (Object.keys(todaysPrayerTimings).length > 0) {
+      console.warn('[Scheduler] ⚠️ Continuing with previously loaded prayer times');
+    }
+    return null;
+  }
+}
+
+/**
+ * Check if current time matches any prayer time and send notification.
+ * Called every 15 seconds by the cron job.
+ */
+async function checkAndNotifyPrayer() {
+  if (!botInstance || Object.keys(todaysPrayerTimings).length === 0) return;
+
+  try {
+    const now = dayjs().tz('Asia/Kuala_Lumpur');
+    const currentTime = now.format('HH:mm:00'); // round to minute
+
+    for (const [prayerKey, prayerTime] of Object.entries(todaysPrayerTimings)) {
+      // Skip if already notified for this prayer today
+      if (notifiedPrayers.has(prayerKey)) continue;
+
+      // Remove seconds from prayer time for minute-level matching
+      const prayerTimeMinute = prayerTime.substring(0, 5) + ':00';
+
+      if (currentTime === prayerTimeMinute) {
+        notifiedPrayers.add(prayerKey);
+
+        const label = prayerTimes.PRAYER_LABELS[prayerKey] || prayerKey;
+        const icon = prayerTimes.PRAYER_ICONS[prayerKey] || '🕌';
+        const zoneName = prayerTimes.ZONES[prayerZone] || prayerZone;
+        const time12h = now.format('hh:mm A');
+
+        const message = `${icon} *Waktu ${label}*\n\n` +
+          `🕐 ${time12h}\n📍 ${zoneName}\n\n` +
+          `_Sumber: JAKIM e-Solat_`;
+
+        const OWNER = String(process.env.TELEGRAM_OWNER_ID);
+        try {
+          await botInstance.sendMessage(OWNER, message, { parse_mode: 'Markdown' });
+        } catch {
+          await botInstance.sendMessage(OWNER, message);
+        }
+        console.log(`[Scheduler] 🕌 Prayer notification sent: ${label} (${time12h})`);
+      }
+    }
+
+    // ── Smart pre-notification: 5 minutes before each prayer ──────────
+    for (const [prayerKey, prayerTime] of Object.entries(todaysPrayerTimings)) {
+      const preNotifyKey = `pre_${prayerKey}`;
+      if (notifiedPrayers.has(preNotifyKey)) continue;
+
+      const [h, m] = prayerTime.split(':').map(Number);
+      const prayerMinuteOfDay = h * 60 + m;
+      const currentMinuteOfDay = now.hour() * 60 + now.minute();
+      const diff = prayerMinuteOfDay - currentMinuteOfDay;
+
+      if (diff === 5) {
+        notifiedPrayers.add(preNotifyKey);
+
+        const label = prayerTimes.PRAYER_LABELS[prayerKey] || prayerKey;
+        const icon = prayerTimes.PRAYER_ICONS[prayerKey] || '🕌';
+        const time12h = dayjs().tz('Asia/Kuala_Lumpur')
+          .hour(h).minute(m).second(0).format('hh:mm A');
+
+        const message = `${icon} *${label}* dalam 5 minit\n🕐 ${time12h}`;
+
+        const OWNER = String(process.env.TELEGRAM_OWNER_ID);
+        try {
+          await botInstance.sendMessage(OWNER, message, { parse_mode: 'Markdown' });
+        } catch {
+          await botInstance.sendMessage(OWNER, message);
+        }
+        console.log(`[Scheduler] 🔔 Pre-notification sent: ${label} in 5 min`);
+      }
+    }
+
+    // Reset notified prayers at midnight
+    if (now.hour() === 0 && now.minute() === 0 && notifiedPrayers.size > 0) {
+      console.log('[Scheduler] 🕌 Resetting prayer notifications for new day');
+      notifiedPrayers = new Set();
+      // Also refresh prayer times at midnight
+      refreshPrayerTimings().catch(err =>
+        console.error('[Scheduler] Midnight prayer refresh failed:', err.message)
+      );
+    }
+  } catch (err) {
+    console.error('[Scheduler] Prayer notification check error:', err.message);
+  }
+}
+
+/**
+ * Initialize prayer time notifications.
+ * - Fetches today's prayer times on startup
+ * - Checks every 15 seconds if it's time to notify
+ * - Refreshes prayer times daily at 12:01 AM
+ */
+async function startPrayerNotifications() {
+  // Fetch today's prayer times immediately
+  await refreshPrayerTimings();
+
+  // Stop existing task if any
+  if (prayerNotificationTask) {
+    prayerNotificationTask.stop();
+    prayerNotificationTask = null;
+  }
+
+  // Check every 15 seconds for prayer times
+  prayerNotificationTask = cron.schedule('*/15 * * * * *', async () => {
+    await checkAndNotifyPrayer();
+  });
+
+  // Refresh prayer times daily at 12:01 AM
+  cron.schedule('1 0 * * *', async () => {
+    console.log('[Scheduler] 🕌 Daily prayer times refresh');
+    notifiedPrayers = new Set();
+    await refreshPrayerTimings();
+  });
+
+  console.log('[Scheduler] 🕌 Prayer notification system active (checks every 15s)');
+}
+
+// ── End Prayer Time Notification System ──────────────────────────────────────
 
 module.exports = { startScheduler, buildBriefingMessage, buildWeeklyReview, refreshSchedules };

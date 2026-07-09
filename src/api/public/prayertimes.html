@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="ms">
+
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Waktu Solat — JAKIM e-Solat</title>
+    <style>
+      :root {
+        --bg: #0f172a;
+        --card-bg: #1e293b;
+        --card-bg-hover: #273449;
+        --border: #334155;
+        --text: #f1f5f9;
+        --text-secondary: #94a3b8;
+        --accent: #6366f1;
+        --accent-glow: rgba(99, 102, 241, 0.25);
+        --green: #22c55e;
+        --yellow: #eab308;
+        --red: #ef4444;
+        --orange: #f97316;
+        --card-radius: 16px;
+        --transition: 0.2s ease;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 20px;
+        background-image:
+          radial-gradient(ellipse at 50% 0%, rgba(99, 102, 241, 0.08) 0%, transparent 70%),
+          radial-gradient(ellipse at 80% 100%, rgba(34, 197, 94, 0.05) 0%, transparent 50%);
+      }
+
+      .container {
+        width: 100%;
+        max-width: 520px;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+      }
+
+      /* ── Header ─────────────────────────────────────────────── */
+      .header {
+        text-align: center;
+        padding: 10px 0;
+      }
+
+      .header .title {
+        font-size: 1.8rem;
+        font-weight: 700;
+        background: linear-gradient(135deg, #6366f1, #8b5cf6);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+
+      .header .subtitle {
+        color: var(--text-secondary);
+        font-size: 0.9rem;
+        margin-top: 4px;
+      }
+
+      /* ── Date Card ──────────────────────────────────────────── */
+      .date-card {
+        background: var(--card-bg);
+        border: 1px solid var(--border);
+        border-radius: var(--card-radius);
+        padding: 20px 24px;
+        text-align: center;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .date-card::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 2px;
+        background: linear-gradient(90deg, var(--accent), #8b5cf6, var(--accent));
+      }
+
+      .date-card .gregorian {
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: var(--text);
+      }
+
+      .date-card .hijri {
+        font-size: 1rem;
+        color: var(--accent);
+        margin-top: 4px;
+        font-weight: 500;
+      }
+
+      .date-card .day-name {
+        font-size: 0.9rem;
+        color: var(--text-secondary);
+        margin-top: 2px;
+      }
+
+      /* ── Zone Selector ──────────────────────────────────────── */
+      .zone-selector {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .zone-selector select {
+        flex: 1;
+        background: var(--card-bg);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px 14px;
+        color: var(--text);
+        font-size: 0.9rem;
+        cursor: pointer;
+        appearance: none;
+        -webkit-appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 14px center;
+      }
+
+      .zone-selector select:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-glow);
+      }
+
+      .btn-refresh {
+        background: var(--card-bg);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px 14px;
+        color: var(--text);
+        cursor: pointer;
+        font-size: 1.1rem;
+        transition: all var(--transition);
+      }
+
+      .btn-refresh:hover {
+        background: var(--card-bg-hover);
+        border-color: var(--accent);
+      }
+
+      .btn-refresh:active {
+        transform: scale(0.95);
+      }
+
+      /* ── Prayer Cards ───────────────────────────────────────── */
+      .prayer-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .prayer-card {
+        background: var(--card-bg);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 16px 20px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        transition: all var(--transition);
+        cursor: default;
+      }
+
+      .prayer-card:hover {
+        background: var(--card-bg-hover);
+        border-color: var(--accent);
+        transform: translateX(4px);
+      }
+
+      .prayer-card.current {
+        border-color: var(--accent);
+        background: rgba(99, 102, 241, 0.1);
+        box-shadow: 0 0 20px var(--accent-glow);
+      }
+
+      .prayer-card.next-up {
+        border-color: var(--orange);
+        background: rgba(249, 115, 22, 0.08);
+      }
+
+      .prayer-card.past {
+        opacity: 0.45;
+      }
+
+      .prayer-card .prayer-left {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .prayer-card .prayer-icon {
+        font-size: 1.5rem;
+        width: 40px;
+        height: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(99, 102, 241, 0.1);
+        border-radius: 10px;
+      }
+
+      .prayer-card .prayer-name {
+        font-weight: 600;
+        font-size: 1.05rem;
+      }
+
+      .prayer-card .prayer-time {
+        font-size: 1.3rem;
+        font-weight: 700;
+        color: var(--text);
+        font-variant-numeric: tabular-nums;
+      }
+
+      .prayer-card .countdown {
+        font-size: 0.75rem;
+        color: var(--text-secondary);
+        margin-top: 2px;
+      }
+
+      /* ── Status Bar ─────────────────────────────────────────── */
+      .status-bar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 0.75rem;
+        color: var(--text-secondary);
+        padding: 8px 4px;
+      }
+
+      .status-bar .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        display: inline-block;
+        margin-right: 6px;
+      }
+
+      .status-bar .status-dot.ok {
+        background: var(--green);
+      }
+
+      .status-bar .status-dot.stale {
+        background: var(--yellow);
+      }
+
+      .status-bar .status-dot.error {
+        background: var(--red);
+      }
+
+      /* ── Error / Loading / Empty States ─────────────────────── */
+      .state-message {
+        background: var(--card-bg);
+        border: 1px solid var(--border);
+        border-radius: var(--card-radius);
+        padding: 40px 24px;
+        text-align: center;
+      }
+
+      .state-message .state-icon {
+        font-size: 3rem;
+        margin-bottom: 12px;
+      }
+
+      .state-message .state-title {
+        font-weight: 700;
+        font-size: 1.1rem;
+        margin-bottom: 6px;
+      }
+
+      .state-message .state-desc {
+        color: var(--text-secondary);
+        font-size: 0.9rem;
+      }
+
+      .state-message .state-desc code {
+        background: rgba(239, 68, 68, 0.15);
+        color: var(--red);
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 0.8rem;
+      }
+
+      .skeleton {
+        background: linear-gradient(90deg, var(--card-bg) 25%, #273449 50%, var(--card-bg) 75%);
+        background-size: 200% 100%;
+        animation: shimmer 1.5s infinite;
+        border-radius: 12px;
+        height: 64px;
+      }
+
+      @keyframes shimmer {
+        0% {
+          background-position: 200% 0;
+        }
+
+        100% {
+          background-position: -200% 0;
+        }
+      }
+
+      /* ── Responsive ─────────────────────────────────────────── */
+      @media (max-width: 480px) {
+        .container {
+          padding: 0 8px;
+        }
+
+        .header .title {
+          font-size: 1.5rem;
+        }
+
+        .prayer-card {
+          padding: 12px 16px;
+        }
+
+        .prayer-card .prayer-time {
+          font-size: 1.1rem;
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+      <!-- Header -->
+      <div class="header">
+        <div class="title">🕌 Waktu Solat</div>
+        <div class="subtitle">Sumber: JAKIM e-Solat</div>
+      </div>
+
+      <!-- Date Card -->
+      <div class="date-card" id="dateCard">
+        <div class="gregorian" id="gregorian">—</div>
+        <div class="hijri" id="hijri">—</div>
+        <div class="day-name" id="dayName">—</div>
+      </div>
+
+      <!-- Zone Selector -->
+      <div class="zone-selector">
+        <select id="zoneSelect" onchange="onZoneChange()">
+          <optgroup label="🇲🇾 Wilayah Persekutuan">
+            <option value="WLY01">WLY01 — Kuala Lumpur & Putrajaya</option>
+            <option value="WLY02">WLY02 — Labuan</option>
+          </optgroup>
+          <optgroup label="Selangor">
+            <option value="SGR01">SGR01 — Gombak, Petaling, Sepang, Hulu Langat…</option>
+            <option value="SGR02">SGR02 — K. Selangor, Sabak Bernam</option>
+            <option value="SGR03">SGR03 — Klang, K. Langat</option>
+          </optgroup>
+          <optgroup label="Johor">
+            <option value="JHR01">JHR01 — JB, Kulai, Pontian, Kota Tinggi</option>
+            <option value="JHR02">JHR02 — Batu Pahat, Muar, Segamat…</option>
+            <option value="JHR03">JHR03 — Kluang</option>
+            <option value="JHR04">JHR04 — Mersing</option>
+          </optgroup>
+          <optgroup label="Kedah">
+            <option value="KDH01">KDH01 — Alor Setar, K. Muda, Pendang…</option>
+            <option value="KDH02">KDH02 — Langkawi</option>
+            <option value="KDH03">KDH03 — Kulim, Bandar Baharu</option>
+            <option value="KDH04">KDH04 — Kubang Pasu, Kota Setar</option>
+            <option value="KDH05">KDH05 — Baling, Sik</option>
+            <option value="KDH06">KDH06 — Gunung Jerai</option>
+            <option value="KDH07">KDH07 — Padang Terap</option>
+          </optgroup>
+          <optgroup label="Kelantan">
+            <option value="KTN01">KTN01 — Kota Bharu, Bachok, Tumpat…</option>
+            <option value="KTN02">KTN02 — Gua Musang</option>
+          </optgroup>
+          <optgroup label="Melaka">
+            <option value="MLK01">MLK01 — Melaka, Alor Gajah, Jasin</option>
+          </optgroup>
+          <optgroup label="Negeri Sembilan">
+            <option value="NGS01">NGS01 — Seremban, PD, Rembau…</option>
+            <option value="NGS02">NGS02 — Gemas</option>
+          </optgroup>
+          <optgroup label="Pahang">
+            <option value="PHG01">PHG01 — Kuantan, Pekan, Rompin, Bera…</option>
+            <option value="PHG02">PHG02 — Cameron Highlands, Raub, Bentong…</option>
+            <option value="PHG03">PHG03 — Rompin</option>
+            <option value="PHG04">PHG04 — Bera</option>
+            <option value="PHG05">PHG05 — Jerantut</option>
+            <option value="PHG06">PHG06 — Pekan</option>
+          </optgroup>
+          <optgroup label="Perak">
+            <option value="PRK01">PRK01 — Ipoh, K. Kangsar, Manjung…</option>
+            <option value="PRK02">PRK02 — Taiping, Selama, Kerian…</option>
+            <option value="PRK03">PRK03 — Hulu Perak</option>
+            <option value="PRK04">PRK04 — Batang Padang</option>
+            <option value="PRK05">PRK05 — Muallim</option>
+            <option value="PRK06">PRK06 — Kampar</option>
+            <option value="PRK07">PRK07 — Bagan Datuk</option>
+          </optgroup>
+          <optgroup label="Perlis">
+            <option value="PLS01">PLS01 — Perlis</option>
+          </optgroup>
+          <optgroup label="Pulau Pinang">
+            <option value="PNG01">PNG01 — Pulau Pinang</option>
+          </optgroup>
+          <optgroup label="Sabah">
+            <option value="SBH01">SBH01 — KK, Ranau, Tuaran, Penampang…</option>
+            <option value="SBH02">SBH02 — Sandakan, Tawau, Lahad Datu…</option>
+            <option value="SBH03">SBH03 — Kudat, Pitas</option>
+            <option value="SBH04">SBH04 — Keningau, Tambunan, Tenom</option>
+            <option value="SBH05">SBH05 — Beaufort, K. Penyu, Sipitang</option>
+            <option value="SBH06">SBH06 — Beluran, Telupid</option>
+            <option value="SBH07">SBH07 — Nabawan</option>
+            <option value="SBH08">SBH08 — Pensiangan</option>
+            <option value="SBH09">SBH09 — Tongod</option>
+          </optgroup>
+          <optgroup label="Sarawak">
+            <option value="SWK01">SWK01 — Kuching, Samarahan, Serian…</option>
+            <option value="SWK02">SWK02 — Sibu, Mukah, Bintulu, Miri…</option>
+            <option value="SWK03">SWK03 — Limbang</option>
+            <option value="SWK04">SWK04 — Miri</option>
+            <option value="SWK05">SWK05 — Kapit</option>
+            <option value="SWK06">SWK06 — Sarikei</option>
+            <option value="SWK07">SWK07 — Sri Aman</option>
+            <option value="SWK08">SWK08 — Betong</option>
+            <option value="SWK09">SWK09 — Samarahan</option>
+          </optgroup>
+          <optgroup label="Terengganu">
+            <option value="TRG01">TRG01 — K. Terengganu, Marang, Besut…</option>
+            <option value="TRG02">TRG02 — Dungun</option>
+            <option value="TRG03">TRG03 — Kemaman</option>
+            <option value="TRG04">TRG04 — Setiu</option>
+          </optgroup>
+        </select>
+        <button class="btn-refresh" onclick="refreshData()" title="Refresh">🔄</button>
+      </div>
+
+      <!-- Prayer Cards -->
+      <div class="prayer-grid" id="prayerGrid">
+        <!-- Loading skeletons -->
+        <div class="skeleton"></div>
+        <div class="skeleton"></div>
+        <div class="skeleton"></div>
+        <div class="skeleton"></div>
+        <div class="skeleton"></div>
+      </div>
+
+      <!-- Status Bar -->
+      <div class="status-bar" id="statusBar">
+        <span>
+          <span class="status-dot" id="statusDot"></span>
+          <span id="statusText">Loading…</span>
+        </span>
+        <span id="serverTime">—</span>
+      </div>
+    </div>
+
+    <script>
+      // ── State ───────────────────────────────────────────────────────────
+      let currentZone = localStorage.getItem('prayerZone') || 'WLY01';
+      let prayerData = null;
+      let countdownInterval = null;
+      let autoRefreshInterval = null;
+
+      // ── Prayer config ───────────────────────────────────────────────────
+      const PRAYER_ORDER = ['imsak', 'fajr', 'syuruk', 'dhuha', 'dhuhr', 'asr', 'maghrib', 'isha'];
+      const PRAYER_LABELS = {
+        imsak: 'Imsak', fajr: 'Subuh', syuruk: 'Syuruk', dhuha: 'Dhuha',
+        dhuhr: 'Zohor', asr: 'Asar', maghrib: 'Maghrib', isha: 'Isyak'
+      };
+      const PRAYER_ICONS = {
+        imsak: '🌙', fajr: '🌅', syuruk: '☀️', dhuha: '🌤️',
+        dhuhr: '☀️', asr: '🌤️', maghrib: '🌇', isha: '🌙'
+      };
+      const OBLIGATORY = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'];
+
+      // ── Init ────────────────────────────────────────────────────────────
+      document.addEventListener('DOMContentLoaded', () => {
+        document.getElementById('zoneSelect').value = currentZone;
+        fetchPrayerTimes();
+        // Auto-refresh every 5 minutes
+        autoRefreshInterval = setInterval(fetchPrayerTimes, 300000);
+      });
+
+      // ── Fetch ───────────────────────────────────────────────────────────
+      async function fetchPrayerTimes() {
+        const grid = document.getElementById('prayerGrid');
+
+        // Show skeleton loading
+        grid.innerHTML = Array(8).fill('<div class="skeleton"></div>').join('');
+
+        try {
+          const url = `/api/prayertimes?zone=${encodeURIComponent(currentZone)}`;
+          const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+
+          if (!response.ok) {
+            const err = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+            throw new Error(err.error || `HTTP ${response.status}`);
+          }
+
+          prayerData = await response.json();
+          renderAll();
+          updateStatus('ok', 'Live');
+
+        } catch (err) {
+          console.error('Prayer times fetch error:', err);
+          grid.innerHTML = `
+          <div class="state-message">
+            <div class="state-icon">⚠️</div>
+            <div class="state-title">Gagal Mendapatkan Data</div>
+            <div class="state-desc">
+              ${err.message.includes('timeout') ? 'Sambungan tamat masa (timeout).' : ''}
+              ${err.message.includes('Rate') ? 'Terlalu banyak permintaan.' : ''}
+              ${!err.message.includes('timeout') && !err.message.includes('Rate') ? err.message : ''}
+            </div>
+          </div>`;
+          updateStatus('error', 'Ralat');
+        }
+      }
+
+      // ── Render ──────────────────────────────────────────────────────────
+      function renderAll() {
+        if (!prayerData || !prayerData.timings) return;
+
+        const d = prayerData;
+        const meta = d.metadata || {};
+
+        // Date card
+        document.getElementById('gregorian').textContent = d.date || '—';
+        document.getElementById('hijri').textContent = d.hijri ? `${d.hijri}H` : '—';
+        document.getElementById('dayName').textContent = d.day || '—';
+
+        // Prayer cards
+        const now = new Date();
+        const todayStr = now.toISOString().split('T')[0];
+        let nextPrayerFound = false;
+
+        const grid = document.getElementById('prayerGrid');
+        grid.innerHTML = '';
+
+        PRAYER_ORDER.forEach((key) => {
+          const timeStr = d.timings[key];
+          if (!timeStr) return; // skip missing fields gracefully
+
+          const [h, m, s] = timeStr.split(':').map(Number);
+          const prayerDate = new Date(`${todayStr}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}+08:00`);
+
+          const isPast = now > prayerDate;
+          const isObligatory = OBLIGATORY.includes(key);
+          let cardClass = 'prayer-card';
+          if (isPast) cardClass += ' past';
+
+          // Determine next prayer
+          if (!isPast && !nextPrayerFound && isObligatory) {
+            cardClass += ' next-up';
+            nextPrayerFound = true;
+          }
+
+          // Format time in 12h
+          const time12h = new Date(`2000-01-01T${timeStr}`).toLocaleTimeString('en-US', {
+            hour: 'numeric', minute: '2-digit', hour12: true
+          });
+
+          grid.innerHTML += `
+          <div class="${cardClass}">
+            <div class="prayer-left">
+              <div class="prayer-icon">${PRAYER_ICONS[key]}</div>
+              <div>
+                <div class="prayer-name">${PRAYER_LABELS[key]}</div>
+                ${!isPast && isObligatory && nextPrayerFound === false ? `<div class="countdown">Akan datang</div>` : ''}
+              </div>
+            </div>
+            <div class="prayer-time">${time12h}</div>
+          </div>`;
+        });
+
+        // Start countdown timer for next prayer
+        startCountdown();
+      }
+
+      // ── Countdown Timer ─────────────────────────────────────────────────
+      function startCountdown() {
+        if (countdownInterval) clearInterval(countdownInterval);
+
+        countdownInterval = setInterval(() => {
+          if (!prayerData || !prayerData.timings) return;
+
+          const now = new Date();
+          const todayStr = now.toISOString().split('T')[0];
+          let nextPrayer = null;
+
+          for (const key of OBLIGATORY) {
+            const timeStr = prayerData.timings[key];
+            if (!timeStr) continue;
+            const [h, m, s] = timeStr.split(':').map(Number);
+            const prayerDate = new Date(`${todayStr}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}+08:00`);
+            if (prayerDate > now) {
+              nextPrayer = { key, date: prayerDate };
+              break;
+            }
+          }
+
+          const countdownEls = document.querySelectorAll('.countdown');
+          countdownEls.forEach(el => { el.textContent = ''; });
+
+          if (nextPrayer) {
+            const diff = nextPrayer.date - now;
+            const hours = Math.floor(diff / 3600000);
+            const minutes = Math.floor((diff % 3600000) / 60000);
+            const label = PRAYER_LABELS[nextPrayer.key];
+
+            const nextCard = document.querySelector('.prayer-card.next-up .countdown');
+            if (nextCard) {
+              nextCard.textContent = `${label} dalam ${hours}j ${minutes}m`;
+            }
+          }
+        }, 30000); // Update every 30s
+      }
+
+      // ── Status ──────────────────────────────────────────────────────────
+      function updateStatus(state, text) {
+        const dot = document.getElementById('statusDot');
+        dot.className = 'status-dot ' + state;
+        document.getElementById('statusText').textContent = text;
+
+        if (prayerData) {
+          const stale = prayerData._stale || prayerData._cached;
+          if (stale) {
+            dot.className = 'status-dot stale';
+            document.getElementById('statusText').textContent =
+              'Kache (' + formatAge(prayerData._cacheAge) + ' lalu)';
+          }
+        }
+
+        document.getElementById('serverTime').textContent =
+          prayerData?.metadata?.serverTime
+            ? `Server: ${formatServerTime(prayerData.metadata.serverTime)}`
+            : '—';
+      }
+
+      function formatAge(ms) {
+        if (!ms) return '?';
+        const s = Math.floor(ms / 1000);
+        if (s < 60) return s + 's';
+        if (s < 3600) return Math.floor(s / 60) + 'm';
+        return Math.floor(s / 3600) + 'j';
+      }
+
+      function formatServerTime(t) {
+        if (!t) return '—';
+        try {
+          return new Date(t).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+        } catch { return t; }
+      }
+
+      // ── Actions ─────────────────────────────────────────────────────────
+      function onZoneChange() {
+        currentZone = document.getElementById('zoneSelect').value;
+        localStorage.setItem('prayerZone', currentZone);
+        fetchPrayerTimes();
+      }
+
+      function refreshData() {
+        const btn = document.querySelector('.btn-refresh');
+        btn.style.transform = 'rotate(180deg)';
+        btn.style.transition = 'transform 0.5s ease';
+        setTimeout(() => {
+          btn.style.transform = 'rotate(360deg)';
+          btn.style.transition = 'none';
+          setTimeout(() => {
+            btn.style.transition = 'transform 0.3s ease';
+            btn.style.transform = 'rotate(0deg)';
+          }, 50);
+        }, 500);
+        fetchPrayerTimes();
+      }
+
+      // Handle visibility change — refresh when tab becomes visible
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          fetchPrayerTimes();
+        }
+      });
+    </script>
+  </body>
+
+</html>
