@@ -267,9 +267,8 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
     const EVENTS = require('../events').EVENTS;
     const { fixHallucinatedGreeting, fixHallucinatedTime } = require('../bot/anti-hallucination');
 
-    const recentMsgs = []; // WebSocket keeps history in frontend store, could pass here
-    const stateMachine = require('../executive/state-machine');
-    const sm = stateMachine.getState(userId) || { phase: 'idle', meta: {} };
+    const recentMsgs = []; // WebSocket keeps history in frontend store
+    const sm = null; // state machine tracking not needed for web chat; executive handles null
     const decision = await executive.decide(userId, message, sm, recentMsgs);
 
     // 📡 Emit intent event
