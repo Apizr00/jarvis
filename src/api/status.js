@@ -143,7 +143,7 @@ async function getApiStatus(bot) {
     // llm module not loadable yet (cold start) — skip
   }
 
-  // ── OpenAI Whisper (Voice) ────────────────────────────────────────────────
+  // ── OpenAI Whisper (Voice fallback) ───────────────────────────────────────
   const oaKey = process.env.OPENAI_API_KEY;
   let oaConnected = null;
   if (oaKey) {
@@ -153,11 +153,75 @@ async function getApiStatus(bot) {
     );
   }
   results.push({
-    name: 'OpenAI Whisper (Voice)',
+    name: 'Whisper (Voice fallback)',
     icon: '🎙️',
     configured: !!oaKey,
     connected: oaConnected,
-    detail: oaKey ? 'OPENAI_API_KEY set' : 'OPENAI_API_KEY missing',
+    detail: oaKey ? 'OPENAI_API_KEY set' : 'OPENAI_API_KEY missing (ILMU ASR will be used)',
+  });
+
+  // ── ILMU ASR v4.2 (Voice primary) ────────────────────────────────────────
+  const asrAvailable = !!process.env.ILMU_API_KEY;
+  results.push({
+    name: 'ILMU ASR (Voice primary)',
+    icon: '🎤',
+    configured: asrAvailable,
+    connected: asrAvailable ? true : null,
+    detail: asrAvailable ? 'ILMU_API_KEY set — Malaysian-optimized STT' : 'ILMU_API_KEY missing — using Whisper',
+  });
+
+  // ── ILMU BGE-M3 Embeddings ────────────────────────────────────────────────
+  const embAvailable = !!process.env.ILMU_API_KEY;
+  results.push({
+    name: 'ILMU BGE-M3 (Embeddings)',
+    icon: '🔍',
+    configured: embAvailable,
+    connected: embAvailable ? true : null,
+    detail: embAvailable ? 'ILMU_API_KEY set — semantic memory search' : 'ILMU_API_KEY missing — keyword search only',
+  });
+
+  // ── ILMU BGE Reranker ─────────────────────────────────────────────────────
+  results.push({
+    name: 'ILMU BGE Reranker',
+    icon: '🔄',
+    configured: embAvailable,
+    connected: embAvailable ? true : null,
+    detail: embAvailable ? 'ILMU_API_KEY set — precision retrieval' : 'ILMU_API_KEY missing',
+  });
+
+  // ── ILMU Vision v1.3 ──────────────────────────────────────────────────────
+  results.push({
+    name: 'ILMU Vision (Image)',
+    icon: '🖼️',
+    configured: embAvailable,
+    connected: embAvailable ? true : null,
+    detail: embAvailable ? 'ILMU_API_KEY set — photo analysis' : 'ILMU_API_KEY missing',
+  });
+
+  // ── ILMU TTS v2 ───────────────────────────────────────────────────────────
+  results.push({
+    name: 'ILMU TTS (Speech)',
+    icon: '🔊',
+    configured: embAvailable,
+    connected: embAvailable ? true : null,
+    detail: embAvailable ? 'ILMU_API_KEY set — /speak command' : 'ILMU_API_KEY missing',
+  });
+
+  // ── Job Queue System ──────────────────────────────────────────────────────
+  let queueStatus = null;
+  try {
+    const queueSystem = require('../queue');
+    const stats = await queueSystem.getStats();
+    queueStatus = stats;
+  } catch { /* ignore */ }
+  results.push({
+    name: 'Job Queue (BullMQ)',
+    icon: '📮',
+    configured: !!process.env.REDIS_URL,
+    connected: queueStatus?.status === 'active',
+    detail: queueStatus?.status === 'active'
+      ? queueStatus.metrics.completed + ' jobs done, ' + queueStatus.metrics.actualSavedSec + 's saved'
+      : (queueStatus?.status === 'unavailable' ? 'Redis offline — running inline' : 'Not initialized'),
   });
 
   // ── Tavily Search ─────────────────────────────────────────────────────────
