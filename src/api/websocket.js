@@ -294,6 +294,7 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
 
     // Anti-hallucination fixers
     const { fixHallucinatedGreeting, fixHallucinatedTime } = require('../bot/anti-hallucination');
+    let fullText = '';
     let result = await llm.chatStream(userId, message, [], llmOptions,
       (chunk) => {
         if (aborted) throw new Error('ABORTED');
