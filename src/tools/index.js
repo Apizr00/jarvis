@@ -638,7 +638,15 @@ async function executeTool(userId, toolCall) {
           const t = fmt(r.remind_at, 'h:mm A');
           reply += '• ' + t + ' — ' + escapeMd(r.text) + '\n';
         });
+        reply += '\n';
       }
+
+      // 🔥 Streak summary
+      try {
+        const streaks = require('../features/streaks');
+        const streakLine = await streaks.buildStreakSummary(userId);
+        if (streakLine) reply += '\n' + streakLine;
+      } catch { /* ignore */ }
 
       return reply.trim();
     }
@@ -967,6 +975,21 @@ async function executeTool(userId, toolCall) {
       if (!args.task_id) return 'Which task? I need a task ID.';
       const task = await db.completeTask(args.task_id);
       if (!task) return 'Task #' + args.task_id + ' not found.';
+
+      // 🔥 Track task completion streak (fire-and-forget)
+      try {
+        const streaks = require('../features/streaks');
+        streaks.recordActivity(userId, 'task_completed').then(result => {
+          if (result && result.isNewDay && result.current_streak > 1) {
+            const milestone = streaks.getMilestoneMessage(result.current_streak, 'task_completed');
+            if (milestone) {
+              // Milestone will show in the tool response; no separate message needed
+              console.log('[Streaks] Task milestone hit:', milestone);
+            }
+          }
+        }).catch(() => { });
+      } catch { /* ignore */ }
+
       return { type: 'result', tool: 'complete_task', message: '🎉 *Done!* — ' + escapeMd(task.title) + ' completed. Great job! 💪', id: task.id };
     }
     case 'cancel_task': {

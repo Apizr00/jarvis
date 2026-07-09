@@ -194,6 +194,12 @@ async function refreshSchedules() {
             await botInstance.sendMessage(OWNER, '🧘 Daily Reflection\n\n' + reflection);
           }
           console.log('[Scheduler] 🧘 Daily reflection sent');
+
+          // 🔥 Track reflection streak
+          try {
+            const streaks = require('../features/streaks');
+            streaks.recordActivity(OWNER, 'reflection').catch(() => { });
+          } catch { /* ignore */ }
         }
       } catch (err) {
         console.error('[Scheduler] Reflection error:', err.message);
@@ -338,6 +344,13 @@ async function buildBriefingMessage() {
   const quote = await getQuote();
   message += '\n' + quote;
 
+  // 🔥 Streak summary
+  try {
+    const streaks = require('../features/streaks');
+    const streakLine = await streaks.buildStreakSummary(userId);
+    if (streakLine) message += '\n\n' + streakLine;
+  } catch { /* ignore */ }
+
   return message;
 }
 
@@ -352,6 +365,12 @@ async function sendMorningBriefing() {
     if (!message) return;
     await safeSendMessage(botInstance, String(process.env.TELEGRAM_OWNER_ID), message);
     console.log('🌅 Morning briefing sent');
+
+    // 🔥 Track morning briefing streak
+    try {
+      const streaks = require('../features/streaks');
+      streaks.recordActivity(String(process.env.TELEGRAM_OWNER_ID), 'morning_briefing').catch(() => { });
+    } catch { /* ignore */ }
   } catch (err) {
     console.error('Morning briefing failed:', err.message);
   }

@@ -175,6 +175,21 @@ async function setup() {
 
     CREATE INDEX IF NOT EXISTS idx_bot_state_user
       ON bot_state (user_id, state_type);
+
+    CREATE TABLE IF NOT EXISTS streaks (
+      id SERIAL PRIMARY KEY,
+      user_id TEXT REFERENCES users(id),
+      streak_type TEXT NOT NULL CHECK (streak_type IN ('daily_chat', 'task_completed', 'morning_briefing', 'reflection')),
+      current_streak INTEGER DEFAULT 0,
+      longest_streak INTEGER DEFAULT 0,
+      last_activity_date DATE,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(user_id, streak_type)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_streaks_user
+      ON streaks (user_id);
   `);
 
   // ── Migration: add recurrence column for existing databases ─────────────

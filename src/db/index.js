@@ -1115,6 +1115,106 @@ async function deleteBotState(userId, stateType) {
   );
 }
 
+// ── Streaks ──────────────────────────────────────────────────────────────────
+
+/**
+ * Record an activity for streak tracking. Updates the streak counters.
+ * If activity was yesterday → increments streak. If today → no change.
+ * If gap > 1 day → resets to 1.
+ * @param {string} userId
+ * @param {'daily_chat'|'task_completed'|'morning_briefing'|'reflection'} streakType
+ * @returns {Promise<{current_streak: number, longest_streak: number, isNewDay: boolean}>}
+ */
+async function recordStreakActivity(userId, streakType) {
+  const tz = process.env.TIMEZONE || 'UTC';
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: tz });
+
+  const { rows } = await pool.query(
+    `SELECT * FROM streaks WHERE user_id = $1 AND streak_type = $2`,
+    [String(userId), streakType]
+  );
+
+  let currentStreak = 1;
+  let longestStreak = 1;
+  let isNewDay = true;
+
+  if (rows.length > 0) {
+    const existing = rows[0];
+    const lastDate = existing.last_activity_date
+      ? new Date(existing.last_activity_date).toLocaleDateString('en-CA', { timeZone: tz })
+      : null;
+
+    if (lastDate === today) {
+      return {
+        current_streak: existing.current_streak,
+        longest_streak: existing.longest_streak,
+        isNewDay: false,
+      };
+    }
+
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = yesterday.toLocaleDateString('en-CA', { timeZone: tz });
+
+    if (lastDate === yesterdayStr) {
+      currentStreak = existing.current_streak + 1;
+      longestStreak = Math.max(currentStreak, existing.longest_streak);
+    } else {
+      currentStreak = 1;
+      longestStreak = existing.longest_streak;
+    }
+  }
+
+  await pool.query(
+    `INSERT INTO streaks (user_id, streak_type, current_streak, longest_streak, last_activity_date, updated_at)
+     VALUES ($1, $2, $3, $4, $5, NOW())
+     ON CONFLICT (user_id, streak_type) DO UPDATE
+       SET current_streak = $3,
+           longest_streak = GREATEST(streaks.longest_streak, $4),
+           last_activity_date = $5,
+           updated_at = NOW()`,
+    [String(userId), streakType, currentStreak, longestStreak, today]
+  );
+
+  return { current_streak: currentStreak, longest_streak: longestStreak, isNewDay };
+}
+
+/**
+ * Get all streak stats for a user.
+ * @param {string} userId
+ * @returns {Promise<Array<{streak_type:string, current_streak:number, longest_streak:number, last_activity_date:string}>>}
+ */
+async function getStreaks(userId) {
+  const { rows } = await pool.query(
+    `SELECT streak_type, current_streak, longest_streak, last_activity_date
+     FROM streaks WHERE user_id = $1
+     ORDER BY current_streak DESC`,
+    [String(userId)]
+  );
+  return rows;
+}
+
+/**
+ * Check if a streak has already been recorded today.
+ * @param {string} userId
+ * @param {string} streakType
+ * @returns {Promise<boolean>}
+ */
+async function isStreakRecordedToday(userId, streakType) {
+  const tz = process.env.TIMEZONE || 'UTC';
+  const { rows } = await pool.query(
+    `SELECT last_activity_date FROM streaks
+     WHERE user_id = $1 AND streak_type = $2`,
+    [String(userId), streakType]
+  );
+  if (rows.length === 0) return false;
+  const lastDate = rows[0].last_activity_date
+    ? new Date(rows[0].last_activity_date).toLocaleDateString('en-CA', { timeZone: tz })
+    : null;
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: tz });
+  return lastDate === today;
+}
+
 module.exports = {
   pool,
   retryQuery,
@@ -1187,4 +1287,8 @@ module.exports = {
   loadBotState,
   loadAllBotStates,
   deleteBotState,
+  // Streaks
+  recordStreakActivity,
+  getStreaks,
+  isStreakRecordedToday,
 };

@@ -32,6 +32,7 @@ const historyModule = require('./history');
 const queueSystem = require('../queue');
 const vision = require('../llm/vision');
 const tts = require('../llm/tts');
+const streaks = require('../features/streaks');
 
 const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
 
@@ -226,7 +227,8 @@ async function createBot() {
       '`/reflect` — Daily reflection\n' +
       '`/recap` — Conversation recap\n' +
       '`/patterns` — Detected behavior patterns\n' +
-      '`/domains` — Memory by domain\n\n' +
+      '`/domains` — Memory by domain\n' +
+      '`/streak` — Daily habit streaks 🔥\n\n' +
       '🔧 *Tools*\n' +
       '`/status` — API health check\n' +
       '`/state` — Full bot state report\n' +
@@ -313,6 +315,24 @@ async function createBot() {
       await bot.sendMessage(msg.chat.id, reply.trim(), { parse_mode: 'Markdown' });
     } catch {
       await bot.sendMessage(msg.chat.id, reply.trim());
+    }
+  });
+
+  // ── /streak command — view daily streaks ─────────────────────────────────
+  bot.onText(/\/streak/, async (msg) => {
+    if (!isOwner(msg)) return;
+    await db.ensureUser(OWNER_ID, msg.from.first_name || 'Owner');
+
+    try {
+      const message = await streaks.buildStreakMessage(OWNER_ID);
+      try {
+        await bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
+      } catch {
+        await bot.sendMessage(msg.chat.id, message);
+      }
+    } catch (err) {
+      console.error('/streak error:', err.message);
+      await bot.sendMessage(msg.chat.id, '❌ Could not load streak data.');
     }
   });
 
@@ -432,6 +452,9 @@ async function createBot() {
       const reflection = await memory.generateDailyReflection(OWNER_ID, llm.chatMimo);
       if (reflection) {
         await safeSendMessage(bot, msg.chat.id, '*🧘 Today\'s Reflection*\n\n' + reflection);
+
+        // 🔥 Track reflection streak
+        streaks.recordActivity(OWNER_ID, 'reflection').catch(() => { });
       } else {
         await bot.sendMessage(msg.chat.id, '📭 Not enough activity today to reflect on. Talk to me more!');
       }
@@ -679,7 +702,13 @@ async function createBot() {
       reply += '*📈 Eval Stats:*\n';
       reply += '• Total interactions: ' + evalStats.totalInteractions + '\n';
       reply += '• Avg quality: ' + evalStats.avgQuality + '%\n';
-      reply += '• Fast/Med/Deep: ' + evalStats.byTier.fast + '/' + evalStats.byTier.medium + '/' + evalStats.byTier.deep + '\n';
+      reply += '• Fast/Med/Deep: ' + evalStats.byTier.fast + '/' + evalStats.byTier.medium + '/' + evalStats.byTier.deep + '\n\n';
+
+      // 🔥 Streak summary in state
+      try {
+        const streakLine = await streaks.buildStreakSummary(OWNER_ID);
+        if (streakLine) reply += streakLine + '\n\n';
+      } catch { /* ignore */ }
 
       try {
         await bot.sendMessage(msg.chat.id, reply.trim(), { parse_mode: 'Markdown' });
@@ -1210,6 +1239,9 @@ async function createBot() {
     try {
       const message = await buildBriefingMessage();
       await safeSendMessage(bot, msg.chat.id, message);
+
+      // 🔥 Track morning briefing streak on manual briefing too
+      streaks.recordActivity(OWNER_ID, 'morning_briefing').catch(() => { });
     } catch (err) {
       console.error('/briefing error:', err.message);
       await bot.sendMessage(msg.chat.id, '❌ Could not generate briefing.');
@@ -2455,6 +2487,16 @@ async function createBot() {
     }
 
     await processUserText(bot, chatId, userId, userName, msg.text, msg.message_id);
+
+    // 🔥 Track daily chat streak (fire-and-forget, non-blocking)
+    streaks.recordActivity(userId, 'daily_chat').then(result => {
+      if (result && result.isNewDay && result.current_streak > 1) {
+        const milestone = streaks.getMilestoneMessage(result.current_streak, 'daily_chat');
+        if (milestone) {
+          safeSendMessage(bot, chatId, milestone).catch(() => { });
+        }
+      }
+    }).catch(() => { });
   });
 
   // ── Voice message handler ────────────────────────────────────────────────
