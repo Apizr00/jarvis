@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 // scripts/deploy.js — One-command deploy for Jarvis + Playground
-// Usage: node scripts/deploy.js            (full deploy)
-//        node scripts/deploy.js --no-build (skip frontend build)
-//        npm run deploy                    (via package.json)
+// Usage: node scripts/deploy.js              (full deploy)
+//        node scripts/deploy.js --no-build   (skip frontend build)
+//        node scripts/deploy.js --fix-perms  (fix ownership then deploy)
+//        npm run deploy                      (via package.json)
 
 const { execSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const ROOT = path.resolve(__dirname, '..');
 const PLAYGROUND = path.join(ROOT, 'src', 'playground');
 const NO_BUILD = process.argv.includes('--no-build');
 const FORCE = process.argv.includes('--force');
+const FIX_PERMS = process.argv.includes('--fix-perms');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -30,7 +33,8 @@ function run(cmd, opts = {}) {
   } catch (err) {
     console.log('❌');
     if (opts.ignoreError) {
-      console.log(`    ⚠️  ${err.message.split('\n')[0]}`);
+      const msg = (err.stderr || err.message || '').toString().split('\n').slice(0, 3).join('\n');
+      console.log(`    ⚠️  ${msg}`);
       return null;
     }
     throw err;
@@ -42,9 +46,78 @@ function isPm2Available() {
   try { execSync('pm2 --version', { stdio: 'pipe' }); return true; } catch { return false; }
 }
 
+function whoami() {
+  try { return execSync('whoami', { stdio: 'pipe' }).toString().trim(); } catch { return 'unknown'; }
+}
+
+function statOwner(dir) {
+  try {
+    const uid = fs.statSync(dir).uid;
+    // Try to resolve UID to username
+    try { return execSync(`stat -c '%U' "${dir}"`, { stdio: 'pipe' }).toString().trim(); } catch { return `uid:${uid}`; }
+  } catch { return 'unknown'; }
+}
+
+function canWrite(dir) {
+  try {
+    const testFile = path.join(dir, '.deploy-write-test');
+    fs.writeFileSync(testFile, 'test', { flag: 'w' });
+    fs.unlinkSync(testFile);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ── Steps ────────────────────────────────────────────────────────────────────
 
 const steps = [
+  {
+    name: 'Check permissions',
+    run() {
+      const user = whoami();
+      const owner = statOwner(ROOT);
+
+      console.log(`    User:  ${user}`);
+      console.log(`    Owner: ${owner}`);
+      console.log(`    Dir:   ${ROOT}`);
+
+      if (FIX_PERMS) {
+        // Try to fix ownership with sudo
+        console.log('    🔧 Fixing ownership (sudo chown)...');
+        try {
+          execSync(`sudo chown -R ${user}:${user} "${ROOT}"`, { stdio: 'inherit' });
+          console.log('    ✅ Ownership fixed');
+          return;
+        } catch {
+          console.log('    ⚠️  sudo chown failed. Trying manual fix...');
+          console.log('    Run this manually:');
+          console.log(`       sudo chown -R ${user}:${user} ${ROOT}`);
+          throw new Error('Cannot fix permissions automatically. Run the command above, then retry.');
+        }
+      }
+
+      const writable = canWrite(ROOT);
+      if (!writable) {
+        console.log('    ❌ Cannot write to project directory!');
+        console.log('');
+        console.log('    🔧 Fix with one of these:');
+        console.log('');
+        console.log('       Option 1 (auto-fix):');
+        console.log('         npm run deploy -- --fix-perms');
+        console.log('');
+        console.log('       Option 2 (manual):');
+        console.log(`         sudo chown -R ${user}:${user} ${ROOT}`);
+        console.log('');
+        console.log('       Option 3 (run as root):');
+        console.log('         sudo npm run deploy');
+        console.log('');
+        throw new Error('Permission denied — project directory not writable by current user.');
+      }
+
+      console.log('    ✅ Write permission OK');
+    },
+  },
   {
     name: 'Check environment',
     run() {
@@ -70,7 +143,9 @@ const steps = [
   {
     name: 'Install backend dependencies',
     run() {
-      run('npm install --production=false', { label: 'npm install (root)' });
+      // Use --prefer-offline to speed up; fall back to regular install
+      run('npm install --production=false --prefer-offline', { label: 'npm install (root)', ignoreError: true })
+        || run('npm install --production=false', { label: 'npm install (root, retry)' });
     },
   },
   {
@@ -85,7 +160,7 @@ const steps = [
     skip: NO_BUILD,
     run() {
       if (!exists(path.join(PLAYGROUND, 'node_modules'))) {
-        run('npm install', { cwd: PLAYGROUND, label: 'npm install (playground)' });
+        run('npm install --prefer-offline', { cwd: PLAYGROUND, label: 'npm install (playground)' });
       } else {
         console.log('    ✅ already installed');
       }
@@ -118,7 +193,6 @@ const steps = [
         console.log('    ℹ️  PM2 not found — starting directly (npm start)');
         console.log('    💡 Install PM2 for production: npm i -g pm2');
         console.log('');
-        // Spawn the server in foreground
         const child = spawn('node', ['src/index.js'], {
           cwd: ROOT,
           stdio: 'inherit',
@@ -128,6 +202,8 @@ const steps = [
           console.log(`\nServer exited with code ${code}`);
           process.exit(code || 0);
         });
+        // Don't proceed past this step since server is running in foreground
+        return 'running';
       }
     },
   },
@@ -149,10 +225,16 @@ for (const step of steps) {
   }
   console.log(`📋 ${step.name}`);
   try {
-    step.run();
+    const result = step.run();
+    if (result === 'running') {
+      // Server is running in foreground — don't print deploy complete
+      failed = false;
+      break;
+    }
   } catch (err) {
+    const msg = (err.stderr || err.message || '').toString().split('\n')[0];
     console.log(`\n❌ FAILED: ${step.name}`);
-    console.log(`   ${err.message.split('\n')[0]}`);
+    console.log(`   ${msg}`);
     failed = true;
     break;
   }
@@ -170,5 +252,8 @@ if (!failed) {
   console.log('');
 } else {
   console.log('\n⚠️  Deploy failed. Fix the issue above and try again.');
+  console.log('   Hint: if it is a permission error, try:');
+  console.log('     npm run deploy -- --fix-perms');
   process.exit(1);
 }
+
