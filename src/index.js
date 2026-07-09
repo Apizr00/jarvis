@@ -95,6 +95,15 @@ async function main() {
   const ownerId = process.env.TELEGRAM_OWNER_ID;
   await persistence.loadAll(ownerId);
 
+  // ── Initialize Memory Hierarchy (3-tier: STM, WM, LTM) ────────────────
+  try {
+    const hierarchy = require('./memory/hierarchy');
+    await hierarchy.ensureTables();
+    console.log('🧠 Memory Hierarchy initialized (STM→Redis, WM→process, LTM→DB)');
+  } catch (err) {
+    console.warn('⚠️  Memory hierarchy init failed (non-critical):', err.message);
+  }
+
   // Start Telegram bot
   const bot = await createBot();
 

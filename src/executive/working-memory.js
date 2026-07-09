@@ -182,10 +182,57 @@ function isActive(userId) {
 
 module.exports = {
   get, update, reset, touch, formatForPrompt, isActive,
-  // Persistence
+  // Persistence & cross-session
   serialize,
   hydrate,
+  persistToRedis,
+  restoreFromRedis,
 };
+
+// ── Redis Bridge (cross-session persistence) ────────────────────────────────
+
+/**
+ * Persist working memory to Redis for cross-session survival.
+ * Called when conversation ends or at regular intervals.
+ *
+ * @param {string} userId
+ */
+async function persistToRedis(userId) {
+  try {
+    const data = serialize(userId);
+    if (!data) return;
+
+    const hierarchy = require('../memory/hierarchy');
+    await hierarchy.wmPersist(userId, data);
+
+    // Also track session boundary
+    await hierarchy.trackSessionBoundary(userId, 'end', data);
+
+    console.log('[WorkingMemory] 💾 Persisted to Redis for cross-session');
+  } catch (err) {
+    // Non-critical — working memory still works in-process
+  }
+}
+
+/**
+ * Restore working memory from Redis (after process restart).
+ *
+ * @param {string} userId
+ * @returns {Promise<boolean>} true if restored
+ */
+async function restoreFromRedis(userId) {
+  try {
+    const hierarchy = require('../memory/hierarchy');
+    const data = await hierarchy.wmRestore(userId);
+    if (data) {
+      hydrate(userId, data);
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Serialize working memory for DB persistence.
