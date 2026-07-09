@@ -22,6 +22,8 @@ export default function ChatPage() {
   const addMessage = useChatStore((s) => s.addMessage);
   const appendStreamText = useChatStore((s) => s.appendStreamText);
   const finalizeStream = useChatStore((s) => s.finalizeStream);
+  const addToolCall = useChatStore((s) => s.addToolCall);
+  const addToolResult = useChatStore((s) => s.addToolResult);
   const setStreaming = useChatStore((s) => s.setStreaming);
   const clearStreamText = useChatStore((s) => s.clearStreamText);
   const setModel = useChatStore((s) => s.setModel);
@@ -53,6 +55,16 @@ export default function ChatPage() {
           break;
         case "done":
           finalizeStream(msg.payload.fullText, msg.payload.metadata || {});
+          break;
+        case "tool_call":
+          addToolCall(msg.payload.tool, msg.payload.args, msg.payload.message);
+          break;
+        case "tool_result":
+          addToolResult(
+            msg.payload.tool,
+            msg.payload.content,
+            msg.payload.error,
+          );
           break;
         case "error":
           addMessage({

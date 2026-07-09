@@ -51,6 +51,32 @@
   color: var(--red);
 }
 
+.message.tool-call .message-content {
+  background: var(--accent-light);
+  border-color: var(--accent);
+}
+
+.message.tool-result .message-content {
+  background: var(--green-bg);
+  border-color: var(--green);
+}
+
+.tool-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+}
+
+.tool-icon {
+  font-size: 1rem;
+}
+.tool-label {
+  font-weight: 600;
+  text-transform: capitalize;
+  color: var(--accent);
+}
+
 .message-content p {
   margin: 0;
 }

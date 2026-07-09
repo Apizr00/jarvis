@@ -188,6 +188,7 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
 
   try {
     const llm = deps.llm || require('../llm');
+    const tools = require('../tools');
 
     // Map frontend model names to provider names
     const providerMap = { ilmu: 'ilmu', deepseek: 'deepseek', mimo: 'mimo', auto: 'auto' };
@@ -196,33 +197,113 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
     // Stream response — capture return value as fallback if onChunk never fires
     let fullText = '';
     const result = await llm.chatStream(
-      userId,
-      message,
-      [],                              // conversationHistory (empty for new chat)
-      { provider },                    // options.provider is what selectProvider expects
-      (chunk) => {                     // onChunk callback (5th argument)
+      userId, message, [],
+      { provider },
+      (chunk) => {
         if (aborted) throw new Error('ABORTED');
         fullText += chunk;
         if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
-            type: 'chunk',
-            payload: { text: chunk, conversationId: convId },
-          }));
+          ws.send(JSON.stringify({ type: 'chunk', payload: { text: chunk, conversationId: convId } }));
         }
       }
     );
 
-    // Fallback: if onChunk never fired (e.g. ILMU streams non-message format),
-    // use the parsed result content
-    if (!fullText && result?.content) {
-      fullText = result.content;
+    // ── Handle tool calls ─────────────────────────────────────────────
+    if (result?.type === 'tool' && result?.name) {
+      // Stop typing — we're executing a tool
+      ws.send(JSON.stringify({ type: 'typing', payload: { active: false, conversationId: convId } }));
+
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'tool_call',
+          payload: {
+            conversationId: convId,
+            tool: result.name,
+            args: result.args,
+            message: `🔧 Running ${result.name.replace(/_/g, ' ')}...`,
+          },
+        }));
+      }
+
+      try {
+        const toolResult = await tools.executeTool(userId, {
+          name: result.name,
+          args: result.args,
+        });
+
+        // Format tool result for chat display
+        const toolMessage = typeof toolResult === 'string'
+          ? toolResult
+          : toolResult?.message || `✅ ${result.name.replace(/_/g, ' ')} done.`;
+
+        if (!aborted && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'tool_result',
+            payload: {
+              conversationId: convId,
+              tool: result.name,
+              content: toolMessage,
+              timestamp: new Date().toISOString(),
+            },
+          }));
+        }
+
+        // ── Follow-up: let LLM explain what happened ──────────────────
+        const followupCtx = typeof toolResult === 'string' ? toolResult : (toolResult?.message || 'Done.');
+        ws.send(JSON.stringify({ type: 'typing', payload: { active: true, conversationId: convId } }));
+
+        let followupText = '';
+        const followupResult = await llm.chatStream(
+          userId,
+          `You just executed: ${result.name} with args ${JSON.stringify(result.args)}. Result: ${followupCtx}. Briefly confirm what you did in a friendly way, in the same language as the user. Keep it 1-2 sentences.`,
+          [],
+          { provider: 'ilmu', tier: 'fast' },
+          (chunk) => {
+            if (aborted) throw new Error('ABORTED');
+            followupText += chunk;
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'chunk', payload: { text: chunk, conversationId: convId } }));
+            }
+          }
+        );
+
+        // Fallback for followup
+        if (!followupText && followupResult?.content) followupText = followupResult.content;
+
+        ws.send(JSON.stringify({ type: 'typing', payload: { active: false, conversationId: convId } }));
+
+        if (!aborted && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'done',
+            payload: {
+              conversationId: convId,
+              fullText: followupText || '✅ Done!',
+              metadata: { model: requestedModel || 'auto', provider: 'ilmu', timestamp: new Date().toISOString() },
+            },
+          }));
+        }
+      } catch (toolErr) {
+        logger.error('Tool execution error', { userId, tool: result.name, error: toolErr.message });
+        if (!aborted && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'tool_result',
+            payload: {
+              conversationId: convId,
+              tool: result.name,
+              content: `❌ Failed: ${toolErr.message}`,
+              error: true,
+              timestamp: new Date().toISOString(),
+            },
+          }));
+        }
+      }
+      return; // Tool call handled — don't send regular 'done'
     }
 
-    // ── Done ───────────────────────────────────────────────────────────
-    ws.send(JSON.stringify({
-      type: 'typing',
-      payload: { active: false, conversationId: convId },
-    }));
+    // ── Regular message response ───────────────────────────────────────
+    if (!fullText && result?.content) fullText = result.content;
+
+    ws.send(JSON.stringify({ type: 'typing', payload: { active: false, conversationId: convId } }));
 
     if (!aborted && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({
