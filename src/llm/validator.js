@@ -555,6 +555,167 @@ function detectUserCreateIntent(userMessage) {
   return null;
 }
 
+/**
+ * Detect if LLM is fabricating real-time/world facts that should have been a web search.
+ * Catches cases where the bot confidently answers weather, news, stock prices, etc.
+ * without actually calling web_search — these answers are almost certainly hallucinations.
+ *
+ * @param {string} content - the LLM's message content
+ * @param {string} userMessage - the user's original message (to check intent)
+ * @returns {{isHallucination: boolean, reasons: Array<string>, suggestedQuery: string|null}}
+ */
+function detectWebSearchHallucination(content, userMessage) {
+  if (!content || !userMessage || typeof content !== 'string' || typeof userMessage !== 'string') {
+    return { isHallucination: false, reasons: [], suggestedQuery: null };
+  }
+
+  const contentLower = content.toLowerCase();
+  const userLower = userMessage.toLowerCase().trim();
+  const reasons = [];
+
+  // ═══════════════════════════════════════════════════════════════
+  // Step 1: Does the USER's message ask for real-time/current info?
+  // ═══════════════════════════════════════════════════════════════
+  const realTimePatterns = [
+    // Weather
+    { pattern: /\b(cuaca|weather|hujan|rain|panas|ribut|storm|banjir|mendung|cerah|suhu|temperature|berangin)\b/i, category: 'weather' },
+    // Current news
+    { pattern: /\b(berita|news|terkini|latest|headline|tular|viral|semasa|current|hari\s*(ni|ini)|today)\b/i, category: 'news' },
+    // Stock/crypto/price
+    { pattern: /\b(harga|price|stock|market|saham|nasdaq|dow|snp|bitcoin|btc|crypto|eth|ringgit|myr|usd|emas|minyak)\b/i, category: 'price' },
+    // Sports scores (live)
+    { pattern: /\b(bola|football|soccer|score|keputusan|perlawanan|match|liga|league|epl|ucl|serie\s*a)\b/i, category: 'sports' },
+    // Politics / current affairs
+    { pattern: /\b(presiden|president|pm\s*malaysia|perdana\s*menteri|pilihan\s*raya|election|parlimen|kabinet|menteri)\b/i, category: 'politics' },
+    // Trending topics
+    { pattern: /\b(trending|trend|popular|famous|terkenal|skandal|kontroversi|isu\s*semasa|sedang\s*(hangat|viral))\b/i, category: 'trending' },
+    // Events happening today/now
+    { pattern: /\b(sekarang|now|currently|sedang\s*(berlaku|terjadi)|hari\s*(ni|ini)|today|malam\s*(ni|ini)|tonight)\b/i, category: 'current_event' },
+  ];
+
+  let userCategory = null;
+  for (const { pattern, category } of realTimePatterns) {
+    if (pattern.test(userLower)) {
+      userCategory = category;
+      break;
+    }
+  }
+
+  // If user is not asking for real-time info, skip
+  if (!userCategory) {
+    return { isHallucination: false, reasons: [], suggestedQuery: null };
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // Step 2: Does the LLM's response contain SPECIFIC claims?
+  // Generic responses like "Saya tak pasti" are fine — we catch
+  // confident assertions like "Cyberjaya cerah je harini"
+  // ═══════════════════════════════════════════════════════════════
+
+  // LLM is hedging — this is acceptable
+  const hedgingPatterns = [
+    /saya\s*tak\s*(pasti|tahu|dapat|boleh)/i,
+    /\bi('?m| am)\s*not\s*(sure|certain|able)/i,
+    /tak\s*(dapat|boleh)\s*(akses|check|semak|lihat)/i,
+    /tidak\s*(pasti|tahu)/i,
+    /let\s*me\s*(check|search|look|find)/i,
+    /kejap.*?(?:check|search|cari)/i,
+    /nak\s*(check|search|cari|tengok)\s*dulu/i,
+    /i\s*(don't|do\s*not|cannot|can't)\s*(know|have|access)/i,
+    /maaf.*?(?:tak|tidak|belum)\s*(?:tahu|pasti)/i,
+    /saya\s*(perlu|nak|akan)\s*(check|cari|search)/i,
+  ];
+
+  let isHedging = false;
+  for (const pattern of hedgingPatterns) {
+    if (pattern.test(contentLower)) {
+      isHedging = true;
+      break;
+    }
+  }
+
+  if (isHedging) {
+    // LLM acknowledges it doesn't know — this is good behavior
+    return { isHallucination: false, reasons: [], suggestedQuery: null };
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // Step 3: Check if LLM made specific factual claims
+  // If the response contains specific info (numbers, locations, times,
+  // names) about a real-time topic, it's likely hallucinated.
+  // ═══════════════════════════════════════════════════════════════
+  const specificClaimIndicators = [
+    // Specific numbers/quantities in context of real-time info
+    /\b(\d{1,2}[°º]\s*[CF]|\d{1,3}\s*%|\$\d+|\d+\s*ringgit|rm\s*\d+)\b/i,
+    // Specific times for events
+    /\b(akan|bakal|dijangka)\s+(berlaku|bermula|bermula|start|happen)\b/i,
+    // Named entities + current status
+    /\b(sedang|kini|sekarang|currently|now|today)\b.{1,30}\b(di|at|dalam|pada)\b/i,
+    // Weather assertions
+    /\b(cuaca|weather).{1,30}\b(cerah|mendung|hujan|panas|ribut|clear|cloudy|rain|sunny|storm)\b/i,
+    // Price assertions
+    /\b(harga|price).{1,30}\b(naik|turun|mahal|murah|increase|decrease|up|down|rm|usd)\b/i,
+    // Score/result assertions
+    /\b(menang|kalah|seri|win|lose|draw|score).{1,30}\b(\d+\s*[-–]\s*\d+|\d+\s*gol)\b/i,
+  ];
+
+  let hasSpecificClaim = false;
+  for (const pattern of specificClaimIndicators) {
+    if (pattern.test(contentLower)) {
+      hasSpecificClaim = true;
+      reasons.push('LLM made specific claim about ' + userCategory + ' without web_search');
+      break;
+    }
+  }
+
+  // Also check: if the response is long (>150 chars) and about real-time topic,
+  // it's likely trying to provide detailed fake info
+  if (!hasSpecificClaim && content.length > 150) {
+    // Check if the content looks informative rather than conversational
+    const informativeIndicators = [
+      /sekarang\s+(di|pada|dalam)/i,
+      /currently\s+(in|at|on)/i,
+      /pada\s+(masa|waktu|ketika)\s+(ini|sekarang|sama)/i,
+      /as\s+of\s+(now|today)/i,
+      /suhu|temperature|kelembapan|humidity|kelajuan|wind/i,
+      /ringgit|usd|dollar|rm\s*\d/i,
+      /index|indeks|pasaran/i,
+    ];
+    for (const pattern of informativeIndicators) {
+      if (pattern.test(contentLower)) {
+        hasSpecificClaim = true;
+        reasons.push('LLM provided detailed real-time info about ' + userCategory + ' without web_search');
+        break;
+      }
+    }
+  }
+
+  if (!hasSpecificClaim) {
+    return { isHallucination: false, reasons: [], suggestedQuery: null };
+  }
+
+  // Extract a good search query from the user's message
+  let suggestedQuery = userMessage
+    .replace(/^(?:tolong\s+)?(?:cari|search|check|find|look\s*up)\s+/i, '')
+    .replace(/\b(?:aku|saya|i|you|tolong|please|boleh\s+(?:tak|kah)?|can\s+you|nak\s+(?:tau|tahu)?)\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (suggestedQuery.length < 5) {
+    suggestedQuery = userMessage.trim();
+  }
+
+  console.log('[Validator] 🔍 Web search hallucination detected! category=' + userCategory + ' | query="' + suggestedQuery.slice(0, 80) + '"');
+  console.log('[Validator]    User asked:', userMessage.slice(0, 150));
+  console.log('[Validator]    LLM said:', content.slice(0, 150));
+
+  return {
+    isHallucination: true,
+    reasons,
+    suggestedQuery,
+  };
+}
+
 function validateLLMResponse(llmResponse, context = {}) {
   const issues = [];
   let isValid = true;
@@ -608,6 +769,18 @@ function validateLLMResponse(llmResponse, context = {}) {
         // Warning only, not marking invalid (could be inference)
       }
     }
+
+    // 🔥 Check for WEB SEARCH HALLUCINATION — LLM making up real-time info
+    // (weather, news, prices, sports, etc.) without calling web_search
+    if (context.userMessage) {
+      const webSearchCheck = detectWebSearchHallucination(content, context.userMessage);
+      if (webSearchCheck.isHallucination) {
+        issues.push('CRITICAL web-search hallucination: ' + webSearchCheck.reasons.join('; '));
+        isValid = false; // BLOCK fabricated real-time info
+        // Store suggested query so forceToolCall can use it
+        llmResponse._webSearchQuery = webSearchCheck.suggestedQuery;
+      }
+    }
   }
 
   // Validate tool calls
@@ -650,6 +823,12 @@ function validateLLMResponse(llmResponse, context = {}) {
         forceToolCall = { name: 'web_search', args: {} };
       }
       // If no specific intent matched, DON'T force a tool — let the fallback message handle it
+    } else if (issues.some(i => i.includes('web-search hallucination'))) {
+      // 🔥 LLM fabricated real-time info — force web_search with the user's original query
+      const searchQuery = llmResponse._webSearchQuery || context.userMessage || '';
+      console.log('[Validator] 🔍 Forcing web_search instead of hallucinated real-time info');
+      console.log('[Validator]    Query: ' + searchQuery.slice(0, 100));
+      forceToolCall = { name: 'web_search', args: { query: searchQuery } };
     }
   }
 
@@ -675,6 +854,24 @@ function generateFallbackResponse(userMessage) {
   }
   if (createIntent === 'add_note') {
     return 'Maaf, saya tak dapat simpan nota tu. Boleh cuba lagi?';
+  }
+  if (createIntent === 'web_search') {
+    return '🔍 Let me search for that...';
+  }
+
+  // 🔥 If asking about real-time info (weather, news, prices), trigger web_search
+  const realTimePatterns = [
+    /\b(cuaca|weather|hujan|rain|panas|ribut|storm|banjir|mendung|suhu|temperature)\b/i,
+    /\b(berita|news|terkini|latest|headline|tular|viral|semasa)\b/i,
+    /\b(harga|price|stock|saham|bitcoin|btc|crypto|eth|emas|minyak|ringgit)\b/i,
+    /\b(bola|football|soccer|score|keputusan|perlawanan|match|liga|league)\b/i,
+    /\b(presiden|president|pm\s*malaysia|perdana\s*menteri|pilihan\s*raya|election)\b/i,
+  ];
+
+  for (const pattern of realTimePatterns) {
+    if (pattern.test(lower)) {
+      return '🔍 Let me search for the latest info on that...';
+    }
   }
 
   // If asking about reminders/reminder times → trigger list_reminders

@@ -50,6 +50,13 @@ const DEEP_PATTERNS = [
   /patut\s*(ke|tak)|should\s*i|advisable|sesuai\s*ke|baik\s*mana|which\s*(is |one)/i,
   // Multi-step / project
   /step|langkah|process|proses|workflow|tutorial|guide|panduan/i,
+  // 🔥 Real-time / current information — MUST route to deep (needs web_search)
+  /\b(cuaca|weather|hujan|rain|panas|ribut|storm|banjir|mendung|cerah)\b/i,
+  /\b(berita|news|terkini|latest|headline|tular|viral|semasa|current)\b/i,
+  /\b(harga\s*(emas|minyak|saham|bitcoin|crypto|ringgit)|price|stock|market|nasdaq|dow|snp)\b/i,
+  /\b(bola|football|soccer|liga|league|perdana\s*menteri|pm\s*malaysia|pilihan\s*raya|election|siapa\s*(presiden|pm|menteri))\b/i,
+  /\b(trending|trend|popular|famous|terkenal|skandal|kontroversi|isu\s*semasa)\b/i,
+  /\b(maksud|definisi|definition|what\s+is|apa\s+(itu|maksud|definisi))\b/i,
 ];
 
 // ── Intent Classification ───────────────────────────────────────────────────

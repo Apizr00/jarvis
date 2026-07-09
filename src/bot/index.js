@@ -1837,8 +1837,8 @@ async function createBot() {
         }
 
         // ── Recovery: LLM acknowledged a search instead of calling web_search ──
-        const searchAckPattern = /\b(?:kejap|sekejap|tunggu|search dulu|cari dulu|check dulu|cekidout dulu|aku search|aku cari|aku check|let me (?:search|look|check|find|google)|mencari|searching|checking|looking (?:up|for)|nak (?:aku|saya)?\s*(?:search|cari|check)|takut.*aku.*update)/i;
-        const userSearchIntentPattern = /\b(?:siapa|apa|bila|mana|berapa|cari|search|check|find|look\s*up|berita|news|terkini|latest|cuaca|weather|harga|price|stock|crypto|pm\s*malaysia|perdana\s*menteri)/i;
+        const searchAckPattern = /\b(?:kejap|sekejap|tunggu|search dulu|cari dulu|check dulu|cekidout dulu|aku search|aku cari|aku check|let me (?:search|look|check|find|google)|mencari|searching|checking|looking (?:up|for)|nak (?:aku|saya)?\s*(?:search|cari|check)|takut.*aku.*update|jap(?:eh)?\s*(?:aku|saya)?\s*(?:search|cari|check|tengok)|sek(?:ejap)?\s*(?:aku|saya)?\s*(?:search|cari|check)|bagi\s*(?:aku|saya)\s*(?:search|cari|check))/i;
+        const userSearchIntentPattern = /\b(?:siapa|apa|bila|mana|berapa|cari|search|check|find|look\s*up|berita|news|terkini|latest|cuaca|weather|harga|price|stock|crypto|pm\s*malaysia|perdana\s*menteri|bola|football|soccer|score|liga|league|epl|ucl|hujan|rain|panas|ribut|storm|banjir|mendung|suhu|temperature|emas|bitcoin|btc|ringgit|myr|usd|trending|trend|viral|tular|isu\s*semasa)/i;
 
         if (searchAckPattern.test(content) && userSearchIntentPattern.test(text)) {
           console.log('[Bot] ⚠️ LLM acknowledged search but didn\'t call web_search! Forcing search...');
@@ -1857,6 +1857,38 @@ async function createBot() {
 
           console.log('[Bot]    Search query:', searchQuery);
           llmResponse = { type: 'tool', name: 'web_search', args: { query: searchQuery } };
+        }
+
+        // ── 🔥 NEW Recovery: LLM gave confident answer about real-time info ──
+        // If user asked about weather/news/price/etc. and LLM answered with a
+        // message (not a tool call), it likely hallucinated. Force web_search.
+        if (llmResponse.type === 'message' && userSearchIntentPattern.test(text) && !searchAckPattern.test(content)) {
+          // Check if the response looks like a confident factual answer (not hedging)
+          const hedgingPattern = /(?:tak\s*(?:pasti|tahu|dapat|boleh)|tidak\s*(?:pasti|tahu)|i'?\s*(?:m\s*not|don'?t)\s*(?:sure|certain|know)|maaf.*?(?:tak|tidak)\s*(?:tahu|pasti)|saya\s*(?:perlu|nak|akan)\s*(?:check|cari|search))/i;
+          const isHedging = hedgingPattern.test(content);
+
+          // Look for specific factual claims (numbers, locations, prices, etc.)
+          const specificClaimPattern = /\b(?:cuaca|weather|hujan|rain|cerah|mendung|suhu|temperature|harga|price|rm\s*\d|\$\d+|ringgit|menang|kalah|score|gol|naik|turun|index|indeks|sedang|currently|kini|sekarang)\b/i;
+          const hasSpecificClaim = specificClaimPattern.test(content);
+
+          if (!isHedging && hasSpecificClaim) {
+            console.log('[Bot] ⚠️ LLM gave confident factual answer about real-time topic — likely hallucination!');
+            console.log('[Bot]    User asked:', text.slice(0, 150));
+            console.log('[Bot]    LLM said:', content.slice(0, 150));
+
+            // Extract a clean search query
+            let searchQuery = text
+              .replace(/^(?:tolong\s+)?(?:cari|search|check|find|look\s*up)\s+/i, '')
+              .replace(/\b(?:aku|saya|i|you|tolong|please|boleh\s+(?:tak|kah)?|can\s+you|nak\s+(?:tau|tahu)?|agak\s*(?:ii|ih|lah)?)\b/gi, '')
+              .replace(/\?/g, '')
+              .replace(/\s+/g, ' ')
+              .trim();
+
+            if (searchQuery.length < 3) searchQuery = text;
+
+            console.log('[Bot]    Forcing web_search with query:', searchQuery.slice(0, 100));
+            llmResponse = { type: 'tool', name: 'web_search', args: { query: searchQuery } };
+          }
         }
       }
 
