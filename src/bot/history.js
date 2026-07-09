@@ -82,8 +82,73 @@ function clearPendingEdit(userId) {
 
 // ── Summarization ──────────────────────────────────────────────────────────
 
-const SUMMARIZE_THRESHOLD = 25; // summarize when >25 messages (was 15)
-const KEEP_RECENT = 18;         // keep last 18 messages (was 12)
+const SUMMARIZE_THRESHOLD = 25; // summarize when >25 messages
+const KEEP_RECENT = 18;         // keep last 18 messages
+const SMART_SUMMARIZE_AT = 20;  // trigger LLM summary at 20+ messages
+
+// Cache for LLM-generated summaries (avoids re-summarizing same history)
+const summaryCache = new Map(); // userId → { summary, messageCount, timestamp }
+
+/**
+ * Generate a smart LLM-powered summary of conversation history.
+ * Runs asynchronously — call after response is sent (fire-and-forget).
+ * Uses the cheap ILMU-mini model so it doesn't slow things down.
+ *
+ * @param {string} userId
+ * @param {Array} messages - the messages to summarize
+ * @param {Function} llmChatFn - LLM chat function (e.g., llm.chatMimo or llm.chatIlmu)
+ */
+async function generateSmartSummary(userId, messages, llmChatFn) {
+  if (!llmChatFn || messages.length < 5) return;
+
+  // Skip if we already have a recent summary for roughly the same message count
+  const cached = summaryCache.get(userId);
+  if (cached && Math.abs(cached.messageCount - messages.length) < 5 &&
+    Date.now() - cached.timestamp < 5 * 60 * 1000) {
+    return; // cached summary is still fresh
+  }
+
+  try {
+    const conversationText = messages
+      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .map(m => (m.role === 'user' ? 'User' : 'Bot') + ': ' + m.content.slice(0, 200))
+      .join('\n');
+
+    const prompt =
+      'Summarize this conversation in 3-5 concise bullet points. Capture key topics, decisions, actions taken, and context. ' +
+      'Write in the same mix of languages as the conversation (BM/English/rojak). Be brief but preserve meaning.\n\n' +
+      'CONVERSATION:\n' + conversationText + '\n\n' +
+      'SUMMARY (3-5 bullets):';
+
+    const resp = await Promise.race([
+      llmChatFn(userId, prompt, [{ role: 'user', content: prompt }]),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Summary timeout')), 8000)),
+    ]);
+
+    const summaryText = resp?.content || resp?.type === 'message' ? resp.content : '';
+    if (summaryText && summaryText.length > 10) {
+      summaryCache.set(userId, {
+        summary: '[Conversation so far: ' + summaryText.replace(/\n/g, ' | ') + ']',
+        messageCount: messages.length,
+        timestamp: Date.now(),
+      });
+      console.log('[History] 🧠 Smart summary generated (' + summaryText.length + ' chars)');
+    }
+  } catch (err) {
+    console.log('[History] Smart summary skipped:', err.message);
+  }
+}
+
+/**
+ * Get the cached smart summary if available and fresh.
+ */
+function getSmartSummary(userId) {
+  const cached = summaryCache.get(userId);
+  if (cached && Date.now() - cached.timestamp < 10 * 60 * 1000) {
+    return cached.summary;
+  }
+  return null;
+}
 
 function buildTopicSummary(messages) {
   const allMessages = messages.filter(m => m.role === 'user' || m.role === 'assistant').map(m => m.content);
@@ -116,34 +181,98 @@ function buildTopicSummary(messages) {
   return topics.length > 0 ? '[Earlier topics: ' + topics.join(', ') + ']' : '';
 }
 
-function getEffectiveHistory(userId) {
+/**
+ * Get effective history for LLM context.
+ * Uses smart summaries when available, falls back to keyword extraction.
+ * Applies relevance-based pruning to keep only the most context-relevant messages.
+ *
+ * @param {string} userId
+ * @param {string} [currentQuery] - optional current user message for relevance scoring
+ */
+function getEffectiveHistory(userId, currentQuery) {
   const history = getHistory(userId);
   if (history.length <= SUMMARIZE_THRESHOLD) return history;
 
+  // Check if already has a system summary at position 0
   const firstMsg = history[0];
-  const alreadySummarized = firstMsg && firstMsg.role === 'system' &&
-    /^\[Earlier/.test(firstMsg.content);
+  const hasSummary = firstMsg && firstMsg.role === 'system' &&
+    /^\[(?:Earlier|Conversation)/.test(firstMsg.content);
 
-  if (alreadySummarized) {
-    const recent = history.slice(-KEEP_RECENT);
-    return [firstMsg, ...recent];
+  // Try smart summary first (LLM-generated, semantically rich)
+  const smartSummary = getSmartSummary(userId);
+  const summaryText = smartSummary || (hasSummary ? firstMsg.content : buildTopicSummary(
+    history.slice(0, history.length - KEEP_RECENT)
+  ));
+
+  // Get recent messages
+  let recent;
+  if (hasSummary) {
+    recent = history.slice(-KEEP_RECENT);
+  } else {
+    recent = history.slice(-KEEP_RECENT);
   }
 
-  const older = history.slice(0, history.length - KEEP_RECENT);
-  const summary = buildTopicSummary(older);
-  const recent = history.slice(-KEEP_RECENT);
-
-  if (summary) {
-    const newHistory = [{ role: 'system', content: summary }, ...recent];
-    conversationHistory[userId] = newHistory;
-    console.log('[History] 📝 Summarized ' + older.length + ' older messages → ' + summary.slice(0, 150));
-    return newHistory;
+  // ── Relevance-based pruning ──────────────────────────────────────────
+  // If we have a current query AND enough history, prune less relevant messages
+  if (currentQuery && recent.length > 12) {
+    recent = pruneByRelevance(recent, currentQuery, 12);
   }
 
-  // If no summary generated, just trim to MAX_HISTORY
-  const trimmed = history.slice(-MAX_HISTORY);
-  conversationHistory[userId] = trimmed;
-  return trimmed;
+  const result = [{ role: 'system', content: summaryText }, ...recent];
+  conversationHistory[userId] = result;
+
+  if (smartSummary) {
+    console.log('[History] 🧠 Using smart summary + ' + recent.length + ' recent msgs');
+  } else {
+    console.log('[History] 📝 Keyword summary + ' + recent.length + ' recent msgs');
+  }
+
+  return result;
+}
+
+/**
+ * Prune history to keep only messages relevant to the current query.
+ * Always keeps the last 3 messages (immediate context).
+ * Scores remaining messages by keyword overlap with the query.
+ *
+ * @param {Array} messages - recent messages to prune
+ * @param {string} query - current user query
+ * @param {number} keepCount - how many messages to keep total
+ * @returns {Array} pruned messages
+ */
+function pruneByRelevance(messages, query, keepCount) {
+  const queryLower = query.toLowerCase();
+  const queryWords = queryLower.split(/\s+/).filter(w => w.length > 2);
+
+  if (queryWords.length === 0) return messages.slice(-keepCount);
+
+  // Always keep last 3 messages (immediate context)
+  const tail = messages.slice(-3);
+  const rest = messages.slice(0, -3);
+
+  if (rest.length === 0) return tail;
+
+  // Score each older message by relevance
+  const scored = rest.map((msg, idx) => {
+    const content = (msg.content || '').toLowerCase();
+    let score = 0;
+    for (const word of queryWords) {
+      if (content.includes(word)) score += 2;
+      // Boost if message was close in time (higher index = more recent)
+      score += (idx / rest.length) * 0.5;
+    }
+    return { msg, score, idx };
+  });
+
+  // Sort by relevance, take top (keepCount - 3)
+  scored.sort((a, b) => b.score - a.score);
+  const topRelevant = scored.slice(0, keepCount - 3)
+    .sort((a, b) => a.idx - b.idx) // restore chronological order
+    .map(s => s.msg);
+
+  const pruned = [...topRelevant, ...tail];
+  console.log('[History] 🔍 Pruned ' + messages.length + '→' + pruned.length + ' msgs (relevance-based)');
+  return pruned;
 }
 
 // ── Message Deduplication ─────────────────────────────────────────────────
@@ -175,6 +304,9 @@ module.exports = {
   addToHistory,
   clearHistory,
   getEffectiveHistory,
+  // Smart summarization
+  generateSmartSummary,
+  getSmartSummary,
   // Pending edits
   setPendingEdit,
   getPendingEdit,

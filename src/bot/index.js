@@ -47,6 +47,7 @@ const getHistory = historyModule.getHistory;
 const addToHistory = historyModule.addToHistory;
 const clearHistory = historyModule.clearHistory;
 const getEffectiveHistory = historyModule.getEffectiveHistory;
+const generateSmartSummary = historyModule.generateSmartSummary;
 const buildTopicSummary = (msgs) => historyModule.getEffectiveHistory; // deprecated, use getEffectiveHistory
 const setPendingEdit = historyModule.setPendingEdit;
 const getPendingEdit = historyModule.getPendingEdit;
@@ -1546,8 +1547,8 @@ async function createBot() {
         }
       }
 
-      // 🔥 Use summarized history to prevent context amnesia in long chats
-      const history = getEffectiveHistory(userId);
+      // 🔥 Use summarized history with relevance-based pruning for context
+      const history = getEffectiveHistory(userId, text);
 
       // ── 🧠 Context Switch Detection ────────────────────────────────────
       // If the last assistant message was asking a clarification question
@@ -1817,6 +1818,12 @@ async function createBot() {
         // Track for pattern recognition (always)
         patterns.trackMessage(userId, { role: 'user', content: text });
         patterns.trackMessage(userId, { role: 'assistant', content: llmResponse.content });
+
+        // 🧠 Trigger smart LLM summarization if history is getting long (async, fire-and-forget)
+        const currentHistory = historyModule.getHistory(userId);
+        if (currentHistory.length >= historyModule.SUMMARIZE_THRESHOLD - 5) {
+          generateSmartSummary(userId, currentHistory, llm.chatIlmu || llm.chatMimo).catch(() => { });
+        }
 
         console.log('[Executive] ✅ ' + decision.tier.toUpperCase() + ' path complete | post: facts=' + postActions.extractFacts + ' people=' + postActions.extractPeople + ' wm=' + postActions.updateWorkingMemory + ' domains=' + postActions.updateDomains + ' eval=' + postActions.runSelfEval);
 
