@@ -12,7 +12,7 @@ const WS_URL = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.h
 export default function ChatPanel() {
   const location = useLocation();
   const isChatPage = location.pathname === "/chat";
-  const [collapsed, setCollapsed] = useState(window.innerWidth < 768);
+  const [collapsed, setCollapsed] = useState(true); // always start collapsed
   const wsRef = useRef(null);
   const messagesEndRef = useRef(null);
   const token = useAuthStore((s) => s.token);
@@ -109,77 +109,91 @@ export default function ChatPanel() {
     clearStreamText();
   };
 
+  // Auto-hide when on /chat page; otherwise user toggles via floating button
+  useEffect(() => {
+    if (isChatPage) setCollapsed(true);
+  }, [isChatPage]);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streamingText]);
 
-  // Determine panel class
-  const panelClass = isChatPage
-    ? "chat-panel fully-hidden"
-    : collapsed
-      ? "chat-panel collapsed"
-      : "chat-panel";
+  // Clean: fully hidden when collapsed, shown when expanded
+  const panelClass = collapsed ? "chat-panel fully-hidden" : "chat-panel";
 
   return (
-    <aside className={panelClass}>
-      <div
-        className="chat-panel-header"
-        onClick={() => {
-          if (!isChatPage) setCollapsed(!collapsed);
-        }}
-      >
-        <div className="chat-panel-title">
-          <span className={`status-dot ${wsConnected ? "ok" : "error"}`} />
-          <span>💬 Jarvis Chat</span>
-        </div>
-        {!isChatPage && (
+    <>
+      {/* Floating chat toggle button — visible only when panel is hidden */}
+      {collapsed && !isChatPage && (
+        <button
+          className="chat-fab"
+          onClick={() => setCollapsed(false)}
+          title="Buka Chat"
+        >
+          <span
+            className={`status-dot ${wsConnected ? "ok" : "error"}`}
+            style={{
+              position: "absolute",
+              top: 2,
+              right: 2,
+              width: 7,
+              height: 7,
+            }}
+          />
+          💬
+        </button>
+      )}
+
+      <aside className={panelClass}>
+        <div className="chat-panel-header">
+          <div className="chat-panel-title">
+            <span className={`status-dot ${wsConnected ? "ok" : "error"}`} />
+            <span>💬 Jarvis Chat</span>
+          </div>
           <div className="chat-panel-actions">
             <ModelSelector model={model} onChange={setModel} />
             <button
               className="btn-icon"
-              title={collapsed ? "Expand" : "Collapse"}
+              title="Tutup"
+              onClick={() => setCollapsed(true)}
             >
-              {collapsed ? "◀" : "▶"}
+              ✕
             </button>
           </div>
-        )}
-      </div>
+        </div>
 
-      {!collapsed && !isChatPage && (
-        <>
-          <div className="chat-messages">
-            {messages.length === 0 && !streaming && (
-              <div className="chat-empty">
-                <div className="chat-empty-icon">🤖</div>
-                <div className="chat-empty-title">Bual dengan Jarvis</div>
-                <div className="chat-empty-desc">
-                  Tanya apa-apa — Jarvis guna ILMU & DeepSeek untuk jawab.
-                </div>
+        <div className="chat-messages">
+          {messages.length === 0 && !streaming && (
+            <div className="chat-empty">
+              <div className="chat-empty-icon">🤖</div>
+              <div className="chat-empty-title">Bual dengan Jarvis</div>
+              <div className="chat-empty-desc">
+                Tanya apa-apa — Jarvis guna ILMU & DeepSeek untuk jawab.
               </div>
-            )}
-            {messages.map((msg, i) => (
-              <MessageBubble key={i} message={msg} />
-            ))}
-            {streaming && (
-              <MessageBubble
-                message={{
-                  role: "assistant",
-                  content: streamingText,
-                  timestamp: new Date().toISOString(),
-                }}
-                isStreaming
-              />
-            )}
-            <div ref={messagesEndRef} />
-          </div>
-          <ChatInput
-            onSend={sendMessage}
-            onCancel={cancelStream}
-            isStreaming={streaming}
-            disabled={!wsConnected}
-          />
-        </>
-      )}
-    </aside>
+            </div>
+          )}
+          {messages.map((msg, i) => (
+            <MessageBubble key={i} message={msg} />
+          ))}
+          {streaming && (
+            <MessageBubble
+              message={{
+                role: "assistant",
+                content: streamingText,
+                timestamp: new Date().toISOString(),
+              }}
+              isStreaming
+            />
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+        <ChatInput
+          onSend={sendMessage}
+          onCancel={cancelStream}
+          isStreaming={streaming}
+          disabled={!wsConnected}
+        />
+      </aside>
+    </>
   );
 }
