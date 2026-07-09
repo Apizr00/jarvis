@@ -260,32 +260,40 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
   try {
     // ── 🧠 EXECUTIVE — Intent, mood, language, tier routing ──────────
     const llm = deps.llm || require('../llm');
-    const executive = require('../executive');
     const tools = require('../tools');
     const { validateToolCall } = require('../tools');
-    const eventBus = deps.eventBus || require('../events').eventBus;
-    const EVENTS = require('../events').EVENTS;
-    const { fixHallucinatedGreeting, fixHallucinatedTime } = require('../bot/anti-hallucination');
 
-    const recentMsgs = []; // WebSocket keeps history in frontend store
-    const sm = null; // state machine tracking not needed for web chat; executive handles null
-    const decision = await executive.decide(userId, message, sm, recentMsgs);
+    // Try executive pipeline; fall back to simple routing if it fails
+    let decision;
+    let llmOptions = { provider: 'auto', tier: 'medium' };
+    try {
+      const executive = require('../executive');
+      const recentMsgs = [];
+      decision = await executive.decide(userId, message, null, recentMsgs);
+      llmOptions.executiveContext = await executive.buildContext(userId, decision, message, null);
+      llmOptions.provider = decision.provider || 'auto';
+      llmOptions.tier = decision.tier || 'medium';
 
-    // 📡 Emit intent event
-    if (eventBus) {
-      try { eventBus.emitSync(EVENTS.INTENT_DETECTED, { userId, message: message.slice(0, 100), ...decision }); } catch { }
+      // 📡 Emit intent event
+      try {
+        const eventBus = deps.eventBus || require('../events').eventBus;
+        const EVENTS = require('../events').EVENTS;
+        eventBus.emitSync(EVENTS.INTENT_DETECTED, { userId, message: message.slice(0, 100), ...decision });
+      } catch { }
+
+      logger.info('Web chat executive', { userId, tier: decision.tier, provider: decision.provider });
+    } catch (execErr) {
+      // Fallback: use simple intent-based routing
+      logger.warn('Executive pipeline failed, using fallback routing', { error: execErr.message });
+      const { detectIntent } = require('../llm/intent');
+      const intent = detectIntent(message);
+      llmOptions.tier = intent?.tier === 'deep' ? 'deep' : 'medium';
+      llmOptions.provider = 'auto';
+      decision = { tier: llmOptions.tier, provider: 'auto', mood: 'neutral', language: 'en' };
     }
 
-    // Build executive context (working memory + world model)
-    const llmOptions = {};
-    llmOptions.executiveContext = await executive.buildContext(userId, decision, message, sm);
-    llmOptions.provider = decision.provider || 'auto';
-    llmOptions.tier = decision.tier || 'medium';
-
-    logger.info('Web chat executive decision', { userId, tier: decision.tier, provider: decision.provider, intent: decision.intent?.category, mood: decision.mood, language: decision.language });
-
-    // ── 🧠 MEMORY + PLANNER + ANTI-HALLUCINATION ──────────────────────
-    let fullText = '';
+    // Anti-hallucination fixers
+    const { fixHallucinatedGreeting, fixHallucinatedTime } = require('../bot/anti-hallucination');
     let result = await llm.chatStream(userId, message, [], llmOptions,
       (chunk) => {
         if (aborted) throw new Error('ABORTED');
