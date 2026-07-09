@@ -2,11 +2,27 @@ import ReactMarkdown from "react-markdown";
 import "./MessageBubble.css";
 
 export default function MessageBubble({
-  message,
+  message = {},
   isStreaming,
   isTyping,
   onButtonClick,
 }) {
+  // Typing indicator — early return before any message access
+  if (isTyping) {
+    return (
+      <div className="message assistant">
+        <div className="message-avatar">🤖</div>
+        <div className="message-body">
+          <div className="message-content typing-indicator">
+            <span className="typing-dot" />
+            <span className="typing-dot" />
+            <span className="typing-dot" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
   const isTool = message.role === "tool";
@@ -33,22 +49,6 @@ export default function MessageBubble({
         : isToolResult
           ? "✅"
           : "🤖";
-
-  // Typing indicator (three animated dots)
-  if (isTyping) {
-    return (
-      <div className="message assistant">
-        <div className="message-avatar">🤖</div>
-        <div className="message-body">
-          <div className="message-content typing-indicator">
-            <span className="typing-dot" />
-            <span className="typing-dot" />
-            <span className="typing-dot" />
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   // Tool call display
   if (isTool) {
