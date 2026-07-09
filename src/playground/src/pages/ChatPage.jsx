@@ -158,16 +158,19 @@ export default function ChatPage() {
             onButtonClick={handleButtonClick}
           />
         ))}
-        {streaming && (
-          <MessageBubble
-            message={{
-              role: "assistant",
-              content: streamingText,
-              timestamp: new Date().toISOString(),
-            }}
-            isStreaming
-          />
-        )}
+        {streaming &&
+          (streamingText ? (
+            <MessageBubble
+              message={{
+                role: "assistant",
+                content: streamingText,
+                timestamp: new Date().toISOString(),
+              }}
+              isStreaming
+            />
+          ) : (
+            <MessageBubble isTyping />
+          ))}
         <div ref={messagesEndRef} />
       </div>
 
