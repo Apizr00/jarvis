@@ -189,9 +189,19 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
   try {
     const llm = deps.llm || require('../llm');
 
-    // Build context
-    const { buildSystemPrompt } = require('../llm/shared');
-    const systemPrompt = await buildSystemPrompt(userId);
+    // Build a quick system prompt for the chat context
+    const timezone = process.env.TIMEZONE || 'Asia/Kuala_Lumpur';
+    const now = new Date();
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(now);
+    const currentTime = new Intl.DateTimeFormat('en', {
+      timeZone: timezone, hour: 'numeric', minute: '2-digit', hour12: true,
+    }).format(now);
+
+    const systemPrompt = [
+      `You are Jarvis, a personal AI assistant.`,
+      `Today is ${today}. The current time is ${currentTime} (${timezone}).`,
+      `Respond concisely in a helpful, friendly tone. Use the same language as the user.`,
+    ].join('\n');
 
     // Stream response
     let fullText = '';
