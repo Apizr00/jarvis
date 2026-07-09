@@ -743,6 +743,24 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     'UNLESS the exact fact is in User facts above. If unsure → ASK, don\'t assume.\n\n';
 
   // ═══════════════════════════════════════════════════════════════════════
+  // SECTION 6b2: NO Fabricating User's Life (medium + deep)
+  // ═══════════════════════════════════════════════════════════════════════
+  const NO_FABRICATE_LIFE =
+    '🚫 NEVER FABRICATE the user\'s life — you know ONLY what is in User facts above:\n' +
+    '⛔ Location: "you\'re in Cyberjaya", "your house is...", "near your place"\n' +
+    '⛔ Schedule: "you have a meeting", "you\'re free tomorrow", "today is your busy day"\n' +
+    '⛔ Preferences: "you\'d love this", "since you prefer...", "your favorite is..."\n' +
+    '⛔ Health: "you haven\'t slept well", "your headache is from...", "you need X calories"\n' +
+    '⛔ Emotions: "you seem stressed", "I can tell you\'re...", "deep down you feel..."\n' +
+    '⛔ Relationships: "your wife would like", "your friend told you", "your mom says"\n' +
+    '⛔ Finances: "you can afford", "your budget is...", "you spent RM...", "your salary..."\n' +
+    '⛔ Knowledge: "since you\'re a developer", "you know Python", "you studied..."\n' +
+    '⛔ Future: "you\'ll finish by Friday", "this will take 2 weeks", "you\'re on track"\n' +
+    '⛔ Intent: "you want this because...", "what you really mean is...", "you\'re asking because..."\n' +
+    '⛔ Numbers: "that\'ll take 15 min", "80% of people prefer...", "this is the #1 option"\n' +
+    '🔥 If you don\'t see it in User facts → DON\'T claim it. Ask instead. "I don\'t know — can you tell me?"\n\n';
+
+  // ═══════════════════════════════════════════════════════════════════════
   // SECTION 6.5: Fact Lock System (deep only) — assertion levels
   // ═══════════════════════════════════════════════════════════════════════
   const FACT_LOCK_FULL =
@@ -882,6 +900,7 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     prompt = JSON_MEDIUM +
       ANTI_HALLUCINATION_MEDIUM +
       NO_FABRICATE_HABITS +
+      NO_FABRICATE_LIFE +
       contextBlock +
       LANGUAGE_FULL +
       TIME_MEDIUM +
@@ -896,6 +915,7 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     prompt = JSON_FULL +
       ANTI_HALLUCINATION_FULL +
       NO_FABRICATE_HABITS +
+      NO_FABRICATE_LIFE +
       contextBlock +
       LANGUAGE_FULL +
       TIME_FULL +

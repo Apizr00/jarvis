@@ -556,6 +556,407 @@ function detectUserCreateIntent(userMessage) {
 }
 
 /**
+ * ── COMPREHENSIVE Human Fact Hallucination Detector ─────────────────────────
+ *
+ * Detects when the LLM fabricates claims about the user's LIFE that are NOT
+ * backed by the provided user facts or the user's current message.
+ *
+ * Covers 12 categories (D–O): location, schedule, preferences, health,
+ * emotions, relationships, finances, knowledge, future predictions,
+ * intent guessing, numerical precision, and identity/self claims.
+ *
+ * The core principle: if the LLM asserts something specific about the user
+ * that isn't in userFacts AND the user didn't just say it, it's a hallucination.
+ *
+ * @param {string} content - the LLM's message content
+ * @param {Array<{key:string, value:string}>} userFacts - facts provided to LLM
+ * @param {string} userMessage - the user's original message (to check if user just revealed this)
+ * @returns {{isHallucination: boolean, categories: Array<string>, claims: Array<string>, confidence: number}}
+ */
+function detectHumanFactHallucination(content, userFacts = [], userMessage = '') {
+  if (!content || typeof content !== 'string') {
+    return { isHallucination: false, categories: [], claims: [], confidence: 0 };
+  }
+
+  const contentLower = content.toLowerCase();
+  const userLower = (userMessage || '').toLowerCase();
+  const categories = [];
+  const claims = [];
+  let totalConfidence = 0;
+
+  // ── Helper: check if a claim is backed by ANY user fact ───────────────
+  const isBackedByFacts = (keywords) => {
+    if (!userFacts || userFacts.length === 0) return false;
+    return userFacts.some(fact => {
+      const factText = (fact.key + ' ' + fact.value).toLowerCase();
+      return keywords.some(kw => factText.includes(kw));
+    });
+  };
+
+  // ── Helper: check if user just mentioned this in their message ────────
+  const userJustSaid = (keywords) => {
+    return keywords.some(kw => userLower.includes(kw));
+  };
+
+  // ── Helper: extract the sentence containing the claim ─────────────────
+  const extractSentence = (text, phrase) => {
+    const idx = text.indexOf(phrase);
+    if (idx === -1) return text.slice(0, 80).trim();
+    const sentenceStart = Math.max(0, text.lastIndexOf('.', idx - 1), text.lastIndexOf('!', idx - 1), text.lastIndexOf('?', idx - 1), text.lastIndexOf('\n', idx - 1));
+    const sentenceEnd = Math.min(text.length, ...[
+      text.indexOf('.', idx + phrase.length),
+      text.indexOf('!', idx + phrase.length),
+      text.indexOf('?', idx + phrase.length),
+      text.indexOf('\n', idx + phrase.length),
+    ].filter(x => x !== -1));
+    return text.slice(sentenceStart, sentenceEnd === text.length ? undefined : sentenceEnd).trim().replace(/^[.!?\s]+/, '');
+  };
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // CATEGORY D: Location & Place (4 scenarios)
+  // ═══════════════════════════════════════════════════════════════════════
+  const locationPatterns = [
+    // D1: Claims where user IS right now
+    { pattern: /\b(you('re| are)\s+(at|in|near|around|staying\s+at|currently\s+(at|in))|awak\s+(sedang\s+)?(di|dekat|berdekatan|berada\s+di|ada\s+di)|kau\s+(sedang\s+)?(di|dekat|ada\s+di))\b/i, sub: 'D1:current-location' },
+    // D2: Specific distance claims
+    { pattern: /\b(it'?s?\s+\d+\s*(km|kilometer|miles?|minit|minutes?)\s+(from|away|to)\s+(your|the)|jarak\s+\d+\s*(km|minit)|dalam\s+\d+\s*(km|minit)\s+dari\s+(rumah|tempat|office))\b/i, sub: 'D2:specific-distance' },
+    // D3: Claims about home/office location
+    { pattern: /\b(your\s+(home|house|office|workplace|apartment|condo|place)\s+(is|are)\s+(at|in|near|located|situated)|rumah\s+(awak|kau|anda)\s+(di|dekat|dekat\s+dengan|berada\s+di)|pejabat\s+(awak|kau)\s+(di|dekat)|awak\s+(duduk|tinggal)\s+(di|dekat))\b/i, sub: 'D3:home-office-location' },
+    // D4: "Near your place" type claims
+    { pattern: /\b(near|dekat|close\s+to|walking\s+distance\s+from|berdekatan\s+dengan|sebelah)\s+(your|rumah|tempat|office|awak|kau)\b/i, sub: 'D4:nearby-claim' },
+  ];
+  for (const { pattern, sub } of locationPatterns) {
+    if (pattern.test(contentLower)) {
+      // Check: does user have location facts?
+      const locationKeywords = ['location', 'city', 'address', 'home', 'office', 'tempat', 'rumah', 'alamat', 'lokasi', 'duduk', 'tinggal', 'live'];
+      if (!isBackedByFacts(locationKeywords) && !userJustSaid(['saya di', 'saya dekat', 'aku di', 'aku dekat', 'i am at', "i'm at", 'i am in', "i'm in", 'saya duduk', 'saya tinggal', 'i live in', 'i live at'])) {
+        categories.push('location');
+        claims.push(extractSentence(contentLower, sub.split(':')[1]));
+        totalConfidence += 0.8;
+        break; // One hit per category is enough
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // CATEGORY E: Personal Schedule (5 scenarios)
+  // ═══════════════════════════════════════════════════════════════════════
+  const schedulePatterns = [
+    // E1: Fabricated meetings
+    { pattern: /\b(you\s+have\s+(a|an)\s+(meeting|appointment|event|call|session)|awak\s+ada\s+(meeting|temujanji|event|appointment)|kau\s+ada\s+(meeting|temujanji))\b/i, sub: 'E1:fabricated-meeting' },
+    // E2: Claims user is free
+    { pattern: /\b(you('re| are)\s+free\s+(at|on|tomorrow|today|later|this)|awak\s+(free|lapang|tak\s+de\s+apa)\s+(pada|esok|hari\s+ni|nanti)|you\s+don'?t\s+have\s+anything\s+(at|on|scheduled))\b/i, sub: 'E2:assumes-free' },
+    // E3: Labels user's day
+    { pattern: /\b(today\s+is\s+(your|a)\s+(busy|light|packed|free|hectic|easy|long|slow|full)\s+day|hari\s+ni\s+(awak|hari)\s+(sibuk|lapang|ringan|penuh|panjang)|this\s+is\s+(your|a)\s+(busy|hectic)\s+(day|week|morning))\b/i, sub: 'E3:labels-day' },
+    // E4: Fabricated schedule patterns
+    { pattern: /\b(you\s+(always|usually|normally|typically)\s+have\s+(meetings?|calls?|classes?|appointments?)\s+(on|every|at)|awak\s+(selalu|biasa|selalunya)\s+ada\s+(meeting|kelas|temujanji)\s+(pada|setiap))\b/i, sub: 'E4:schedule-pattern' },
+    // E5: Fabricated upcoming activity
+    { pattern: /\b(your\s+next\s+(event|meeting|appointment|class|activity|thing)\s+is|aktiviti\s+(awak|kau)\s+seterusnya|lepas\s+ni\s+(awak|kau)\s+ada)\b/i, sub: 'E5:next-activity' },
+  ];
+  for (const { pattern, sub } of schedulePatterns) {
+    if (pattern.test(contentLower)) {
+      // Check: does user have calendar/schedule facts?
+      const scheduleKeywords = ['meeting', 'event', 'appointment', 'class', 'jadual', 'schedule', 'calendar', 'kelas', 'temujanji'];
+      // Also check: did user just tell the bot about their schedule?
+      const userJustToldSchedule = /\b(i\s+have\s+(a|an)\s+(meeting|event|appointment)|saya\s+ada\s+(meeting|temujanji|event)|aku\s+ada\s+(meeting|temujanji)|(my|saya|aku)\s+(schedule|jadual))\b/i;
+      if (!isBackedByFacts(scheduleKeywords) && !userJustSaid(['remind', 'ingatkan', 'set', 'buat', 'create', 'add', 'tambah']) && !userJustToldSchedule.test(userLower)) {
+        categories.push('schedule');
+        claims.push(extractSentence(contentLower, sub.split(':')[1]));
+        totalConfidence += 0.75;
+        break;
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // CATEGORY F: Preferences & Tastes (5 scenarios)
+  // ═══════════════════════════════════════════════════════════════════════
+  const preferencePatterns = [
+    // F1: "You'd love/like/enjoy X"
+    { pattern: /\b(you('d| would)\s+(love|like|enjoy|appreciate|hate|dislike)|awak\s+(mesti|pasti|akan|tentu)\s+(suka|minat|benci|gemar|teruja)|kau\s+(mesti|pasti)\s+(suka|minat|benci))\b/i, sub: 'F1:assumes-taste' },
+    // F2: "Since you prefer X..."
+    { pattern: /\b(since\s+you\s+prefer|because\s+you\s+(like|love|prefer|enjoy|hate)|sebab\s+(awak|kau)\s+(suka|prefer|minat|gemar|benci)|memandangkan\s+(awak|kau)\s+(suka|minat))\b/i, sub: 'F2:assumes-preference' },
+    // F3: "Your favorite X is..."
+    { pattern: /\b(your\s+favo(u?)rite\s+\w+\s+is|favo(u?)rite\s+(awak|kau)\s+(ialah|adalah)|(awak|kau)\s+punya\s+favo(u?)rite|kegemaran\s+(awak|kau)\s+(ialah|adalah))\b/i, sub: 'F3:favorite-claim' },
+    // F4: "Since you love X" — hobby/interest assumption
+    { pattern: /\b(since\s+you\s+(love|enjoy|are\s+into|are\s+a\s+fan\s+of)|knowing\s+you\s+(like|love)|sebab\s+(awak|kau)\s+(suka|minat|gemar|hobi))\b/i, sub: 'F4:hobby-assumption' },
+    // F5: "You always choose/pick X"
+    { pattern: /\b(you\s+(always|usually|tend\s+to|typically)\s+(choose|pick|go\s+for|prefer|select|opt\s+for)|awak\s+(selalu|biasa|selalunya)\s+(pilih|ambil|prefer))\b/i, sub: 'F5:choice-pattern' },
+  ];
+  for (const { pattern, sub } of preferencePatterns) {
+    if (pattern.test(contentLower)) {
+      const prefKeywords = ['prefer', 'like', 'love', 'favorite', 'hate', 'suka', 'minat', 'gemar', 'favourite', 'kegemaran', 'hobi', 'hobby'];
+      const userJustToldPref = /\b(i\s+(like|love|prefer|hate|enjoy)|saya\s+(suka|minat|gemar|benci|prefer)|aku\s+(suka|minat|gemar)|my\s+favou?rite|kegemaran\s+(saya|aku))\b/i;
+      if (!isBackedByFacts(prefKeywords) && !userJustToldPref.test(userLower)) {
+        categories.push('preferences');
+        claims.push(extractSentence(contentLower, sub.split(':')[1]));
+        totalConfidence += 0.7;
+        break;
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // CATEGORY G: Health & Body (5 scenarios)
+  // ═══════════════════════════════════════════════════════════════════════
+  const healthPatterns = [
+    // G1: Sleep quality claims
+    { pattern: /\b(you\s+(haven'?t|didn'?t|don'?t|seem\s+to\s+have)\s+(slept|sleep|rest(ed)?)\s+(well|enough|properly|much)|awak\s+(tak|tidak|nampak\s+macam)\s+(tidur|lena|rehat)\s+(cukup|lena|baik))\b/i, sub: 'G1:sleep-quality' },
+    // G2: Fitness/exercise assumptions
+    { pattern: /\b(you\s+(should|need\s+to|ought\s+to|must)\s+(exercise|work\s+out|move|stretch)\s+more|awak\s+(patut|perlu|kena|mesti)\s+(bersenam|exercise|workout|gerak))\b/i, sub: 'G2:fitness-advice' },
+    // G3: Medical/health diagnosis
+    { pattern: /\b(your\s+(headache|pain|fatigue|stress|anxiety|insomnia)\s+(is|comes\s+from|might\s+be|could\s+be|probably)|(sakit|pening|letih|stress|susah\s+tidur)\s+(awak|kau)\s+(ialah|adalah|disebabkan|mungkin|sebab))\b/i, sub: 'G3:medical-diagnosis' },
+    // G4: Physical condition assumption
+    { pattern: /\b(based\s+on\s+your\s+(back|neck|knee|shoulder|condition|health)|berdasarkan\s+(sakit|keadaan|kondisi)\s+(awak|kau)|you\s+have\s+(been\s+having|suffering\s+from|dealing\s+with))\b/i, sub: 'G4:physical-condition' },
+    // G5: Diet/calorie claims
+    { pattern: /\b(you\s+(need|require|should\s+get)\s+(about|around|approximately)?\s*\d+\s*(calories|kcal|cal)|awak\s+(perlu|patut)\s+(dapat|ambil)\s+\d+\s*(kalori|kcal)|your\s+(diet|nutrition|intake))\b/i, sub: 'G5:diet-claims' },
+  ];
+  for (const { pattern, sub } of healthPatterns) {
+    if (pattern.test(contentLower)) {
+      const healthKeywords = ['health', 'sleep', 'exercise', 'diet', 'pain', 'sakit', 'tidur', 'senaman', 'gym', 'workout', 'kalori'];
+      const userJustToldHealth = /\b(i\s+(haven'?t|didn'?t|can'?t)\s+sleep|saya\s+(tak|tidak)\s+(boleh|dapat)\s+tidur|(my|saya|aku)\s+(back|neck|head|knee|belakang|kepala|pinggang|lutut)\s+(hurt|pain|sakit)|i\s+(have|got)\s+(a|an)\s+(headache|migraine|pain)|saya\s+(sakit|pening|letih))\b/i;
+      if (!isBackedByFacts(healthKeywords) && !userJustToldHealth.test(userLower)) {
+        categories.push('health');
+        claims.push(extractSentence(contentLower, sub.split(':')[1]));
+        totalConfidence += 0.85; // Higher — health claims are dangerous
+        break;
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // CATEGORY H: Emotions & Mental State (5 scenarios)
+  // ═══════════════════════════════════════════════════════════════════════
+  const emotionPatterns = [
+    // H1: "You seem X today" — allow optional adverb between seem/look and emotion
+    { pattern: /\b(you\s+(seem|look|sound|appear)\s+(?:\w+\s+)?(stressed|anxious|tired|excited|happy|sad|upset|worried|nervous|angry|frustrated|depressed|down|energetic|motivated|lazy|bored)\s*(today|right\s*now|at\s*the\s*moment)?|awak\s+(nampak|macam|tengok)\s+(?:\w+\s+)?(stress|penat|letih|sedih|marah|gembira|risau|teruja))\b/i, sub: 'H1:emotion-assumption' },
+    // H2: "I can tell you're X"
+    { pattern: /\b(i\s+can\s+(tell|sense|feel|see)\s+you('re| are)\s+(stressed|anxious|tired|excited|happy|sad|upset|worried|nervous|angry|frustrated|motivated)|saya\s+(boleh|dapat)\s+(rasa|lihat|agak)\s+(awak|kau)\s+(stress|penat|sedih|marah|gembira|risau|teruja))\b/i, sub: 'H2:mind-reading' },
+    // H3: "You're worried about X"
+    { pattern: /\b(you('re| are)\s+(worried|anxious|stressed|nervous|concerned|upset|excited|happy)\s+about|awak\s+(risau|stress|bimbang|teruja|gembira)\s+(tentang|pasal|dengan))\b/i, sub: 'H3:worry-about' },
+    // H4: "You sound X" from text
+    { pattern: /\b(you\s+sound\s+(stressed|tired|excited|happy|sad|upset|frustrated|angry|annoyed)|awak\s+(bunyi|sound)\s+(macam|seperti)\s+(stress|penat|sedih|marah|gembira|teruja))\b/i, sub: 'H4:sound-assumption' },
+    // H5: "Deep down you feel..."
+    { pattern: /\b(deep\s+down\s+you('re| are| feel)|sebenarnya\s+(awak|kau)\s+(rasa|sedang)|honestly\s+you\s+(seem|look|feel)|terus\s+terang\s+(awak|kau)\s+(nampak|rasa))\b/i, sub: 'H5:deep-feeling' },
+  ];
+  for (const { pattern, sub } of emotionPatterns) {
+    if (pattern.test(contentLower)) {
+      const emotionKeywords = ['mood', 'feeling', 'emotion', 'stress', 'happy', 'sad', 'anxious', 'perasaan', 'emosi', 'mood', 'rasa'];
+      const userJustToldEmotion = /\b(i('?m| am)\s+(stressed|anxious|tired|excited|happy|sad|upset|worried|nervous|angry|frustrated|depressed|down|energetic|motivated|lazy|bored|feeling)|saya\s+(stress|penat|letih|sedih|marah|gembira|risau|teruja|rasa)|aku\s+(stress|penat|letih|sedih|marah|gembira|risau))\b/i;
+      if (!isBackedByFacts(emotionKeywords) && !userJustToldEmotion.test(userLower)) {
+        categories.push('emotions');
+        claims.push(extractSentence(contentLower, sub.split(':')[1]));
+        totalConfidence += 0.9; // Highest — emotional mind-reading is very wrong
+        break;
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // CATEGORY I: Relationships & Social (6 scenarios)
+  // ═══════════════════════════════════════════════════════════════════════
+  const relationshipPatterns = [
+    // I1: Spouse/partner preference claims
+    { pattern: /\b(your\s+(wife|husband|girlfriend|boyfriend|partner|spouse|isteri|suami)(?:\s+\w+)?\s+(would|might|will|pasti|mesti|tentu)\s+(like|love|enjoy|appreciate|suka|minat))\b/i, sub: 'I1:spouse-preference' },
+    // I2: Fabricated social interactions
+    { pattern: /\b(your\s+(friend|buddy|mate)\s+\w+\s+(told|said|mentioned|shared|texted|called|bagitahu|cakap|beritahu)|kawan\s+(awak|kau)\s+\w+\s+(cakap|bagitahu|beritahu))\b/i, sub: 'I2:friend-interaction' },
+    // I3: Work relationship claims
+    { pattern: /\b(you\s+and\s+your\s+(colleague|coworker|boss|manager|teammate|team)\s+(often|always|usually|sometimes)|awak\s+dengan\s+(kolega|bos|rakan\s+sekerja|team)\s+(selalu|biasa|sering))\b/i, sub: 'I3:work-relationship' },
+    // I4: Fabricated family member names/actions
+    { pattern: /\b(your\s+(brother|sister|mom|dad|mother|father|son|daughter|uncle|aunt|cousin)\s+\w+\s+(is|does|said|told|always|usually)|(abang|adik|kakak|mak|ayah|ibu|bapa|pakcik|makcik)\s+(awak|kau)\s+\w+)\b/i, sub: 'I4:family-member' },
+    // I5: Social activity assumptions
+    { pattern: /\b(you('re| are)\s+(going|hanging|meeting)\s+(out\s+with|with)\s+(friends?|family|people|someone|kawan|keluarga)|awak\s+(keluar|pergi|jumpa)\s+(dengan\s+)?(kawan|family|keluarga))\b/i, sub: 'I5:social-activity' },
+    // I6: Parent/family claims
+    { pattern: /\b(your\s+(mom|dad|mother|father|parent)\s+(always|usually|often)\s+(says?|tells?|does)|(mak|ayah|ibu|bapa)\s+(awak|kau)\s+(selalu|biasa)\s+(cakap|buat))\b/i, sub: 'I6:parent-claim' },
+  ];
+  for (const { pattern, sub } of relationshipPatterns) {
+    if (pattern.test(contentLower)) {
+      const relKeywords = ['wife', 'husband', 'spouse', 'friend', 'family', 'brother', 'sister', 'mom', 'dad', 'isteri', 'suami', 'kawan', 'keluarga', 'abang', 'adik', 'kakak', 'mak', 'ayah', 'colleague', 'boss', 'kolega', 'bos'];
+      const userJustToldRel = /\b(my\s+(wife|husband|girlfriend|boyfriend|partner|spouse|friend|brother|sister|mom|dad|mother|father|son|daughter)|(isteri|suami|kawan|abang|adik|kakak|mak|ayah|anak)\s+(saya|aku)|i\s+(told|said|spoke|talked|met|saw))\b/i;
+      if (!isBackedByFacts(relKeywords) && !userJustToldRel.test(userLower)) {
+        categories.push('relationships');
+        claims.push(extractSentence(contentLower, sub.split(':')[1]));
+        totalConfidence += 0.8;
+        break;
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // CATEGORY J: Financial (6 scenarios)
+  // ═══════════════════════════════════════════════════════════════════════
+  const financialPatterns = [
+    // J1: Affordability claims
+    { pattern: /\b(you\s+(can|could|should\s+be\s+able\s+to)\s+afford|awak\s+(mampu|boleh|terdaya)\s+(beli|bayar)|within\s+your\s+budget|mengikut\s+bajet\s+(awak|kau)|it'?s?\s+within\s+your\s+(price\s+)?range)\b/i, sub: 'J1:affordability' },
+    // J2: Budget claims
+    { pattern: /\b(your\s+budget\s+(is|seems\s+to\s+be|looks\s+like|appears\s+to\s+be)\s+(?:about|around|approximately\s+)?(?:rm|myr|\$|usd)?\s*\d+|bajet\s+(awak|kau)\s+(adalah|ialah|sekitar|dalam\s+lingkungan)\s*(rm)?\s*\d+)\b/i, sub: 'J2:budget-claim' },
+    // J3: Past spending claims
+    { pattern: /\b(you\s+(spent|paid|bought|purchased|forked\s+out|dropped)\s+(?:about|around|approximately\s+)?(?:rm|myr|\$|usd)?\s*\d+|awak\s+(belanja|bayar|beli)\s+(?:dalam\s+)?(?:rm)?\s*\d+|last\s+week\s+you\s+(spent|paid))\b/i, sub: 'J3:past-spending' },
+    // J4: Savings/investment claims
+    { pattern: /\b(based\s+on\s+your\s+(savings?|investment|portfolio|financial|income)|berdasarkan\s+(simpanan|pelaburan|kewangan|pendapatan)\s+(awak|kau)|with\s+your\s+(savings?|income|salary))\b/i, sub: 'J4:savings-claim' },
+    // J5: Salary/income claims
+    { pattern: /\b(your\s+(salary|income|pay|earnings?)\s+(is|seems|looks|appears|must\s+be|should\s+be)|(gaji|pendapatan)\s+(awak|kau)\s+(adalah|ialah|sekitar|dalam)|with\s+your\s+(salary|income|pay\s*check))\b/i, sub: 'J5:salary-claim' },
+    // J6: Specific financial advice
+    { pattern: /\b(you\s+should\s+(invest|put\s+money|buy)\s+(in|into)|awak\s+(patut|perlu|kena)\s+(labur|beli|invest)\s+(dalam|emas|saham|crypto|bitcoin|property|rumah)|this\s+(stock|crypto|coin|investment)\s+(is|will|going\s+to))\b/i, sub: 'J6:financial-advice' },
+  ];
+  for (const { pattern, sub } of financialPatterns) {
+    if (pattern.test(contentLower)) {
+      const finKeywords = ['budget', 'salary', 'income', 'money', 'finance', 'savings', 'investment', 'bajet', 'gaji', 'pendapatan', 'duit', 'wang', 'simpanan', 'labur', 'pelaburan'];
+      const userJustToldFin = /\b(my\s+(budget|salary|income|savings?)|(bajet|gaji|pendapatan|simpanan|duit)\s+(saya|aku)|i\s+(spent|paid|bought|earn|make|have)\s+(?:about|around|approximately\s+)?(?:rm|myr|\$)?\s*\d+|saya\s+(belanja|bayar|beli|ada)\s+(?:rm)?\s*\d+)\b/i;
+      if (!isBackedByFacts(finKeywords) && !userJustToldFin.test(userLower)) {
+        categories.push('financial');
+        claims.push(extractSentence(contentLower, sub.split(':')[1]));
+        totalConfidence += 0.85;
+        break;
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // CATEGORY K: Knowledge & Expertise (5 scenarios)
+  // ═══════════════════════════════════════════════════════════════════════
+  const knowledgePatterns = [
+    // K1: Profession claims
+    { pattern: /\b(since\s+you('re| are)\s+(a|an)\s+(?:\w+\s+)?(developer|programmer|engineer|designer|doctor|lawyer|teacher|student|writer|artist|manager|consultant|freelancer|data\s*scientist)|sebab\s+(awak|kau)\s+(seorang\s+)?(?:\w+\s+)?(programmer|developer|engineer|doktor|guru|pensyarah|pelajar|designer|manager))\b/i, sub: 'K1:profession' },
+    // K2: Skill claims
+    { pattern: /\b(you\s+(know\s+how\s+to|can)\s+(code|program|design|write|build|create|develop)\s+(in|with|using)?\s*(python|javascript|react|figma|photoshop|excel|sql|java|c\+\+|ruby|php)?|awak\s+(tahu|boleh|pandai)\s+(coding|program|design|tulis|buat))\b/i, sub: 'K2:skill-claim' },
+    // K3: Experience claims
+    { pattern: /\b(given\s+your\s+(experience|background|expertise)\s+(with|in|as)|berdasarkan\s+(pengalaman|expertise|kemahiran)\s+(awak|kau)\s+(dalam|sebagai)|you('ve| have)\s+(worked|dealt|handled)\s+(with|in))\b/i, sub: 'K3:experience' },
+    // K4: Education claims
+    { pattern: /\b(since\s+you\s+(studied|majored|graduated|went\s+to|took)|sebab\s+(awak|kau)\s+(belajar|graduate|ambil)\s+(dalam|jurusan|bidang)|as\s+a\s+(graduate|alumni|student)\s+(of|from))\b/i, sub: 'K4:education' },
+    // K5: "As you already know..."
+    { pattern: /\b(as\s+you\s+(already\s+)?know|like\s+you\s+(already\s+)?know|seperti\s+(yang\s+)?(awak|kau)\s+(sedia\s+)?(tahu|maklum|sedia\s+maklum)|i('m| am)\s+sure\s+you('re| are)\s+(aware|familiar))\b/i, sub: 'K5:assumes-knowledge' },
+  ];
+  for (const { pattern, sub } of knowledgePatterns) {
+    if (pattern.test(contentLower)) {
+      const knowKeywords = ['profession', 'job', 'role', 'developer', 'engineer', 'designer', 'skill', 'education', 'kerjaya', 'pekerjaan', 'programmer', 'student', 'graduate', 'experience', 'pengalaman', 'kemahiran', 'pelajar'];
+      const userJustToldKnow = /\b(i('?m| am)\s+(a|an)\s+(developer|programmer|engineer|designer|doctor|lawyer|teacher|student)|saya\s+(seorang\s+)?(programmer|developer|engineer|doktor|guru|pelajar|designer)|(i|saya|aku)\s+(know|tahu|pandai|boleh)\s+(code|program|coding|python|javascript|react))\b/i;
+      if (!isBackedByFacts(knowKeywords) && !userJustToldKnow.test(userLower)) {
+        categories.push('knowledge');
+        claims.push(extractSentence(contentLower, sub.split(':')[1]));
+        totalConfidence += 0.75;
+        break;
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // CATEGORY L: Future Predictions (5 scenarios)
+  // ═══════════════════════════════════════════════════════════════════════
+  const predictionPatterns = [
+    // L1: Productivity predictions
+    // L1: Productivity predictions — match on the key verb, allow intervening words
+    { pattern: /\b(you('ll| will)\s+(finish|complete|get\s+done|wrap\s+up|be\s+done)\b|awak\s+(akan|mesti|pasti)\s+(siap|habis|selesai)\b|you\s+should\s+(finish|complete)\b)/i, sub: 'L1:productivity-prediction' },
+    // L2: Project duration estimates
+    { pattern: /\b(this\s+(project|task|work|thing|assignment)\s+(will|should|might|going\s+to)\s+take\s+(you\s+)?(about|around|approximately)\s+\d+\s+(days?|weeks?|months?|hours?)|projek\s+ni\s+(akan|mungkin)\s+ambil\s+(dalam\s+)?\d+\s+(hari|minggu|bulan|jam))\b/i, sub: 'L2:duration-estimate' },
+    // L3: Progress predictions
+    { pattern: /\b(you('re| are)\s+on\s+(track|pace|schedule|course)\s+(to|for)|awak\s+berada\s+di\s+(landasan|track)\s+(untuk)|you('ll| will)\s+(achieve|reach|hit)\s+(your\s+)?(goal|target))\b/i, sub: 'L3:progress-prediction' },
+    // L4: Outcome predictions
+    { pattern: /\b(you('ll| will)\s+(probably|likely|definitely|certainly|surely)\s+(get|win|pass|succeed|achieve|receive|land)|awak\s+(mesti|pasti|mungkin|akan)\s+(dapat|lulus|menang|berjaya))\b/i, sub: 'L4:outcome-prediction' },
+    // L5: "By X you'll Y" future milestones
+    { pattern: /\b(by\s+(next\s+)?(week|month|year|december|january|february|march|april|may|june|july|august|september|october|november)\s+(you('ll| will)|awak\s+akan)|dalam\s+\d+\s+(minggu|bulan|tahun)\s+(awak|kau)\s+(akan|pasti|mesti))\b/i, sub: 'L5:future-milestone' },
+  ];
+  for (const { pattern, sub } of predictionPatterns) {
+    if (pattern.test(contentLower)) {
+      const predKeywords = ['goal', 'target', 'deadline', 'progress', 'project', 'matlamat', 'projek', 'siap', 'finish', 'complete'];
+      const userJustToldPred = /\b(i('ll| will)\s+(finish|complete|be\s+done)|saya\s+akan\s+(siap|habis)|(my|saya|aku)\s+(goal|target|matlamat|deadline)\s+(is|adalah))\b/i;
+      if (!isBackedByFacts(predKeywords) && !userJustToldPred.test(userLower)) {
+        categories.push('predictions');
+        claims.push(extractSentence(contentLower, sub.split(':')[1]));
+        totalConfidence += 0.7;
+        break;
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // CATEGORY M: Intent/Motivation Guessing (4 scenarios)
+  // ═══════════════════════════════════════════════════════════════════════
+  const intentPatterns = [
+    // M1: "You want this because..."
+    { pattern: /\b(you\s+(want|need|are\s+looking)\s+(this|it|that)\s+because|awak\s+(nak|mahu|perlu)\s+(ni|ini|itu)\s+sebab|you('re| are)\s+(asking|looking|searching)\s+(because|since|for))\b/i, sub: 'M1:motivation-guess' },
+    // M2: "You're asking because..."
+    { pattern: /\b(you('re| are)\s+(asking|wondering|questioning)\s+(this|that|about|because|since)|awak\s+(tanya|bertanya)\s+(ni|ini|sebab|kerana))\b/i, sub: 'M2:question-motive' },
+    // M3: "What you really mean is..."
+    { pattern: /\b(what\s+you\s+(really|actually|truly)\s+(mean|want|need|are\s+saying)\s+is|apa\s+yang\s+(awak|kau)\s+(sebenarnya|memang|betul-betul)\s+(maksudkan|nak|mahu)\s+(ialah|adalah)|i\s+think\s+what\s+you('re| are)\s+(really|actually)\s+(saying|asking|looking\s+for))\b/i, sub: 'M3:meaning-guess' },
+    // M4: Psychoanalysis
+    { pattern: /\b(this\s+(stems|comes|originates)\s+from\s+your|ini\s+(berpunca|datang)\s+dari\s+(awak|kau)\s+(punya|nya)?|subconsciously\s+you('re| are)|deep\s+down\s+you\s+(want|need|fear|desire)|sebenarnya\s+(awak|kau)\s+(nak|mahu|takut|perlu))\b/i, sub: 'M4:psychoanalysis' },
+  ];
+  for (const { pattern, sub } of intentPatterns) {
+    if (pattern.test(contentLower)) {
+      // Intent guessing is almost always hallucination unless user explicitly stated their motivation
+      const userStatedMotive = /\b(i('?m| am)\s+(asking|looking|searching|trying)\s+(because|since|to|for)|saya\s+(tanya|cari|nak)\s+(sebab|kerana|untuk)|(my|saya|aku)\s+(reason|motivation|sebab|alasan)\s+(is|adalah))\b/i;
+      if (!userStatedMotive.test(userLower)) {
+        categories.push('intent-guessing');
+        claims.push(extractSentence(contentLower, sub.split(':')[1]));
+        totalConfidence += 0.8;
+        break;
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // CATEGORY N: Numbers & Precision Without Basis (4 scenarios)
+  // ═══════════════════════════════════════════════════════════════════════
+  const numbersPatterns = [
+    // N1: Specific duration estimates
+    { pattern: /\b(that('ll| will| should| might| would)\s+take\s+(you\s+)?(about|around|approximately)\s+\d+\s+(minutes?|hours?|seconds?)|ia\s+(akan|mungkin)\s+ambil\s+(dalam\s+)?\d+\s+(minit|jam|saat)|you\s+need\s+(about|around|approximately)\s+\d+\s+(minutes?|hours?))\b/i, sub: 'N1:specific-duration' },
+    // N2: Fabricated statistics
+    { pattern: /\b(\d{1,3}\s*%\s+of\s+(people|users|developers|malaysians?|humans?|customers?)\s+(prefer|use|like|choose|are)|(about|around|approximately|roughly)\s+\d{1,3}\s*%\s+of)\b/i, sub: 'N2:fake-statistic' },
+    // N3: Precise quantity claims
+    { pattern: /\b(you\s+(have|own|possess)\s+(about|around|approximately)\s+\d+\s+(unread\s+)?(emails?|messages?|notifications?|files?|documents?|tasks?)|awak\s+ada\s+\d+\s+(email|mesej|notifikasi|fail|dokumen|tugas|task)\s+(belum\s+(baca|selesai)|tertunggak))\b/i, sub: 'N3:precise-quantity' },
+    // N4: Subjective ranking as fact
+    { pattern: /\b(this\s+is\s+the\s+(#1|number\s+one|best|top|greatest|perfect|ideal|optimal|ultimate|worst|#\d+)\s+(option|choice|solution|way|approach|pick)\s+for\s+you|ini\s+(ialah|adalah)\s+(pilihan|jalan|cara|solusi)\s+(terbaik|paling\s+bagus|#1|nombor\s+satu)\s+untuk\s+(awak|kau))\b/i, sub: 'N4:subjective-ranking' },
+  ];
+  for (const { pattern, sub } of numbersPatterns) {
+    if (pattern.test(contentLower)) {
+      const numKeywords = ['duration', 'time', 'estimate', 'count', 'number', 'amount', 'statistic', 'tempoh', 'anggaran', 'bilangan', 'jumlah'];
+      const userJustToldNum = /\b(i\s+have\s+\d+\s+(emails?|messages?|notifications?|tasks?|files?)|saya\s+ada\s+\d+\s+(email|mesej|notifikasi|tugas|fail)|it\s+(took|takes?)\s+(me\s+)?\d+\s+(minutes?|hours?)|ambil\s+(masa\s+)?\d+\s+(minit|jam))\b/i;
+      if (!isBackedByFacts(numKeywords) && !userJustToldNum.test(userLower)) {
+        categories.push('numbers');
+        claims.push(extractSentence(contentLower, sub.split(':')[1]));
+        totalConfidence += 0.65;
+        break;
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // CATEGORY O: Identity & Self Claims (3 scenarios)
+  // ═══════════════════════════════════════════════════════════════════════
+  const identityPatterns = [
+    // O1: Fabricated bot capability
+    { pattern: /\b(i\s+can\s+(?:help\s+you\s+)?(analyze|read|process|scan|review|examine|inspect|extract|parse|convert|translate|generate|create|build|make|design|draw|edit|modify)\s+(your\s+)?(pdf|doc|document|file|image|photo|video|audio|spreadsheet|excel|powerpoint|presentation)|saya\s+boleh\s+(?:tolong\s+)?(analisa|baca|proses|imbas|review|periksa|ekstrak|parse|tukar|translate|jana|bina|buat|design|edit|ubah)\s+(pdf|dokumen|fail|gambar|foto|video|audio|excel))\b/i, sub: 'O1:fake-capability' },
+    // O2: "I remember you mentioned..." (not in history)
+    { pattern: /\b(i\s+remember\s+you\s+(mentioning|saying|telling|talking|sharing|discussing)|saya\s+ingat\s+(awak|kau)\s+(pernah|ada)\s+(cakap|sebut|bagitahu|cerita|bincang)|as\s+you\s+(mentioned|said|told)\s+(before|earlier|previously|last\s+time)|seperti\s+(yang\s+)?(awak|kau)\s+(cakap|sebut)\s+(sebelum|dulu|awal\s+tadi))\b/i, sub: 'O2:fake-memory' },
+    // O3: "I've been tracking/analyzing your..."
+    { pattern: /\b(i('ve| have)\s+been\s+(tracking|monitoring|analyzing|watching|observing|noticing|following)\s+your|saya\s+(dah|telah|sedang)\s+(track|monitor|analisa|perhati|ikut)\s+(awak|kau)\s+(punya|nya)?|based\s+on\s+(my|our)\s+(analysis|tracking|monitoring|observation))\b/i, sub: 'O3:fake-tracking' },
+  ];
+  for (const { pattern, sub } of identityPatterns) {
+    if (pattern.test(contentLower)) {
+      // Identity claims are almost always hallucination — flag immediately
+      categories.push('identity');
+      claims.push(extractSentence(contentLower, sub.split(':')[1]));
+      totalConfidence += 0.9;
+      break;
+    }
+  }
+
+  // ── Final assessment ──────────────────────────────────────────────────
+  // Require at least ONE category hit with confidence >= 0.65
+  const isHallucination = categories.length >= 1 && totalConfidence >= 0.65;
+
+  if (isHallucination) {
+    console.log('[Validator] 👤 Human fact hallucination detected! categories=' + categories.join(', ') + ' | confidence=' + totalConfidence.toFixed(2));
+    for (const c of claims) {
+      console.log('[Validator]    Claim: ' + c.slice(0, 120));
+    }
+  }
+
+  return { isHallucination, categories, claims, confidence: Math.min(totalConfidence, 1.0) };
+}
+
+/**
  * Detect if LLM is fabricating real-time/world facts that should have been a web search.
  * Catches cases where the bot confidently answers weather, news, stock prices, etc.
  * without actually calling web_search — these answers are almost certainly hallucinations.
@@ -781,6 +1182,20 @@ function validateLLMResponse(llmResponse, context = {}) {
         llmResponse._webSearchQuery = webSearchCheck.suggestedQuery;
       }
     }
+
+    // 🔥 Check for HUMAN FACT HALLUCINATION — LLM making up claims about user's
+    // location, schedule, preferences, health, emotions, relationships, finances,
+    // knowledge, future, intent, numbers, or identity (categories D–O)
+    if (context.userMessage) {
+      const humanCheck = detectHumanFactHallucination(content, context.userFacts || [], context.userMessage);
+      if (humanCheck.isHallucination) {
+        issues.push('CRITICAL human-fact hallucination [' + humanCheck.categories.join(', ') + ']: ' + humanCheck.claims.join(' | '));
+        isValid = false; // BLOCK fabricated human facts
+        // Store for forceToolCall / fallback
+        llmResponse._humanFactCategories = humanCheck.categories;
+        llmResponse._humanFactClaims = humanCheck.claims;
+      }
+    }
   }
 
   // Validate tool calls
@@ -829,6 +1244,14 @@ function validateLLMResponse(llmResponse, context = {}) {
       console.log('[Validator] 🔍 Forcing web_search instead of hallucinated real-time info');
       console.log('[Validator]    Query: ' + searchQuery.slice(0, 100));
       forceToolCall = { name: 'web_search', args: { query: searchQuery } };
+    } else if (issues.some(i => i.includes('human-fact hallucination'))) {
+      // 🔥 LLM fabricated claims about the user's life — don't force a tool,
+      // let generateFallbackResponse produce a safe neutral message.
+      // Human facts can't be resolved by a tool call; the bot needs to admit it
+      // doesn't know and ask instead of assuming.
+      const categories = llmResponse._humanFactCategories || [];
+      console.log('[Validator] 👤 Human-fact hallucination blocked — categories: ' + categories.join(', '));
+      // No forceToolCall — fallback message will handle it
     }
   }
 
@@ -902,6 +1325,16 @@ function generateFallbackResponse(userMessage) {
   if (lower.includes('remind') || lower.includes('ingatkan') ||
     (lower.includes('set') && (lower.includes('reminder') || lower.includes('event') || lower.includes('task')))) {
     return 'Saya perlukan masa yang spesifik untuk set reminder. Contoh: "Ingatkan saya meeting pukul 3:00 ptg"';
+  }
+
+  // 🔥 If the hallucination was about the user's personal life (human facts),
+  // respond neutrally — admit we don't know, ask instead of assuming.
+  if (/\b(you('re| are|r)|awak\s+(sedang|ada|ialah|adalah)|your\s+(home|house|office|schedule|budget|salary|health|feeling|mood|emotion|preference|favorite|friend|family|wife|husband|skill|experience|profession|job|goal)|awak\s+(suka|minat|gemar|benci|prefer|pilih|selalu|biasa|nak|mahu|rasa))\b/i.test(lower)) {
+    // Pick language based on user's message
+    if (/[a-zA-Z]{4,}/.test(lower) && !/\b(?:awak|aku|saya|ni|tu|nak|tak|lah|kan|pun|dah|ni)\b/i.test(lower)) {
+      return "I shouldn't make assumptions about your personal life. Could you tell me more about what you're looking for?";
+    }
+    return 'Saya tak patut buat andaian tentang hidup awak. Boleh cerita lebih lanjut supaya saya boleh bantu dengan tepat?';
   }
 
   // Generic safe fallback
@@ -1213,6 +1646,8 @@ module.exports = {
   detectFactHallucination,
   detectReminderFabrication,
   detectUserCreateIntent,
+  detectWebSearchHallucination,
+  detectHumanFactHallucination,
   validateLLMResponse,
   generateFallbackResponse,
   validateCancelReminder,

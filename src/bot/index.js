@@ -1793,6 +1793,30 @@ async function createBot() {
             console.log('[Bot]    Replaced with neutral response');
           }
         }
+
+        // ── Recovery: LLM fabricated claims about user's life ──────────
+        // Calls detectHumanFactHallucination from the validator for
+        // comprehensive coverage: location, schedule, preferences, health,
+        // emotions, relationships, finances, knowledge, future, intent,
+        // numbers, identity (12 categories).
+        if (llmResponse.type === 'message' && text) {
+          try {
+            const humanCheck = require('../llm/validator').detectHumanFactHallucination(
+              llmResponse.content, [], text
+            );
+            if (humanCheck.isHallucination) {
+              console.log('[Bot] ⚠️ LLM fabricated claims about user\'s life! Replacing...');
+              console.log('[Bot]    Categories: ' + humanCheck.categories.join(', '));
+              console.log('[Bot]    LLM said: ' + llmResponse.content.slice(0, 150));
+
+              const isEnglish = /^[a-zA-Z\s.,!?'"\-()]{10,}$/.test(llmResponse.content.slice(0, 30));
+              llmResponse.content = isEnglish
+                ? "🤔 I shouldn't make assumptions about your life. Could you tell me more so I can help accurately?"
+                : '🤔 Saya tak patut buat andaian tentang hidup awak. Boleh cerita lebih lanjut supaya saya boleh bantu dengan tepat?';
+              console.log('[Bot]    Replaced with neutral response');
+            }
+          } catch { /* validator not available, skip */ }
+        }
       }
 
       // ── Intercept: LLM fabricated a reminder list instead of calling tool ──
