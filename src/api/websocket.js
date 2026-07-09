@@ -189,30 +189,17 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
   try {
     const llm = deps.llm || require('../llm');
 
-    // Build a quick system prompt for the chat context
-    const timezone = process.env.TIMEZONE || 'Asia/Kuala_Lumpur';
-    const now = new Date();
-    const today = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(now);
-    const currentTime = new Intl.DateTimeFormat('en', {
-      timeZone: timezone, hour: 'numeric', minute: '2-digit', hour12: true,
-    }).format(now);
+    // Map frontend model names to provider names
+    const providerMap = { ilmu: 'ilmu', deepseek: 'deepseek', mimo: 'mimo', auto: 'auto' };
+    const provider = providerMap[requestedModel] || 'auto';
 
-    const systemPrompt = [
-      `You are Jarvis, a personal AI assistant.`,
-      `Today is ${today}. The current time is ${currentTime} (${timezone}).`,
-      `Respond concisely in a helpful, friendly tone. Use the same language as the user.`,
-    ].join('\n');
-
-    // Stream response
+    // Stream response — capture return value as fallback if onChunk never fires
     let fullText = '';
-    await llm.chatStream(
+    const result = await llm.chatStream(
       userId,
       message,
       [],                              // conversationHistory (empty for new chat)
-      {
-        systemPrompt,
-        model: requestedModel || 'auto',
-      },
+      { provider },                    // options.provider is what selectProvider expects
       (chunk) => {                     // onChunk callback (5th argument)
         if (aborted) throw new Error('ABORTED');
         fullText += chunk;
@@ -224,6 +211,12 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
         }
       }
     );
+
+    // Fallback: if onChunk never fired (e.g. ILMU streams non-message format),
+    // use the parsed result content
+    if (!fullText && result?.content) {
+      fullText = result.content;
+    }
 
     // ── Done ───────────────────────────────────────────────────────────
     ws.send(JSON.stringify({
@@ -239,6 +232,7 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
           fullText,
           metadata: {
             model: requestedModel || 'auto',
+            provider: result?._provider || provider,
             timestamp: new Date().toISOString(),
           },
         },
