@@ -734,6 +734,15 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     '🔥 Unknown → "I don\'t have that info" or ask. Never say "you told me" unless in facts.\n\n';
 
   // ═══════════════════════════════════════════════════════════════════════
+  // SECTION 6b: Anti-Fabrication — NEVER invent user habits (all tiers)
+  // ═══════════════════════════════════════════════════════════════════════
+  const NO_FABRICATE_HABITS =
+    '🚫 NEVER claim: "you usually...", "you always...", "your routine is...", ' +
+    '"you tend to...", "awak biasanya...", "awak selalu...", "routine awak...", ' +
+    '"your sleep time is...", "you wake up at...", "kebiasaan awak..." ' +
+    'UNLESS the exact fact is in User facts above. If unsure → ASK, don\'t assume.\n\n';
+
+  // ═══════════════════════════════════════════════════════════════════════
   // SECTION 6.5: Fact Lock System (deep only) — assertion levels
   // ═══════════════════════════════════════════════════════════════════════
   const FACT_LOCK_FULL =
@@ -866,11 +875,13 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
   let prompt;
   if (tier === 'fast') {
     prompt = JSON_FAST +
+      NO_FABRICATE_HABITS +
       contextBlock +
       LANGUAGE_FAST;
   } else if (tier === 'medium') {
     prompt = JSON_MEDIUM +
       ANTI_HALLUCINATION_MEDIUM +
+      NO_FABRICATE_HABITS +
       contextBlock +
       LANGUAGE_FULL +
       TIME_MEDIUM +
@@ -884,6 +895,7 @@ async function buildSystemPrompt(userId, facts, timezone, reminders, peopleConte
     // Deep: full prompt
     prompt = JSON_FULL +
       ANTI_HALLUCINATION_FULL +
+      NO_FABRICATE_HABITS +
       contextBlock +
       LANGUAGE_FULL +
       TIME_FULL +

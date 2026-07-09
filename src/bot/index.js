@@ -1671,6 +1671,26 @@ async function createBot() {
           llmResponse = await llm.chat(userId, text, cleanHistory, llmOptions);
           console.log('[Bot] Retry (fabricated limitation) response type:', llmResponse.type, llmResponse.name ? '| tool=' + llmResponse.name : '');
         }
+
+        // ── Recovery: LLM fabricated user habits/routines ──────────────
+        // "You usually sleep at...", "Your routine is...", "Awak biasanya..."
+        // These are HALLUCINATIONS unless the fact exists in the DB.
+        const fabricatedHabitPattern = /\b(?:you\s+(?:usually|always|normally|typically|tend\s+to|generally)|your\s+(?:routine|habit|sleep|bedtime|wake(?:\s*up)?\s*time|unwind|usual|typical|normal)\s+(?:is|are|seems|tends)|awak\s+(?:biasanya|selalu|selalunya|kebiasaannya|biasa)|routine\s+(?:awak|kau|anda)\s+(?:adalah|ialah|biasanya|selalu)|kebiasaan\s+(?:awak|kau|anda))\b/i;
+
+        if (llmResponse.type === 'message' && fabricatedHabitPattern.test(llmResponse.content)) {
+          // Only flag if user didn't just tell the bot this info
+          const userJustToldThem = /\b(?:saya\s+(?:biasa|selalu|tidur|sleep|bangun|wake)|i\s+(?:usually|always|sleep|wake)|my\s+(?:routine|habit|sleep|bedtime))\b/i.test(text);
+
+          if (!userJustToldThem) {
+            console.log('[Bot] ⚠️ LLM fabricated user habit/routine! Injecting correction...');
+            console.log('[Bot]    Fabricated claim: ' + llmResponse.content.slice(0, 150));
+
+            // Don't retry the whole thing — just strip the fabricated claim
+            llmResponse.content = '🤔 I shouldn\'t assume your habits. ' +
+              'Could you tell me more? _(' + llmResponse.content.slice(0, 60).replace(/\*/g, '') + '...)_';
+            console.log('[Bot]    Replaced with neutral response');
+          }
+        }
       }
 
       // ── Intercept: LLM fabricated a reminder list instead of calling tool ──
