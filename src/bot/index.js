@@ -30,6 +30,8 @@ const { agentRegistry } = require('../agents');
 const { fixHallucinatedGreeting, fixHallucinatedTime } = require('./anti-hallucination');
 const historyModule = require('./history');
 const queueSystem = require('../queue');
+const vision = require('../llm/vision');
+const tts = require('../llm/tts');
 
 const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
 
@@ -191,13 +193,69 @@ async function createBot() {
         '• "Note: look into React Native"\n' +
         '• "What\'s my schedule today?"\n' +
         '• "Remember that I prefer dark mode"\n\n' +
-        'Type /status to check API connections.\n\n' +
+        'Type /help to see all commands.\n\n' +
         'I\'m ready when you are.';
 
       await safeSendMessage(bot, msg.chat.id, welcome);
     } catch (err) {
       console.error('/start error:', err.message);
       await bot.sendMessage(msg.chat.id, '❌ Error: ' + err.message);
+    }
+  });
+
+  // ── /help command — show all available commands ──────────────────────────
+  bot.onText(/\/help/, async (msg) => {
+    if (!isOwner(msg)) return;
+
+    const helpText =
+      '*🤖 ' + botName + ' — All Commands*\n\n' +
+      '💬 *Natural Language*\n' +
+      'Talk naturally — reminders, calendar, notes, tasks, goals, search.\n\n' +
+      '📋 *Shortcuts*\n' +
+      '`/today` — Today\'s events + reminders + tasks\n' +
+      '`/briefing` — Morning briefing\n' +
+      '`/reminders` — All upcoming reminders\n' +
+      '`/tasks` — Active tasks\n' +
+      '`/goals` — Active goals\n' +
+      '`/notes` — Recent notes\n' +
+      '`/plan` — Active plans\n' +
+      '`/memory` — Stored facts\n' +
+      '`/people` — Remembered people\n' +
+      '`/history` — Search past chats\n' +
+      '`/verify` — Resolve conflicting facts\n' +
+      '`/reflect` — Daily reflection\n' +
+      '`/recap` — Conversation recap\n' +
+      '`/patterns` — Detected behavior patterns\n' +
+      '`/domains` — Memory by domain\n\n' +
+      '🔧 *Tools*\n' +
+      '`/status` — API health check\n' +
+      '`/state` — Full bot state report\n' +
+      '`/queue` — Queue system stats\n' +
+      '`/evaluate` — Self-evaluation stats\n' +
+      '`/proactive` — Trigger proactive suggestion\n' +
+      '`/lifecycle` — Conversation phase\n' +
+      '`/why` — Trace last decision\n' +
+      '`/trace` — Execution traces\n' +
+      '`/insights` — Usage statistics\n' +
+      '`/mood` — Track & view mood\n' +
+      '`/weekly` — Weekly summary\n\n' +
+      '🎤 *Media*\n' +
+      '`/speak <text>` — Text-to-speech voice note\n' +
+      'Send photo — AI image analysis\n' +
+      'Send voice — Voice transcription\n\n' +
+      '⚙️ *Settings*\n' +
+      '`/settings` — View settings\n' +
+      '`/setname <name>` — Bot name\n' +
+      '`/setpersonality <text>` — Bot tone\n' +
+      '`/setlocation <city>` — Weather location\n' +
+      '`/setbriefing <HH:MM>` — Briefing time\n' +
+      '`/setreview <HH:MM>` — Weekly review time\n' +
+      '`/revert` — Undo setting change';
+
+    try {
+      await bot.sendMessage(msg.chat.id, helpText, { parse_mode: 'Markdown' });
+    } catch {
+      await bot.sendMessage(msg.chat.id, helpText);
     }
   });
 
@@ -631,6 +689,50 @@ async function createBot() {
     } catch (err) {
       console.error('/state error:', err.message);
       await bot.sendMessage(msg.chat.id, '❌ Could not retrieve state. ' + err.message);
+    }
+  });
+
+  // ── /speak command — text-to-speech voice reply ──────────────────────────
+  bot.onText(/\/speak(?:\s+(.+))?/, async (msg, match) => {
+    if (!isOwner(msg)) return;
+    const chatId = msg.chat.id;
+
+    const textToSpeak = (match[1] || '').trim();
+    if (!textToSpeak) {
+      return bot.sendMessage(chatId,
+        '🎤 *Text-to-Speech*\n\n' +
+        'Guna: `/speak <teks>`\n\n' +
+        'Contoh:\n' +
+        '• `/speak Selamat pagi boss`\n' +
+        '• `/speak Hello, your meeting is at 3pm`\n\n' +
+        '_Powered by ILMU TTS v2_',
+        { parse_mode: 'Markdown' });
+    }
+
+    if (!tts.isAvailable()) {
+      return bot.sendMessage(chatId,
+        '🔇 TTS is powered by ILMU TTS v2.\nSet *ILMU_API_KEY* in your `.env` file.',
+        { parse_mode: 'Markdown' });
+    }
+
+    await bot.sendChatAction(chatId, 'record_voice');
+
+    try {
+      const audioPath = await tts.speakToFile({ text: textToSpeak });
+
+      if (audioPath) {
+        await bot.sendVoice(chatId, audioPath, {}, {
+          caption: '🎤 ' + (textToSpeak.length > 80 ? textToSpeak.slice(0, 80) + '…' : textToSpeak),
+        });
+
+        // Clean up temp file
+        try { require('fs').unlinkSync(audioPath); } catch (_) { }
+      } else {
+        await bot.sendMessage(chatId, '🔇 Sorry, couldn\'t generate speech. Try a shorter text.');
+      }
+    } catch (err) {
+      console.error('/speak error:', err.message);
+      await bot.sendMessage(chatId, '🔇 TTS failed. The text may be too long (max 10,000 chars).');
     }
   });
 
@@ -2348,6 +2450,90 @@ async function createBot() {
       } else {
         await safeSendMessage(bot, chatId, '🎤 Sorry, I couldn\'t process that voice message. Please try again or type it out.');
       }
+    }
+  });
+
+  // ── Photo message handler (ILMU Vision v1.3) ────────────────────────────
+  bot.on('photo', async (msg) => {
+    if (!isOwner(msg)) return;
+
+    const userId = OWNER_ID;
+    const chatId = msg.chat.id;
+
+    // Get the largest photo (Telegram sends multiple sizes, last = largest)
+    const photo = msg.photo[msg.photo.length - 1];
+    if (!photo) return;
+
+    if (!vision.isAvailable() && !process.env.ILMU_API_KEY) {
+      await safeSendMessage(bot, chatId,
+        '🖼️ Image analysis is powered by ILMU Vision v1.3.\n' +
+        'Set *ILMU_API_KEY* in your `.env` file to enable this feature.\n\n' +
+        '_Your image is received, but I can\'t analyze it yet._');
+      return;
+    }
+
+    const caption = msg.caption || '';
+    console.log('[Bot] 🖼️ Photo received' + (caption ? ' with caption: "' + caption.slice(0, 80) + '"' : ''));
+
+    await bot.sendChatAction(chatId, 'typing');
+
+    try {
+      // Download the photo from Telegram
+      const fileInfo = await bot.getFile(photo.file_id);
+      const fileUrl = 'https://api.telegram.org/file/bot' + process.env.TELEGRAM_BOT_TOKEN + '/' + fileInfo.file_path;
+
+      const axios = require('axios');
+      const response = await axios.get(fileUrl, { responseType: 'arraybuffer', timeout: 20000 });
+      const imageBuffer = Buffer.from(response.data);
+
+      // Determine prompt from caption or use default
+      let prompt = null;
+      let language = null;
+
+      if (caption) {
+        // Use caption as the prompt
+        prompt = caption;
+        // Detect language
+        if (/[a-zA-Z]{3,}/.test(caption) && !/\b(?:apa|siapa|bila|mana|bagaimana|kenapa|boleh|nak|tak|tu|ni|ni|lah|kah)\b/i.test(caption)) {
+          language = 'en';
+        } else {
+          language = 'ms';
+        }
+      } else {
+        prompt = 'Terangkan gambar ini dalam Bahasa Melayu secara ringkas dan padat.';
+        language = 'ms';
+      }
+
+      const analysis = await vision.analyzeImage({
+        imageBuffer,
+        mimeType: 'image/jpeg',
+        prompt,
+        language,
+      });
+
+      if (analysis) {
+        // Build response — keep it concise for Telegram
+        const displayText = caption
+          ? analysis  // user gave a specific question, just show answer
+          : '🖼️ ' + analysis;
+
+        // If analysis is long, truncate
+        const maxLen = 800;
+        const finalText = displayText.length > maxLen
+          ? displayText.slice(0, maxLen) + '…'
+          : displayText;
+
+        await safeSendMessage(bot, chatId, finalText);
+
+        // Track for pattern recognition
+        patterns.trackMessage(userId, { role: 'user', content: '[PHOTO] ' + (caption || '(no caption)') });
+        patterns.trackMessage(userId, { role: 'assistant', content: '[VISION] ' + analysis.slice(0, 200) });
+      } else {
+        await safeSendMessage(bot, chatId, '🖼️ Sorry, I couldn\'t analyze this image. Try again or send a clearer photo.');
+      }
+    } catch (err) {
+      console.error('[Bot] Photo processing error:', err.message);
+      await safeSendMessage(bot, chatId, '🖼️ Failed to process the image. It may be too large or in an unsupported format.');
     }
   });
 

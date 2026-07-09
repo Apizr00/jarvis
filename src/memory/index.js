@@ -1037,9 +1037,14 @@ async function writeFactWithStrategy(userId, key, value, options = {}) {
 }
 
 // ── Embedding-Based Semantic Search (Item #10) ─────────────────────────────
-// Optional enhancement: uses DeepSeek embedding API for semantic similarity.
+// Uses ILMU BGE-M3 (primary) or DeepSeek (fallback) for semantic embeddings.
 // Falls back to keyword search when embeddings are unavailable.
-// This is a hybrid approach — keyword first (fast), embedding when needed.
+//
+// ILMU BGE-M3 is preferred: cheaper (RM 0.04/M tok), Malaysian-hosted,
+// and 1024-dim vectors with excellent BM/rojak understanding.
+// DeepSeek is kept as fallback for users without ILMU access.
+
+const ilmuranker = require('../llm/embeddings');
 
 /**
  * Perform an embedding-based semantic search on memory facts.
@@ -1062,44 +1067,106 @@ async function semanticSearch(userId, query, options = {}) {
   if (!allFacts || allFacts.length === 0) return [];
 
   // ── Attempt embedding-based search ────────────────────────────────────
-  if (useEmbeddings && process.env.DEEPSEEK_API_KEY && allFacts.length > 3) {
-    try {
-      // Build fact corpus for embedding comparison
-      const factTexts = allFacts.map(f => f.key + ': ' + f.value);
-
-      // Get embedding for the query using DeepSeek API
-      const queryEmbedding = await getEmbedding(query);
-
-      if (queryEmbedding && queryEmbedding.length > 0) {
-        // Get embeddings for facts (batch if possible)
-        const factEmbeddings = await getEmbeddingsBatch(factTexts);
-
-        if (factEmbeddings && factEmbeddings.length === factTexts.length) {
-          // Calculate cosine similarity and rank
-          const ranked = allFacts.map((fact, i) => ({
-            fact,
-            score: cosineSimilarity(queryEmbedding, factEmbeddings[i]),
-          }));
-
-          ranked.sort((a, b) => b.score - a.score);
-
-          console.log('[Memory] 🔍 Embedding search: top score=' + ranked[0]?.score?.toFixed(3) +
-            ' for "' + query.slice(0, 50) + '"');
-
-          return ranked.slice(0, limit).map(r => ({
-            ...r.fact,
-            relevance: Math.round(r.score * 100) / 100,
-            searchMethod: 'embedding',
-          }));
-        }
+  if (useEmbeddings && allFacts.length > 3) {
+    // Try ILMU BGE-M3 first (cheaper, Malaysian-optimized)
+    if (ilmuranker.isAvailable()) {
+      try {
+        const result = await searchWithIlmuEmbeddings(query, allFacts, limit);
+        if (result && result.length > 0) return result;
+      } catch (err) {
+        console.warn('[Memory] ILMU embedding search failed, trying DeepSeek:', err.message);
       }
-    } catch (err) {
-      console.warn('[Memory] Embedding search failed, falling back to keyword:', err.message);
+    }
+
+    // Fallback: DeepSeek embeddings
+    if (process.env.DEEPSEEK_API_KEY) {
+      try {
+        const result = await searchWithDeepSeekEmbeddings(query, allFacts, limit);
+        if (result && result.length > 0) return result;
+      } catch (err) {
+        console.warn('[Memory] DeepSeek embedding search failed, falling back to keyword:', err.message);
+      }
     }
   }
 
   // ── Fallback: keyword-based search ────────────────────────────────────
   return searchFacts(userId, query, limit);
+}
+
+/**
+ * Search facts using ILMU BGE-M3 embeddings + optional reranker.
+ * @returns {Promise<Array|null>} ranked facts or null
+ */
+async function searchWithIlmuEmbeddings(query, allFacts, limit) {
+  const factTexts = allFacts.map(f => f.key + ': ' + f.value);
+
+  // Get embeddings for query + all facts in one batch
+  const allTexts = [query, ...factTexts];
+  const allEmbeddings = await ilmuranker.getEmbeddingsBatch(allTexts);
+
+  if (!allEmbeddings || allEmbeddings.length !== allTexts.length) return null;
+
+  const queryEmbedding = allEmbeddings[0];
+  const factEmbeddings = allEmbeddings.slice(1);
+
+  // Cosine similarity ranking
+  const ranked = allFacts.map((fact, i) => ({
+    fact,
+    score: ilmuranker.cosineSimilarity(queryEmbedding, factEmbeddings[i]),
+  }));
+  ranked.sort((a, b) => b.score - a.score);
+
+  console.log('[Memory] 🔍 ILMU BGE-M3 search: top score=' + ranked[0]?.score?.toFixed(3) +
+    ' for "' + query.slice(0, 50) + '"');
+
+  // ── Optional: rerank top candidates for precision ───────────────────
+  let topCandidates = ranked.slice(0, Math.min(limit * 2, ranked.length));
+  const rerankDocs = topCandidates.map(r => r.fact.key + ': ' + r.fact.value);
+
+  const reranked = await ilmuranker.rerank(query, rerankDocs, { topN: limit });
+  if (reranked && reranked.length > 0) {
+    console.log('[Memory] 🔄 Reranker applied: top score=' + reranked[0]?.score?.toFixed(3));
+    return reranked.map(r => ({
+      ...allFacts[r.index],
+      relevance: Math.round(r.score * 100) / 100,
+      searchMethod: 'bge-m3+rerank',
+    }));
+  }
+
+  // Fallback: use raw cosine similarity (no reranker)
+  return ranked.slice(0, limit).map(r => ({
+    ...r.fact,
+    relevance: Math.round(r.score * 100) / 100,
+    searchMethod: 'bge-m3',
+  }));
+}
+
+/**
+ * Search facts using DeepSeek embeddings (fallback).
+ */
+async function searchWithDeepSeekEmbeddings(query, allFacts, limit) {
+  const factTexts = allFacts.map(f => f.key + ': ' + f.value);
+
+  const queryEmbedding = await getEmbedding(query);
+  if (!queryEmbedding) return null;
+
+  const factEmbeddings = await getEmbeddingsBatch(factTexts);
+  if (!factEmbeddings || factEmbeddings.length !== factTexts.length) return null;
+
+  const ranked = allFacts.map((fact, i) => ({
+    fact,
+    score: cosineSimilarity(queryEmbedding, factEmbeddings[i]),
+  }));
+  ranked.sort((a, b) => b.score - a.score);
+
+  console.log('[Memory] 🔍 DeepSeek embedding search: top score=' + ranked[0]?.score?.toFixed(3) +
+    ' for "' + query.slice(0, 50) + '"');
+
+  return ranked.slice(0, limit).map(r => ({
+    ...r.fact,
+    relevance: Math.round(r.score * 100) / 100,
+    searchMethod: 'deepseek',
+  }));
 }
 
 /**

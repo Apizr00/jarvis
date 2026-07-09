@@ -6,6 +6,15 @@ A self-hosted AI assistant that lives in your Telegram. Talk naturally — remin
 
 **Extensible:** 📡 Event Bus · 🤖 Agent Layer · 🔌 Plugin System · 📮 Job Queue
 
+## 🆕 v3.3 — What's New
+
+- **�️ ILMU Vision v1.3** — Send photos to the bot, get AI-powered image analysis. Supports JPEG, PNG, WebP, PDF
+- **🎤 ILMU TTS v2** — `/speak <text>` command converts text to voice note. 3 voices (female + 2 male), Opus/MP3/WAV
+- **🔍 ILMU BGE-M3 Semantic Search** — Embedding-based memory search replaces keyword matching. Better BM/rojak
+- **🔄 ILMU BGE Reranker** — Cross-encoder reranks top candidates for precision retrieval
+- **🎙️ ILMU ASR v4.2** — Malaysian-optimized voice transcription (primary). Code-switching BM+English+Mandarin
+- **🧠 Smart Fallback** — All ILMU features gracefully fall back: BGE-M3→DeepSeek→keyword, ASR→Whisper, Vision/TTS→message
+
 ## 🆕 v3.2 — What's New
 
 - **📮 Job Queue System** — BullMQ + Redis: background tasks run async, bot responds **279ms faster** per message
@@ -179,7 +188,9 @@ User Message
 | "What do you know about me?"       | Shows stored facts with confidence scores                           |
 | "My wife Sarah is a doctor"        | Auto-extracts person into relationship memory 👥                    |
 | "Search for latest AI news"        | Performs a web search and summarizes results in your language       |
-| 🎤 Send a voice message            | Transcribes via Whisper AI and responds normally                    |
+| 🖼️ Send a photo                    | AI analyzes the image via ILMU Vision v1.3                          |
+| 🎤 Send a voice message            | Transcribes via ILMU ASR v4.2 or Whisper and responds normally      |
+| `/speak <text>`                    | 🎤 **New!** Converts text to voice note via ILMU TTS v2             |
 | "What's the weather?"              | Shows current weather for your configured location                  |
 
 ---
@@ -213,6 +224,7 @@ User Message
 | `/trace [N]`                                           | 📊 **Observability:** Last N execution traces + latency                |
 | `/lifecycle`                                           | 🔄 **Lifecycle:** Conversation phase + engagement                      |
 | `/queue`                                               | 📮 **Queue System:** Jobs completed, actual time saved, throughput     |
+| `/speak <text>`                                        | 🎤 **TTS:** Convert text to voice note via ILMU TTS v2                 |
 | `/insights`                                            | 📊 **Plugin:** Usage stats, mood distribution, activity summary        |
 | `/mood [mood]`                                         | 🎭 **Plugin:** Track mood, view 7-day mood trend                       |
 | `/weekly`                                              | 📋 **Plugin:** Weekly summary — activity, productivity, mood breakdown |
@@ -341,6 +353,9 @@ jarvis/
 │   │   ├── index.js            # LLM Router + Phase 5: Cost/latency optimizer
 │   │   ├── shared.js           # System prompt builder + Phase 8: Fact lock rules
 │   │   ├── ilmu.js             # ILMU by YTL AI Labs — Malaysia's sovereign AI (primary BM)
+│   │   ├── embeddings.js       # 🔍 BGE-M3 embeddings + BGE Reranker for semantic search
+│   │   ├── vision.js           # 🖼️ ILMU Vision v1.3 — image & document analysis
+│   │   ├── tts.js              # 🎤 ILMU TTS v2 — text-to-speech voice synthesis
 │   │   ├── deepseek.js         # DeepSeek API provider (primary deep reasoning)
 │   │   ├── mimo.js             # Xiaomi MiMo API provider (backup/medium)
 │   │   ├── intent.js           # Legacy fast keyword-based intent detection
