@@ -53,6 +53,47 @@ export default function CardWidget({ title, icon, data, config }) {
     );
   }
 
+  // Weekly summary data shape
+  if (data.weekStart && data.weekEnd) {
+    const start = new Date(data.weekStart).toLocaleDateString("en-MY", {
+      day: "numeric",
+      month: "short",
+    });
+    const end = new Date(data.weekEnd).toLocaleDateString("en-MY", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
+    return (
+      <div className="card-widget">
+        <div className="weekly-period">
+          {start} – {end}
+        </div>
+        <div className="card-row">
+          <span className="card-label">Messages</span>
+          <span className="card-value">
+            {data.messageCount ?? data.totalMessages ?? 0}
+          </span>
+        </div>
+        {data.totalMoods !== undefined && (
+          <div className="card-row">
+            <span className="card-label">Moods tracked</span>
+            <span className="card-value">{data.totalMoods}</span>
+          </div>
+        )}
+        {data.totalMessages > 0 ? (
+          <div className="widget-footer-text">
+            🟢 Keep chatting with Jarvis!
+          </div>
+        ) : (
+          <div className="widget-footer-text">
+            💬 Start chatting to see stats.
+          </div>
+        )}
+      </div>
+    );
+  }
+
   // Generic: render key/value pairs
   const entries = Object.entries(data).filter(([k]) => !k.startsWith("_"));
   return (
