@@ -198,6 +198,16 @@ function createApiServer() {
   // GET /api/auth/me — returns current user from JWT
   app.get('/api/auth/me', requireAuth, meHandler);
 
+  // GET /api/auth/bot-info — public, returns bot username for Telegram widget
+  app.get('/api/auth/bot-info', (req, res) => {
+    const username = process.env.TELEGRAM_BOT_USERNAME || '';
+    res.json({
+      botUsername: username.replace(/^@/, ''),
+      configured: !!username,
+      hint: username ? '' : 'Set TELEGRAM_BOT_USERNAME in .env to enable the Telegram Login Widget.',
+    });
+  });
+
   // ═══════════════════════════════════════════════════════════════════════════
   // ── PLUGIN ROUTES (protected) ─────────────────────────────────────────────
   // ═══════════════════════════════════════════════════════════════════════════

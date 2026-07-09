@@ -13,6 +13,7 @@ export default function LoginPage() {
   } = useAuthStore();
   const navigate = useNavigate();
   const [botToken, setBotToken] = useState("");
+  const [botConfigured, setBotConfigured] = useState(null); // null=loading, true/false
 
   useEffect(() => {
     if (isAuthenticated) navigate("/", { replace: true });
@@ -26,30 +27,37 @@ export default function LoginPage() {
   };
 
   // ── Method 2: Telegram Login Widget ──────────────────────────────────
-  // This loads the official Telegram widget. It will call the
-  // onTelegramAuth callback with user data when login succeeds.
   useEffect(() => {
-    // Only load if TELEGRAM_BOT_USERNAME is set in env
-    const botUsername = window._JARVIS_BOT_USERNAME__ || null;
-    if (!botUsername) return;
+    let cleanup = false;
 
-    const script = document.createElement("script");
-    script.src = "https://telegram.org/js/telegram-widget.js?22";
-    script.async = true;
-    script.setAttribute("data-telegram-login", botUsername);
-    script.setAttribute("data-size", "large");
-    script.setAttribute("data-radius", "10");
-    script.setAttribute("data-onauth", "onTelegramAuth(user)");
-    script.setAttribute("data-request-access", "write");
-    document.getElementById("telegram-widget-container")?.appendChild(script);
+    async function loadWidget() {
+      try {
+        const res = await fetch("/api/auth/bot-info");
+        const info = await res.json();
+        setBotConfigured(info.configured);
+        if (!info.configured || cleanup) return;
 
-    // Define the callback globally
-    window.onTelegramAuth = async (user) => {
-      await loginWithTelegram(user);
-    };
+        const script = document.createElement("script");
+        script.src = "https://telegram.org/js/telegram-widget.js?22";
+        script.async = true;
+        script.setAttribute("data-telegram-login", info.botUsername);
+        script.setAttribute("data-size", "large");
+        script.setAttribute("data-radius", "10");
+        script.setAttribute("data-onauth", "onTelegramAuth(user)");
+        script.setAttribute("data-request-access", "write");
+        document
+          .getElementById("telegram-widget-container")
+          ?.appendChild(script);
 
+        window.onTelegramAuth = async (user) => {
+          await loginWithTelegram(user);
+        };
+      } catch {}
+    }
+
+    loadWidget();
     return () => {
-      if (script.parentNode) script.parentNode.removeChild(script);
+      cleanup = true;
       delete window.onTelegramAuth;
     };
   }, []);
@@ -113,13 +121,21 @@ export default function LoginPage() {
               id="telegram-widget-container"
               className="telegram-widget-container"
             >
-              <p className="login-note">
-                To enable this, set your bot's domain in{" "}
-                <strong>@BotFather</strong> to{" "}
-                <code>playground.hafizrodzli.com</code> and add{" "}
-                <code>TELEGRAM_BOT_USERNAME=your_bot_username</code> to your
-                .env file on the server.
-              </p>
+              {botConfigured === false && (
+                <p className="login-note">
+                  <strong>⚠️ Not configured yet.</strong>
+                  <br />
+                  Open <strong>@BotFather</strong> → <code>/setdomain</code> →{" "}
+                  <code>@ApizrBot</code> →{" "}
+                  <code>playground.hafizrodzli.com</code>
+                  <br />
+                  Then add <code>TELEGRAM_BOT_USERNAME=@ApizrBot</code> to VPS
+                  .env and run <code>npm run deploy</code>.
+                </p>
+              )}
+              {botConfigured === null && (
+                <p className="login-note">Checking configuration...</p>
+              )}
             </div>
           </div>
         </div>
