@@ -19,56 +19,61 @@ export default function DashboardLayout() {
   const init = useThemeStore((s) => s.init);
   const verifyToken = useAuthStore((s) => s.verifyToken);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const location = useLocation();
 
   useEffect(() => {
     init();
     verifyToken();
+    const onResize = () => setIsMobile(window.innerWidth <= 768);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // Close mobile menu on route change
   useEffect(() => {
     setMobileMenuOpen(false);
   }, [location.pathname]);
 
   return (
-    <div className="dashboard-layout">
-      {/* Mobile overlay */}
+    <div className={`dashboard-layout ${isMobile ? "mobile" : ""}`}>
       {mobileMenuOpen && (
         <div
           className="mobile-overlay"
           onClick={() => setMobileMenuOpen(false)}
         />
       )}
-
       <Sidebar
         mobileOpen={mobileMenuOpen}
         onClose={() => setMobileMenuOpen(false)}
       />
       <div className="main-area">
-        <TopBar onMenuClick={() => setMobileMenuOpen(true)} />
+        <TopBar
+          onMenuClick={() => setMobileMenuOpen(true)}
+          showHamburger={isMobile}
+        />
         <main className="page-content">
           <Outlet />
         </main>
       </div>
-      <ChatPanel />
+      {!isMobile && <ChatPanel />}
 
-      {/* Mobile bottom nav */}
-      <nav className="mobile-bottom-nav">
-        {MOBILE_NAV.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.to === "/"}
-            className={({ isActive }) =>
-              `mobile-nav-item ${isActive ? "active" : ""}`
-            }
-          >
-            <span className="mobile-nav-icon">{item.icon}</span>
-            <span className="mobile-nav-label">{item.label}</span>
-          </NavLink>
-        ))}
-      </nav>
+      {isMobile && (
+        <nav className="mobile-bottom-nav">
+          {MOBILE_NAV.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.to === "/"}
+              className={({ isActive }) =>
+                `mobile-nav-item ${isActive ? "active" : ""}`
+              }
+            >
+              <span className="mobile-nav-icon">{item.icon}</span>
+              <span className="mobile-nav-label">{item.label}</span>
+            </NavLink>
+          ))}
+        </nav>
+      )}
     </div>
   );
 }

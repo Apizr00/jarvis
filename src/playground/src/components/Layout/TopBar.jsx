@@ -14,7 +14,7 @@ const PAGE_TITLES = {
   "/waktu-solat": "Waktu Solat",
 };
 
-export default function TopBar({ onMenuClick }) {
+export default function TopBar({ onMenuClick, showHamburger }) {
   const location = useLocation();
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
@@ -25,13 +25,15 @@ export default function TopBar({ onMenuClick }) {
   return (
     <header className="topbar">
       <div className="topbar-left">
-        <button
-          className="btn-icon hamburger"
-          onClick={onMenuClick}
-          aria-label="Menu"
-        >
-          ☰
-        </button>
+        {showHamburger && (
+          <button
+            className="btn-icon hamburger"
+            onClick={onMenuClick}
+            aria-label="Menu"
+          >
+            ☰
+          </button>
+        )}
         <h1 className="page-title">{title}</h1>
       </div>
 

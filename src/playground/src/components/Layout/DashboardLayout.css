@@ -83,3 +83,15 @@
     white-space: nowrap;
   }
 }
+
+/* JS-driven mobile classes */
+.dashboard-layout.mobile .mobile-bottom-nav {
+  display: flex;
+}
+.dashboard-layout.mobile .page-content {
+  padding: 12px;
+  padding-bottom: 76px;
+}
+.dashboard-layout.mobile .chat-panel {
+  display: none;
+}
