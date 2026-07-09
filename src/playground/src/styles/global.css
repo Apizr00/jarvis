@@ -310,7 +310,6 @@ label {
 
 @media (max-width: 768px) {
   :root {
-    --sidebar-width: 0px;
     --chat-panel-width: 100vw;
   }
 }

@@ -14,12 +14,24 @@ const NAV_ITEMS = [
   { to: "/settings", icon: "⚙️", label: "Settings" },
 ];
 
-export default function Sidebar() {
-  const [collapsed, setCollapsed] = useState(window.innerWidth < 768);
+export default function Sidebar({ mobileOpen, onClose }) {
+  const [collapsed, setCollapsed] = useState(true);
   const location = useLocation();
 
+  const sidebarClass = [
+    "sidebar",
+    collapsed && !mobileOpen ? "collapsed" : "",
+    mobileOpen ? "mobile-open" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const handleNav = () => {
+    if (onClose) onClose();
+  };
+
   return (
-    <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
+    <aside className={sidebarClass}>
       <div className="sidebar-header">
         <div className="sidebar-logo" onClick={() => setCollapsed(!collapsed)}>
           <span className="logo-icon">🤖</span>
@@ -34,7 +46,8 @@ export default function Sidebar() {
             to={item.to}
             end={item.to === "/"}
             className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}
-            title={collapsed ? item.label : undefined}
+            title={collapsed && !mobileOpen ? item.label : undefined}
+            onClick={handleNav}
           >
             <span className="nav-icon">{item.icon}</span>
             {!collapsed && <span className="nav-label">{item.label}</span>}

@@ -110,17 +110,18 @@
     left: 0;
     top: 0;
     bottom: 0;
-    width: var(--sidebar-width) !important;
-    min-width: var(--sidebar-width) !important;
+    width: var(--sidebar-width);
+    min-width: var(--sidebar-width);
     transform: translateX(-100%);
     box-shadow: 4px 0 20px rgba(0, 0, 0, 0.3);
+    z-index: 100;
+  }
+
+  .sidebar.mobile-open {
+    transform: translateX(0);
   }
 
   .sidebar.collapsed {
     transform: translateX(-100%);
-  }
-
-  .sidebar:not(.collapsed) {
-    transform: translateX(0);
   }
 }

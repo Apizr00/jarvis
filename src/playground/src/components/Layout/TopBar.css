@@ -9,9 +9,19 @@
   border-bottom: 1px solid var(--border);
 }
 
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .page-title {
   font-size: 1.25rem;
   font-weight: 700;
+}
+
+.hamburger {
+  display: none;
 }
 
 .topbar-right {
@@ -57,9 +67,15 @@
 
 @media (max-width: 768px) {
   .topbar {
-    padding: 0 16px;
+    padding: 0 12px;
   }
   .user-name {
     display: none;
+  }
+  .hamburger {
+    display: flex;
+  }
+  .page-title {
+    font-size: 1.05rem;
   }
 }
