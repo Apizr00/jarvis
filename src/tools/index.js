@@ -1122,4 +1122,4 @@ async function executeTool(userId, toolCall) {
   }
 }
 
-module.exports = { executeTool, escapeMd, safeSendMessage, getPendingConfig, confirmPendingConfig, removePendingConfig, setPendingConfig };
+module.exports = { executeTool, validateToolCall, escapeMd, safeSendMessage, getPendingConfig, confirmPendingConfig, removePendingConfig, setPendingConfig };

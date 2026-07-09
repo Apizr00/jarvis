@@ -164,24 +164,19 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
     ws.send(JSON.stringify({ type: 'error', payload: { message: 'Missing or invalid "message" field', code: 400 } }));
     return;
   }
-
   if (message.length > MAX_MESSAGE_LENGTH) {
     ws.send(JSON.stringify({ type: 'error', payload: { message: `Message too long (max ${MAX_MESSAGE_LENGTH} chars)`, code: 400 } }));
     return;
   }
 
   const convId = conversationId || `ws_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-
-  // Cancel any previous stream for this conversation
   if (activeStreams.has(convId)) {
     try { activeStreams.get(convId).abort(); } catch { /* ignore */ }
     activeStreams.delete(convId);
   }
 
-  // ── Typing indicator ─────────────────────────────────────────────────
   ws.send(JSON.stringify({ type: 'typing', payload: { active: true, conversationId: convId } }));
 
-  // ── Abort controller ─────────────────────────────────────────────────
   let aborted = false;
   const abort = () => { aborted = true; };
   activeStreams.set(convId, { ws, abort });
@@ -189,16 +184,19 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
   try {
     const llm = deps.llm || require('../llm');
     const tools = require('../tools');
+    const { validateToolCall } = require('../tools');
 
-    // Map frontend model names to provider names
     const providerMap = { ilmu: 'ilmu', deepseek: 'deepseek', mimo: 'mimo', auto: 'auto' };
     const provider = providerMap[requestedModel] || 'auto';
 
-    // Stream response — capture return value as fallback if onChunk never fires
+    // ── Call LLM ──────────────────────────────────────────────────────
+    // Use 'deep' tier for potential tool usage (forces DeepSeek which is better at structured calls)
+    const intent = require('../llm/intent').detectIntent(message);
+    const tier = intent?.tier === 'deep' ? 'deep' : 'medium';
+
     let fullText = '';
-    const result = await llm.chatStream(
-      userId, message, [],
-      { provider },
+    let result = await llm.chatStream(userId, message, [],
+      { provider, tier },
       (chunk) => {
         if (aborted) throw new Error('ABORTED');
         fullText += chunk;
@@ -208,116 +206,88 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
       }
     );
 
-    // ── Handle tool calls ─────────────────────────────────────────────
+    // ── Handle tool calls with retry ──────────────────────────────────
     if (result?.type === 'tool' && result?.name) {
-      // Stop typing — we're executing a tool
       ws.send(JSON.stringify({ type: 'typing', payload: { active: false, conversationId: convId } }));
 
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: 'tool_call',
-          payload: {
-            conversationId: convId,
-            tool: result.name,
-            args: result.args,
-            message: `🔧 Running ${result.name.replace(/_/g, ' ')}...`,
-          },
-        }));
-      }
+      // Validate tool args — retry once if args are incomplete
+      let toolResult;
+      let retryCount = 0;
+      const MAX_RETRIES = 2;
 
-      try {
-        const toolResult = await tools.executeTool(userId, {
-          name: result.name,
-          args: result.args,
-        });
+      while (retryCount <= MAX_RETRIES) {
+        const validation = validateToolCall(result.name, result.args);
 
-        // Format tool result for chat display
-        const toolMessage = typeof toolResult === 'string'
-          ? toolResult
-          : toolResult?.message || `✅ ${result.name.replace(/_/g, ' ')} done.`;
+        if (validation.valid) {
+          // Execute valid tool call
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'tool_call',
+              payload: { conversationId: convId, tool: result.name, args: result.args, message: `🔧 Running ${result.name.replace(/_/g, ' ')}...` },
+            }));
+          }
 
-        if (!aborted && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
-            type: 'tool_result',
-            payload: {
-              conversationId: convId,
-              tool: result.name,
-              content: toolMessage,
-              timestamp: new Date().toISOString(),
-            },
-          }));
+          toolResult = await tools.executeTool(userId, { name: result.name, args: result.args });
+          break;
         }
 
-        // ── Follow-up: let LLM explain what happened ──────────────────
-        const followupCtx = typeof toolResult === 'string' ? toolResult : (toolResult?.message || 'Done.');
-        ws.send(JSON.stringify({ type: 'typing', payload: { active: true, conversationId: convId } }));
+        // Args invalid — ask LLM to fix
+        retryCount++;
+        logger.warn('Tool args invalid, retrying', { tool: result.name, error: validation.error, retry: retryCount });
 
-        let followupText = '';
-        const followupResult = await llm.chatStream(
-          userId,
-          `You just executed: ${result.name} with args ${JSON.stringify(result.args)}. Result: ${followupCtx}. Briefly confirm what you did in a friendly way, in the same language as the user. Keep it 1-2 sentences.`,
-          [],
-          { provider: 'ilmu', tier: 'fast' },
+        if (retryCount > MAX_RETRIES) {
+          toolResult = `❌ Cannot ${result.name.replace(/_/g, ' ')} — ${validation.error}`;
+          break;
+        }
+
+        // Re-prompt LLM to fix the args
+        const retryMsg = `You tried to call ${result.name} with args ${JSON.stringify(result.args)} but it failed because: ${validation.error}. Please fix and return the corrected tool call.`;
+        fullText = '';
+        result = await llm.chatStream(userId, retryMsg, [],
+          { provider: 'deepseek', tier: 'deep' },
           (chunk) => {
             if (aborted) throw new Error('ABORTED');
-            followupText += chunk;
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'chunk', payload: { text: chunk, conversationId: convId } }));
-            }
+            fullText += chunk;
           }
         );
 
-        // Fallback for followup
-        if (!followupText && followupResult?.content) followupText = followupResult.content;
-
-        ws.send(JSON.stringify({ type: 'typing', payload: { active: false, conversationId: convId } }));
-
-        if (!aborted && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
-            type: 'done',
-            payload: {
-              conversationId: convId,
-              fullText: followupText || '✅ Done!',
-              metadata: { model: requestedModel || 'auto', provider: 'ilmu', timestamp: new Date().toISOString() },
-            },
-          }));
-        }
-      } catch (toolErr) {
-        logger.error('Tool execution error', { userId, tool: result.name, error: toolErr.message });
-        if (!aborted && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
-            type: 'tool_result',
-            payload: {
-              conversationId: convId,
-              tool: result.name,
-              content: `❌ Failed: ${toolErr.message}`,
-              error: true,
-              timestamp: new Date().toISOString(),
-            },
-          }));
+        if (result?.type !== 'tool') {
+          toolResult = result?.content || `❌ Failed to fix tool call.`;
+          break;
         }
       }
-      return; // Tool call handled — don't send regular 'done'
+
+      // Send tool result
+      const toolMessage = typeof toolResult === 'string' ? toolResult : (toolResult?.message || '✅ Done.');
+      if (!aborted && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'tool_result',
+          payload: { conversationId: convId, tool: result.name, content: toolMessage, error: toolMessage.startsWith('❌'), timestamp: new Date().toISOString() },
+        }));
+      }
+
+      // Follow-up explanation from LLM
+      ws.send(JSON.stringify({ type: 'typing', payload: { active: true, conversationId: convId } }));
+      let followupText = '';
+      const followupResult = await llm.chatStream(userId,
+        `You just executed: ${result.name}. Result: ${toolMessage.slice(0, 500)}. Confirm briefly in a friendly tone. 1-2 sentences max.`,
+        [], { provider: 'ilmu', tier: 'fast' },
+        (chunk) => { if (aborted) throw new Error('ABORTED'); followupText += chunk; if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'chunk', payload: { text: chunk, conversationId: convId } })); }
+      );
+      if (!followupText && followupResult?.content) followupText = followupResult.content;
+
+      ws.send(JSON.stringify({ type: 'typing', payload: { active: false, conversationId: convId } }));
+      if (!aborted && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'done', payload: { conversationId: convId, fullText: followupText || '✅ Done!', metadata: { model: requestedModel || 'auto', provider: 'ilmu', timestamp: new Date().toISOString() } } }));
+      }
+      return;
     }
 
-    // ── Regular message response ───────────────────────────────────────
+    // ── Regular message ───────────────────────────────────────────────
     if (!fullText && result?.content) fullText = result.content;
-
     ws.send(JSON.stringify({ type: 'typing', payload: { active: false, conversationId: convId } }));
-
     if (!aborted && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        type: 'done',
-        payload: {
-          conversationId: convId,
-          fullText,
-          metadata: {
-            model: requestedModel || 'auto',
-            provider: result?._provider || provider,
-            timestamp: new Date().toISOString(),
-          },
-        },
-      }));
+      ws.send(JSON.stringify({ type: 'done', payload: { conversationId: convId, fullText, metadata: { model: requestedModel || 'auto', provider: result?._provider || provider, timestamp: new Date().toISOString() } } }));
     }
   } catch (err) {
     if (err.message === 'ABORTED') {
