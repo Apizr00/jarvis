@@ -231,12 +231,11 @@ function buildToolButtons(toolName, toolResult) {
   return buttons;
 }
 
-// ── Chat Handler ─────────────────────────────────────────────────────────────
+// ── Chat Handler — Full Executive Pipeline ───────────────────────────────────
 
 async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
   const { message, model: requestedModel, conversationId } = payload;
 
-  // Validate
   if (!message || typeof message !== 'string') {
     ws.send(JSON.stringify({ type: 'error', payload: { message: 'Missing or invalid "message" field', code: 400 } }));
     return;
@@ -248,7 +247,7 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
 
   const convId = conversationId || `ws_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   if (activeStreams.has(convId)) {
-    try { activeStreams.get(convId).abort(); } catch { /* ignore */ }
+    try { activeStreams.get(convId).abort(); } catch { }
     activeStreams.delete(convId);
   }
 
@@ -259,21 +258,36 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
   activeStreams.set(convId, { ws, abort });
 
   try {
+    // ── 🧠 EXECUTIVE — Intent, mood, language, tier routing ──────────
     const llm = deps.llm || require('../llm');
+    const executive = require('../executive');
     const tools = require('../tools');
     const { validateToolCall } = require('../tools');
+    const eventBus = deps.eventBus || require('../events').eventBus;
+    const EVENTS = require('../events').EVENTS;
+    const { fixHallucinatedGreeting, fixHallucinatedTime } = require('../bot/anti-hallucination');
 
-    const providerMap = { ilmu: 'ilmu', deepseek: 'deepseek', mimo: 'mimo', auto: 'auto' };
-    const provider = providerMap[requestedModel] || 'auto';
+    const recentMsgs = []; // WebSocket keeps history in frontend store, could pass here
+    const stateMachine = require('../executive/state-machine');
+    const sm = stateMachine.getState(userId) || { phase: 'idle', meta: {} };
+    const decision = await executive.decide(userId, message, sm, recentMsgs);
 
-    // ── Call LLM ──────────────────────────────────────────────────────
-    // Use 'deep' tier for potential tool usage (forces DeepSeek which is better at structured calls)
-    const intent = require('../llm/intent').detectIntent(message);
-    const tier = intent?.tier === 'deep' ? 'deep' : 'medium';
+    // 📡 Emit intent event
+    if (eventBus) {
+      try { eventBus.emitSync(EVENTS.INTENT_DETECTED, { userId, message: message.slice(0, 100), ...decision }); } catch { }
+    }
 
+    // Build executive context (working memory + world model)
+    const llmOptions = {};
+    llmOptions.executiveContext = await executive.buildContext(userId, decision, message, sm);
+    llmOptions.provider = decision.provider || 'auto';
+    llmOptions.tier = decision.tier || 'medium';
+
+    logger.info('Web chat executive decision', { userId, tier: decision.tier, provider: decision.provider, intent: decision.intent?.category, mood: decision.mood, language: decision.language });
+
+    // ── 🧠 MEMORY + PLANNER + ANTI-HALLUCINATION ──────────────────────
     let fullText = '';
-    let result = await llm.chatStream(userId, message, [],
-      { provider, tier },
+    let result = await llm.chatStream(userId, message, [], llmOptions,
       (chunk) => {
         if (aborted) throw new Error('ABORTED');
         fullText += chunk;
@@ -283,85 +297,82 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
       }
     );
 
-    // ── Handle tool calls with retry ──────────────────────────────────
+    // ── 🛡️ ANTI-HALLUCINATION — Check message responses ──────────────
+    if (result?.type === 'message' && result?.content) {
+      result.content = fixHallucinatedGreeting(result.content);
+      result.content = fixHallucinatedTime(result.content);
+    }
+
+    // ── Handle tool calls ─────────────────────────────────────────────
     if (result?.type === 'tool' && result?.name) {
       ws.send(JSON.stringify({ type: 'typing', payload: { active: false, conversationId: convId } }));
 
-      // Validate tool args — retry once if args are incomplete
+      // Validate + retry up to 2 times
       let toolResult;
       let retryCount = 0;
       const MAX_RETRIES = 2;
 
       while (retryCount <= MAX_RETRIES) {
         const validation = validateToolCall(result.name, result.args);
-
         if (validation.valid) {
-          // Execute valid tool call
           if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({
-              type: 'tool_call',
-              payload: { conversationId: convId, tool: result.name, args: result.args, message: `🔧 Running ${result.name.replace(/_/g, ' ')}...` },
-            }));
+            ws.send(JSON.stringify({ type: 'tool_call', payload: { conversationId: convId, tool: result.name, args: result.args, message: `🔧 ${result.name.replace(/_/g, ' ')}...` } }));
           }
 
-          toolResult = await tools.executeTool(userId, { name: result.name, args: result.args });
+          // ── Agent dispatch (matches Telegram bot flow) ──────────
+          try {
+            const agentRegistry = require('../agents').agentRegistry;
+            const agentResult = await agentRegistry.dispatchToolCall(result.name, result.args, userId);
+            if (agentResult?.success) {
+              toolResult = agentResult.result;
+            } else {
+              toolResult = await tools.executeTool(userId, { name: result.name, args: result.args });
+            }
+          } catch {
+            toolResult = await tools.executeTool(userId, { name: result.name, args: result.args });
+          }
           break;
         }
 
-        // Args invalid — ask LLM to fix
         retryCount++;
         logger.warn('Tool args invalid, retrying', { tool: result.name, error: validation.error, retry: retryCount });
-
         if (retryCount > MAX_RETRIES) {
           toolResult = `❌ Cannot ${result.name.replace(/_/g, ' ')} — ${validation.error}`;
           break;
         }
 
-        // Re-prompt LLM to fix the args
-        const retryMsg = `You tried to call ${result.name} with args ${JSON.stringify(result.args)} but it failed because: ${validation.error}. Please fix and return the corrected tool call.`;
-        fullText = '';
-        result = await llm.chatStream(userId, retryMsg, [],
+        // Re-prompt LLM to fix
+        result = await llm.chatStream(userId,
+          `Tool call failed: ${validation.error}. Fix and return corrected tool call.`, [],
           { provider: 'deepseek', tier: 'deep' },
-          (chunk) => {
-            if (aborted) throw new Error('ABORTED');
-            fullText += chunk;
-          }
+          (chunk) => { if (aborted) throw new Error('ABORTED'); }
         );
-
         if (result?.type !== 'tool') {
-          toolResult = result?.content || `❌ Failed to fix tool call.`;
+          toolResult = result?.content || '❌ Failed to fix.';
           break;
         }
       }
 
-      // Send tool result with action buttons (matching Telegram inline keyboards)
       const toolMessage = typeof toolResult === 'string' ? toolResult : (toolResult?.message || '✅ Done.');
       const buttons = buildToolButtons(result.name, toolResult);
 
       if (!aborted && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: 'tool_result',
-          payload: {
-            conversationId: convId, tool: result.name, content: toolMessage,
-            error: toolMessage.startsWith('❌'), buttons,
-            timestamp: new Date().toISOString(),
-          },
-        }));
+        ws.send(JSON.stringify({ type: 'tool_result', payload: { conversationId: convId, tool: result.name, content: toolMessage, error: toolMessage.startsWith('❌'), buttons, timestamp: new Date().toISOString() } }));
       }
 
-      // Follow-up explanation from LLM
+      // Follow-up confirmation
       ws.send(JSON.stringify({ type: 'typing', payload: { active: true, conversationId: convId } }));
       let followupText = '';
       const followupResult = await llm.chatStream(userId,
-        `You just executed: ${result.name}. Result: ${toolMessage.slice(0, 500)}. Confirm briefly in a friendly tone. 1-2 sentences max.`,
-        [], { provider: 'ilmu', tier: 'fast' },
+        `You executed: ${result.name}. Result: ${toolMessage.slice(0, 500)}. Confirm briefly in user's language. 1-2 sentences.`, [],
+        { provider: 'ilmu', tier: 'fast' },
         (chunk) => { if (aborted) throw new Error('ABORTED'); followupText += chunk; if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'chunk', payload: { text: chunk, conversationId: convId } })); }
       );
       if (!followupText && followupResult?.content) followupText = followupResult.content;
 
       ws.send(JSON.stringify({ type: 'typing', payload: { active: false, conversationId: convId } }));
       if (!aborted && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'done', payload: { conversationId: convId, fullText: followupText || '✅ Done!', metadata: { model: requestedModel || 'auto', provider: 'ilmu', timestamp: new Date().toISOString() } } }));
+        ws.send(JSON.stringify({ type: 'done', payload: { conversationId: convId, fullText: followupText || '✅ Done!', metadata: { tier: decision.tier, provider: result._provider || decision.provider, mood: decision.mood, timestamp: new Date().toISOString() } } }));
       }
       return;
     }
@@ -370,7 +381,7 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
     if (!fullText && result?.content) fullText = result.content;
     ws.send(JSON.stringify({ type: 'typing', payload: { active: false, conversationId: convId } }));
     if (!aborted && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'done', payload: { conversationId: convId, fullText, metadata: { model: requestedModel || 'auto', provider: result?._provider || provider, timestamp: new Date().toISOString() } } }));
+      ws.send(JSON.stringify({ type: 'done', payload: { conversationId: convId, fullText, metadata: { tier: decision.tier, provider: result?._provider || decision.provider, mood: decision.mood, language: decision.language, timestamp: new Date().toISOString() } } }));
     }
   } catch (err) {
     if (err.message === 'ABORTED') {
