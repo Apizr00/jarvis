@@ -567,7 +567,7 @@ async function scenario11_proactiveScoring() {
   assert(goalScore >= 0 && goalScore <= 25, 'GOAL: Goal proximity score in range: ' + goalScore);
 
   // Composite opportunity score
-  const opportunity = proactive.calculateOpportunityScore(TEST_USER, 'morning_checkin');
+  const opportunity = await proactive.calculateOpportunityScore(TEST_USER, 'morning_checkin');
   assert(opportunity.total >= 0 && opportunity.total <= 100, 'COMPOSITE: Total score in range 0-100: ' + opportunity.total);
   assert(opportunity.breakdown.userState !== undefined, 'BREAKDOWN: Has userState');
   assert(opportunity.breakdown.timing !== undefined, 'BREAKDOWN: Has timing');

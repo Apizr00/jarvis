@@ -55,7 +55,36 @@ function scoreFactRelevance(query, fact) {
     score += 5;
   }
 
-  // Check for semantic category matches
+  // Check for semantic category matches (enhanced with synonym mapping)
+  const semanticMap = {
+    // Time/routine
+    sleep: ['tidur', 'bangun', 'wake', 'bedtime', 'nap', 'rest', 'rehat'],
+    work: ['kerja', 'job', 'office', 'pejabat', 'task', 'tugasan', 'project', 'projek', 'meeting', 'mesyuarat'],
+    food: ['makan', 'eat', 'food', 'diet', 'restaurant', 'kedai', 'lunch', 'dinner', 'breakfast', 'cook', 'masak'],
+    exercise: ['gym', 'workout', 'senaman', 'run', 'lari', 'jogging', 'fitness', 'sports', 'sukan', 'yoga'],
+    learning: ['study', 'belajar', 'course', 'kursus', 'book', 'buku', 'read', 'baca', 'learn', 'code', 'coding', 'tutorial'],
+    travel: ['travel', 'jalan', 'cuti', 'holiday', 'vacation', 'trip', 'flight', 'hotel'],
+    finance: ['money', 'duit', 'ringgit', 'rm', 'bank', 'saving', 'invest', 'labur', 'budget', 'bajet'],
+    health: ['health', 'sihat', 'doctor', 'doktor', 'hospital', 'medicine', 'ubat', 'sick', 'sakit'],
+    family: ['family', 'keluarga', 'wife', 'isteri', 'husband', 'suami', 'anak', 'child', 'parent', 'ibu', 'ayah'],
+    prayer: ['solat', 'pray', 'subuh', 'zohor', 'asar', 'maghrib', 'isya', 'azan', 'doa', 'agama', 'islam'],
+    home: ['rumah', 'house', 'home', 'pindah', 'move', 'renovate', 'renovasi', 'sewa', 'rent'],
+    car: ['kereta', 'car', 'drive', 'pandu', 'motor', 'vehicle', 'kenderaan'],
+    phone: ['phone', 'telefon', 'hp', 'mobile', 'device', 'gadget', 'laptop', 'computer'],
+  };
+
+  // Check if query matches any semantic domain and fact belongs to same domain
+  for (const [domain, synonyms] of Object.entries(semanticMap)) {
+    const queryInDomain = synonyms.some(s => q.includes(s));
+    if (!queryInDomain) continue;
+    const factInDomain = synonyms.some(s => k.includes(s) || v.includes(s));
+    if (factInDomain) {
+      score += 6; // Stronger boost for semantic matches
+      break;
+    }
+  }
+
+  // Legacy category matching (fallback)
   const categories = {
     schedule: ['pukul', 'jam', 'masa', 'time', 'when', 'bila', 'schedule', 'jadual', 'routine', 'rutin'],
     work: ['kerja', 'work', 'job', 'office', 'pejabat', 'meeting', 'mesyuarat', 'task', 'tugasan'],

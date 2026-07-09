@@ -15,6 +15,9 @@
 //     rejectedIdeas:   [],       // ideas that didn't work (avoid repeating)
 //     nextSteps:       [],       // what to do next
 //     contextNotes:    string,   // quick notes about current context
+//     recentTopics:    [],       // topics discussed in last few exchanges (max 10)
+//     lastExchangeSummary: string, // one-line summary of the last meaningful exchange
+//     conversationFlow: string,  // track conversation direction (e.g., 'planning_trip', 'debugging_code')
 //     lastUpdated:     Date,
 //     messageCount:    number,   // messages since last reset
 //   }
@@ -24,8 +27,9 @@ const store = new Map();
 const MAX_SOLUTIONS = 5;
 const MAX_REJECTED = 10;
 const MAX_NEXT_STEPS = 5;
-const EXPIRE_AFTER_MS = 30 * 60 * 1000; // 30 minutes inactivity → reset
-const RESET_AFTER_MESSAGES = 50;        // reset after 50 messages (was 20 — too short for deep tasks)
+const MAX_RECENT_TOPICS = 10;
+const EXPIRE_AFTER_MS = 2 * 60 * 60 * 1000; // 2 hours inactivity → reset (was 30min — too aggressive)
+const RESET_AFTER_MESSAGES = 50;            // reset after 50 messages
 
 /**
  * Get working memory for a user. Creates empty if not exists.
@@ -39,6 +43,9 @@ function get(userId) {
       rejectedIdeas: [],
       nextSteps: [],
       contextNotes: '',
+      recentTopics: [],
+      lastExchangeSummary: '',
+      conversationFlow: '',
       lastUpdated: new Date(),
       messageCount: 0,
     });
@@ -72,6 +79,9 @@ function reset(userId) {
     rejectedIdeas: [],
     nextSteps: [],
     contextNotes: '',
+    recentTopics: [],
+    lastExchangeSummary: '',
+    conversationFlow: '',
     lastUpdated: new Date(),
     messageCount: 0,
   });
@@ -86,6 +96,8 @@ function update(userId, updates = {}) {
   if (updates.currentGoal !== undefined) wm.currentGoal = updates.currentGoal;
   if (updates.currentProblem !== undefined) wm.currentProblem = updates.currentProblem;
   if (updates.contextNotes !== undefined) wm.contextNotes = updates.contextNotes;
+  if (updates.lastExchangeSummary !== undefined) wm.lastExchangeSummary = updates.lastExchangeSummary;
+  if (updates.conversationFlow !== undefined) wm.conversationFlow = updates.conversationFlow;
 
   if (updates.addSolution && !wm.possibleSolutions.includes(updates.addSolution)) {
     wm.possibleSolutions.unshift(updates.addSolution);
@@ -110,6 +122,12 @@ function update(userId, updates = {}) {
     wm.nextSteps = wm.nextSteps.filter(s => s !== updates.completeNextStep);
   }
 
+  // Track recent topics — deduplicated, time-ordered
+  if (updates.addTopic && !wm.recentTopics.includes(updates.addTopic)) {
+    wm.recentTopics.unshift(updates.addTopic);
+    if (wm.recentTopics.length > MAX_RECENT_TOPICS) wm.recentTopics.pop();
+  }
+
   wm.lastUpdated = new Date();
   wm.messageCount++;
 }
@@ -131,6 +149,12 @@ function formatForPrompt(userId) {
   const wm = get(userId);
 
   const parts = [];
+
+  // Conversation continuity — MOST IMPORTANT for memory
+  if (wm.lastExchangeSummary) parts.push('🔄 Last Exchange: ' + wm.lastExchangeSummary);
+  if (wm.conversationFlow) parts.push('🌊 Conversation Flow: ' + wm.conversationFlow);
+  if (wm.recentTopics.length > 0) parts.push('📌 Recent Topics: ' + wm.recentTopics.slice(0, 5).join(' → '));
+
   if (wm.currentGoal) parts.push('🎯 Current Goal: ' + wm.currentGoal);
   if (wm.currentProblem) parts.push('❓ Current Problem: ' + wm.currentProblem);
   if (wm.contextNotes) parts.push('📝 Context: ' + wm.contextNotes);
@@ -175,7 +199,8 @@ function serialize(userId) {
   // Only persist if there's meaningful content
   const hasContent = raw.currentGoal || raw.currentProblem ||
     raw.possibleSolutions.length > 0 || raw.nextSteps.length > 0 ||
-    raw.contextNotes;
+    raw.contextNotes || raw.recentTopics.length > 0 ||
+    raw.lastExchangeSummary || raw.conversationFlow;
 
   if (!hasContent && raw.messageCount < 3) return null;
 
@@ -186,6 +211,9 @@ function serialize(userId) {
     rejectedIdeas: raw.rejectedIdeas,
     nextSteps: raw.nextSteps,
     contextNotes: raw.contextNotes,
+    recentTopics: raw.recentTopics || [],
+    lastExchangeSummary: raw.lastExchangeSummary || '',
+    conversationFlow: raw.conversationFlow || '',
     lastUpdated: raw.lastUpdated instanceof Date ? raw.lastUpdated.toISOString() : raw.lastUpdated,
     messageCount: raw.messageCount,
   };
@@ -206,6 +234,9 @@ function hydrate(userId, data) {
     rejectedIdeas: data.rejectedIdeas || [],
     nextSteps: data.nextSteps || [],
     contextNotes: data.contextNotes || '',
+    recentTopics: data.recentTopics || [],
+    lastExchangeSummary: data.lastExchangeSummary || '',
+    conversationFlow: data.conversationFlow || '',
     lastUpdated: data.lastUpdated ? new Date(data.lastUpdated) : new Date(),
     messageCount: data.messageCount || 0,
   });

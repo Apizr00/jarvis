@@ -54,6 +54,103 @@ const clearPendingEdit = historyModule.clearPendingEdit;
 const isDuplicateUserMessage = historyModule.isDuplicateUserMessage;
 const cacheUserMessageResponse = historyModule.cacheUserMessageResponse;
 
+// ── Working Memory Helpers ─────────────────────────────────────────────────
+// Extract the main topic from a user message and bot response for memory continuity
+
+/**
+ * Extract the primary topic from an exchange to track in working memory.
+ * Uses keyword heuristics to identify what the conversation is about.
+ */
+function extractMainTopic(userText, botResponse) {
+  if (!userText) return null;
+  const combined = (userText + ' ' + (botResponse || '')).toLowerCase();
+
+  const topicPatterns = [
+    // Schedule & time
+    { pattern: /(?:alarm|jam|pukul|waktu|masa|time|clock|jadual|schedule)/i, topic: 'schedule/time' },
+    { pattern: /(?:remind|ingatkan|reminder)/i, topic: 'reminders' },
+    { pattern: /(?:event|acara|meeting|mesyuarat|appointment|temujanji)/i, topic: 'events/meetings' },
+
+    // Productivity
+    { pattern: /(?:task|tugas|todo|to-do|kerja|work)/i, topic: 'tasks/work' },
+    { pattern: /(?:goal|matlamat|target|objective)/i, topic: 'goals' },
+    { pattern: /(?:plan|rancang|planning|strategy|strategi)/i, topic: 'planning' },
+    { pattern: /(?:note|nota|catat|simpan|save)/i, topic: 'notes' },
+
+    // Health & routine
+    { pattern: /(?:tidur|sleep|bangun|wake|alarm|subuh|pray|solat|doa|azan)/i, topic: 'morning-routine' },
+    { pattern: /(?:gym|exercise|senaman|workout|run|lari|jogging|diet|makanan|healthy|sihat)/i, topic: 'health/fitness' },
+    { pattern: /(?:makan|eat|food|restaurant|kedai|cafe|lunch|dinner|breakfast)/i, topic: 'food/dining' },
+
+    // Learning
+    { pattern: /(?:learn|belajar|study|course|kursus|book|buku|read|baca|tutorial|code|coding|program|react|python|javascript)/i, topic: 'learning/coding' },
+
+    // Personal
+    { pattern: /(?:family|keluarga|wife|isteri|husband|suami|anak|child|rumah|house)/i, topic: 'family/home' },
+    { pattern: /(?:friend|kawan|meet|jumpa|hangout|social)/i, topic: 'social' },
+    { pattern: /(?:money|duit|ringgit|rm|bank|finance|kewangan|investment|labur)/i, topic: 'finance' },
+
+    // Travel
+    { pattern: /(?:travel|jalan|cuti|holiday|vacation|trip|flight|hotel|tiket)/i, topic: 'travel' },
+
+    // Tech
+    { pattern: /(?:phone|telefon|computer|laptop|app|software|website|tech|gadget|ai|bot)/i, topic: 'technology' },
+
+    // Weather
+    { pattern: /(?:weather|cuaca|hujan|rain|panas|hot|cold|sejuk)/i, topic: 'weather' },
+  ];
+
+  for (const { pattern, topic } of topicPatterns) {
+    if (pattern.test(combined)) return topic;
+  }
+
+  // Fallback: use first meaningful word from user text
+  const words = userText.replace(/[^\w\s]/g, '').split(/\s+/).filter(w => w.length > 3);
+  return words.length > 0 ? words[0].toLowerCase() : null;
+}
+
+/**
+ * Build a one-line summary of the last exchange for context continuity.
+ */
+function buildExchangeSummary(userText, botResponse) {
+  const userShort = userText.slice(0, 60).replace(/\n/g, ' ');
+  const respShort = (botResponse || '').slice(0, 40).replace(/\n/g, ' ');
+
+  if (!botResponse) return 'User: "' + userShort + '"';
+
+  // If bot response is a tool confirmation, summarize the action
+  if (/(?:set|created?|saved?|added?|cancelled?|updated?|deleted?)/i.test(respShort)) {
+    const action = respShort.match(/(?:set|created?|saved?|added?|cancelled?|updated?|deleted?)/i)[0];
+    return 'Bot ' + action + ' — user asked: "' + userShort + '"';
+  }
+
+  return 'User: "' + userShort + '" → Bot: "' + respShort + '"';
+}
+
+/**
+ * Detect if the conversation has a clear directional flow.
+ */
+function detectConversationFlow(userText, botResponse) {
+  const combined = (userText + ' ' + (botResponse || '')).toLowerCase();
+
+  const flows = [
+    { pattern: /(?:plan|rancang|atur|jadual|schedule|trip|jalan|cuti)/i, flow: 'planning_trip' },
+    { pattern: /(?:debug|error|bug|fix|baiki|troubleshoot|issue|problem)/i, flow: 'debugging' },
+    { pattern: /(?:learn|belajar|study|tutorial|course|how.?to)/i, flow: 'learning_session' },
+    { pattern: /(?:project|projek|build|bina|develop|coding?|program)/i, flow: 'project_work' },
+    { pattern: /(?:meeting|mesyuarat|discuss|bincang|present|bentang)/i, flow: 'meeting_prep' },
+    { pattern: /(?:health|sihat|gym|exercise|workout|diet|fit)/i, flow: 'health_journey' },
+    { pattern: /(?:morning|pagi|bangun|wake|subuh|solat|routine|rutin)/i, flow: 'morning_routine' },
+    { pattern: /(?:shopping|beli|buy|order|belanja|market)/i, flow: 'shopping' },
+  ];
+
+  for (const { pattern, flow } of flows) {
+    if (pattern.test(combined)) return flow;
+  }
+
+  return null;
+}
+
 async function createBot() {
   const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
@@ -1669,9 +1766,19 @@ async function createBot() {
           relationships.extractPeopleFromChat(userId, text, llmResponse.content, llm.chatMimo);
         }
         if (postActions.updateWorkingMemory) {
+          // Enhanced working memory update with topic tracking and exchange summary
+          const topic = extractMainTopic(text, llmResponse.content);
+          const exchangeSummary = buildExchangeSummary(text, llmResponse.content);
+          const flowHint = detectConversationFlow(text, llmResponse.content);
+
           executive.workingMemory.update(userId, {
             contextNotes: 'Last exchange: user asked "' + text.slice(0, 100) + '" → bot responded',
+            lastExchangeSummary: exchangeSummary,
+            conversationFlow: flowHint || undefined,
           });
+          if (topic) {
+            executive.workingMemory.update(userId, { addTopic: topic });
+          }
         }
         if (postActions.updateDomains) {
           // Fasa 3: Track domain context
@@ -1812,9 +1919,18 @@ async function createBot() {
             relationships.extractPeopleFromChat(userId, text, result.message, llm.chatMimo);
           }
           if (postActions.updateWorkingMemory) {
+            const topic = extractMainTopic(text, result.message);
+            const exchangeSummary = buildExchangeSummary(text, result.message);
+            const flowHint = detectConversationFlow(text, result.message);
+
             executive.workingMemory.update(userId, {
               contextNotes: 'Confirm flow: ' + text.slice(0, 100),
+              lastExchangeSummary: exchangeSummary,
+              conversationFlow: flowHint || undefined,
             });
+            if (topic) {
+              executive.workingMemory.update(userId, { addTopic: topic });
+            }
           }
           if (postActions.updateDomains) {
             const activeDomain = domains.detectActiveDomain(text);

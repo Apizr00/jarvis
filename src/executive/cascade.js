@@ -15,6 +15,15 @@
 
 const db = require('../db');
 const planner = require('./planner');
+const workingMemory = require('./working-memory');
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function getCurrentHour() {
+  const tz = process.env.TIMEZONE || 'UTC';
+  const now = new Date();
+  return parseInt(new Intl.DateTimeFormat('en', { timeZone: tz, hour: 'numeric', hour12: false }).format(now), 10);
+}
 
 // ── Cascade Rules ─────────────────────────────────────────────────────────
 
@@ -169,6 +178,85 @@ const CASCADE_RULES = [
     }),
     priority: 6,
     cooldownMs: 30 * 60 * 1000,
+  },
+
+  // ── Memory-aware: User returns after break → Recap ──────────────────
+  {
+    trigger: 'message_received',
+    condition: async (userId, args) => {
+      const wm = workingMemory.get(userId);
+      const wm_age = Date.now() - wm.lastUpdated.getTime();
+      // Only trigger if user was away for 30+ minutes
+      return wm_age > 30 * 60 * 1000 && (wm.recentTopics && wm.recentTopics.length > 0);
+    },
+    suggestion: (userId) => {
+      const wm = workingMemory.get(userId);
+      const lastTopics = (wm.recentTopics || []).slice(0, 3).join(', ');
+      return {
+        type: 'cascade_welcome_back',
+        message: '👋 Welcome back! Last time kita bincang pasal ' + lastTopics + '. Nak continue?',
+        action: 'offer_recap',
+      };
+    },
+    priority: 8,
+    cooldownMs: 60 * 60 * 1000, // 1 hour
+  },
+
+  // ── Morning routine: User wakes up → Offer briefing ─────────────────
+  {
+    trigger: 'message_received',
+    condition: async (userId, args) => {
+      const hour = getCurrentHour();
+      // Only trigger in early morning (5-8 AM)
+      if (hour < 5 || hour > 8) return false;
+      // Check if user just woke up
+      const userMsg = (args?.content || '').toLowerCase();
+      return /(?:morning|pagi|bangun|wake|subuh|hello|hi|hey)/i.test(userMsg);
+    },
+    suggestion: () => ({
+      type: 'cascade_morning_briefing',
+      message: '🌅 Selamat pagi! Nak saya bagitahu briefing untuk hari ni?',
+      action: 'offer_morning_briefing',
+    }),
+    priority: 9,
+    cooldownMs: 4 * 60 * 60 * 1000, // 4 hours
+  },
+
+  // ── User shares good news → Celebrate + save memory ─────────────────
+  {
+    trigger: 'message_received',
+    condition: async (userId, args) => {
+      const userMsg = (args?.content || '').toLowerCase();
+      return /(?:done|siap|completed|finish|settle|berjaya|success|achieved|capai|dapat)/i.test(userMsg) &&
+        /(?:finally|akhirnya|at last|alhamdulillah|yes|yay|woo)/i.test(userMsg);
+    },
+    suggestion: (userId, args) => {
+      const userMsg = (args?.content || '');
+      return {
+        type: 'cascade_celebrate',
+        message: '🎉 Congrats! That\'s awesome! Nak saya simpan achievement ni as a note untuk kenangan?',
+        action: 'offer_save_achievement',
+        actionArgs: { achievement: userMsg.slice(0, 100) },
+      };
+    },
+    priority: 7,
+    cooldownMs: 60 * 60 * 1000,
+  },
+
+  // ── User seems stressed/tired → Offer support ──────────────────────
+  {
+    trigger: 'message_received',
+    condition: async (userId, args) => {
+      const userMsg = (args?.content || '').toLowerCase();
+      return /(?:tired|penat|letih|stress|tekanan|burnout|overwhelm|tak\s+larat|give\s+up|putus\s+asa)/i.test(userMsg);
+    },
+    suggestion: () => ({
+      type: 'cascade_support',
+      message: '😔 Sounds like you\'re having a rough time. Nak saya share quote motivasi ke, atau nak saya suggest some self-care tips?',
+      action: 'offer_support',
+    }),
+    priority: 8,
+    cooldownMs: 2 * 60 * 60 * 1000,
   },
 ];
 

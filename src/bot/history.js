@@ -11,6 +11,7 @@ const db = require('../db');
 // ── Conversation History Store ─────────────────────────────────────────────
 
 const conversationHistory = {};
+const MAX_HISTORY = 30; // keep last 30 messages (was 20 — too short for context continuity)
 
 /**
  * Load recent chat history from DB into in-memory cache.
@@ -18,7 +19,7 @@ const conversationHistory = {};
  */
 async function loadHistoryFromDB(userId) {
   try {
-    const rows = await db.getRecentChatHistory(userId, 20);
+    const rows = await db.getRecentChatHistory(userId, MAX_HISTORY);
     if (rows.length > 0) {
       conversationHistory[userId] = rows;
       console.log('[History] 📜 Loaded ' + rows.length + ' history messages from DB for user ' + userId);
@@ -36,8 +37,8 @@ function getHistory(userId) {
 function addToHistory(userId, role, content) {
   const history = getHistory(userId);
   history.push({ role, content });
-  // Keep last 20 messages
-  if (history.length > 20) history.splice(0, history.length - 20);
+  // Keep last MAX_HISTORY messages
+  if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
 
   // 💾 Persist to DB (fire-and-forget — don't block the response)
   db.saveChatMessage(userId, role, content).catch(err => {
@@ -81,29 +82,37 @@ function clearPendingEdit(userId) {
 
 // ── Summarization ──────────────────────────────────────────────────────────
 
-const SUMMARIZE_THRESHOLD = 15;
-const KEEP_RECENT = 12;
+const SUMMARIZE_THRESHOLD = 25; // summarize when >25 messages (was 15)
+const KEEP_RECENT = 18;         // keep last 18 messages (was 12)
 
 function buildTopicSummary(messages) {
-  const userMessages = messages.filter(m => m.role === 'user').map(m => m.content);
-  if (userMessages.length === 0) return '';
+  const allMessages = messages.filter(m => m.role === 'user' || m.role === 'assistant').map(m => m.content);
+  if (allMessages.length === 0) return '';
 
+  // Extract meaningful topics using smarter keyword extraction
+  // Handles both English AND Malay/BM words (length > 2 for BM words like "doa", "Subuh")
   const topics = [];
   const seen = new Set();
 
-  for (const msg of userMessages) {
+  // Common stop words in both English and Malay
+  const stopWords = /^(?:nak|saya|aku|kau|dia|kami|kita|mereka|yang|dengan|pada|untuk|dalam|akan|telah|sudah|boleh|mesti|perlu|juga|sahaja|saja|pun|lagi|dah|ni|tu|ke|tak|kan|lah|nya|ini|itu|ada|tiada|bukan|tidak|ya|dan|atau|the|and|for|with|this|that|from|have|what|when|your|just|like|about|dont|youre|its|ive|ill|was|are|but|not|all|can|get|has|had|been|one|out|some|them|then|now|will|would|could|should|really|very|much|also|only|just|even|still|well|ok|okay|yeah|yes|no|dont|doesnt|isnt|aint|im|you|they|she|he|we|how|why|where|who|when|which|there|here)$/i;
+
+  for (const msg of allMessages) {
     const clean = msg.replace(/[^\w\s@#\-]/g, ' ').replace(/\s+/g, ' ').trim();
-    const words = clean.split(' ').filter(w => w.length > 3 && !/^(?:nak|saya|aku|kau|dia|kami|kita|mereka|yang|dengan|pada|untuk|dalam|akan|telah|sudah|boleh|mesti|perlu|juga|sahaja|saja|pun|lagi|dah|ni|tu|ke|tak|kan|lah|nya|ini|itu|ada|tiada|bukan|tidak|ya|dan|atau|the|and|for|with|this|that|from|have|what|when|your|just|like|about)$/i.test(w)).slice(0, 5);
+    // Allow 2+ char words to capture BM words like "doa", "Subuh", "azan"
+    const words = clean.split(' ').filter(w => w.length > 2 && !stopWords.test(w)).slice(0, 8);
     for (const w of words) {
-      if (!seen.has(w.toLowerCase())) {
-        seen.add(w.toLowerCase());
+      const lower = w.toLowerCase();
+      if (!seen.has(lower)) {
+        seen.add(lower);
         topics.push(w);
-        if (topics.length >= 8) break;
+        if (topics.length >= 12) break;
       }
     }
-    if (topics.length >= 8) break;
+    if (topics.length >= 12) break;
   }
 
+  // Group related topics into a coherent summary
   return topics.length > 0 ? '[Earlier topics: ' + topics.join(', ') + ']' : '';
 }
 
@@ -127,11 +136,12 @@ function getEffectiveHistory(userId) {
   if (summary) {
     const newHistory = [{ role: 'system', content: summary }, ...recent];
     conversationHistory[userId] = newHistory;
-    console.log('[History] 📝 Summarized ' + older.length + ' older messages → ' + summary.slice(0, 100));
+    console.log('[History] 📝 Summarized ' + older.length + ' older messages → ' + summary.slice(0, 150));
     return newHistory;
   }
 
-  const trimmed = history.slice(-15);
+  // If no summary generated, just trim to MAX_HISTORY
+  const trimmed = history.slice(-MAX_HISTORY);
   conversationHistory[userId] = trimmed;
   return trimmed;
 }
