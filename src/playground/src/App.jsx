@@ -10,6 +10,7 @@ import MemoryPage from "./pages/MemoryPage";
 import PluginsPage from "./pages/PluginsPage";
 import SettingsPage from "./pages/SettingsPage";
 import WaktuSolatPage from "./pages/WaktuSolatPage";
+import RemindersPage from "./pages/RemindersPage";
 
 function ProtectedRoute({ children }) {
   const { isAuthenticated } = useAuthStore();
@@ -42,6 +43,7 @@ export default function App() {
         <Route path="plugins" element={<PluginsPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="waktu-solat" element={<WaktuSolatPage />} />
+        <Route path="reminders" element={<RemindersPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

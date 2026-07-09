@@ -227,6 +227,64 @@ function createApiServer() {
   app.get('/api/widgets', pluginsApi.getWidgets);
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // ── REMINDER ROUTES (protected) ───────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // GET /api/reminders — list all reminders
+  app.get('/api/reminders', requireAuth, async (req, res) => {
+    try {
+      const ownerId = req.user.sub;
+      const reminders = await db.getUpcomingReminders(ownerId, 50);
+      res.json({ reminders: reminders || [] });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/reminders — create a reminder
+  app.post('/api/reminders', requireAuth, async (req, res) => {
+    try {
+      const ownerId = req.user.sub;
+      const { text, remindAt, recurrence } = req.body;
+      if (!text || !remindAt) {
+        return res.status(400).json({ error: 'text and remindAt are required' });
+      }
+      const reminder = await db.createReminder(ownerId, text, remindAt, recurrence || null);
+      res.status(201).json({ reminder });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // PUT /api/reminders/:id — update a reminder
+  app.put('/api/reminders/:id', requireAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { text, remindAt, recurrence } = req.body;
+      const updates = {};
+      if (text !== undefined) updates.text = text;
+      if (remindAt !== undefined) updates.remind_at = remindAt;
+      if (recurrence !== undefined) updates.recurrence = recurrence;
+      const reminder = await db.updateReminder(id, updates);
+      if (!reminder) return res.status(404).json({ error: 'Reminder not found' });
+      res.json({ reminder });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // DELETE /api/reminders/:id — cancel a reminder
+  app.delete('/api/reminders/:id', requireAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      await db.cancelReminder(id);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // ── TASKS & NOTES ROUTES (protected) ──────────────────────────────────────
   // ═══════════════════════════════════════════════════════════════════════════
 
