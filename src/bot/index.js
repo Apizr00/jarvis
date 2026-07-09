@@ -29,6 +29,7 @@ const { pluginRegistry } = require('../plugins');
 const { agentRegistry } = require('../agents');
 const { fixHallucinatedGreeting, fixHallucinatedTime } = require('./anti-hallucination');
 const historyModule = require('./history');
+const queueSystem = require('../queue');
 
 const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
 
@@ -630,6 +631,20 @@ async function createBot() {
     } catch (err) {
       console.error('/state error:', err.message);
       await bot.sendMessage(msg.chat.id, '❌ Could not retrieve state. ' + err.message);
+    }
+  });
+
+  // ── /queue command — show job queue stats ────────────────────────────────
+  bot.onText(/\/queue/, async (msg) => {
+    if (!isOwner(msg)) return;
+    const chatId = msg.chat.id;
+
+    try {
+      const summary = queueSystem.getSummary();
+      await safeSendMessage(bot, chatId, summary);
+    } catch (err) {
+      console.error('/queue error:', err.message);
+      await bot.sendMessage(chatId, '❌ Error: ' + err.message);
     }
   });
 
@@ -1577,47 +1592,12 @@ async function createBot() {
         }
       }
 
-      // ── 🧠 Thinking steps for deep tier — show what the bot is doing ──
-      let thinkingMsg = null;
-      let thinkingStep = 0;
-      const thinkingSteps = decision.tier === 'deep'
-        ? ['🔍 Analyzing your request…', '🧠 Loading context & memory…', '📋 Planning approach…']
-        : [];
-
-      async function advanceThinking() {
-        if (thinkingSteps.length === 0) return;
-        if (thinkingStep >= thinkingSteps.length) return;
-        const step = thinkingSteps[thinkingStep];
-        thinkingStep++;
-        try {
-          if (!thinkingMsg) {
-            thinkingMsg = await bot.sendMessage(chatId, step);
-          } else {
-            await bot.editMessageText(step, { chat_id: chatId, message_id: thinkingMsg.message_id });
-          }
-        } catch { /* ignore edit failures */ }
-      }
-
-      // Show first thinking step immediately for deep tier
-      if (decision.tier === 'deep') await advanceThinking();
-
-      // ── 🔥 ALL tiers now use STREAMING for snappier UX ──────────────────
+      // ── 🔥 ALL tiers use STREAMING for snappier UX ──────────────────
       let streamMsg = null;
       let streamEditFailed = false;
       let llmResponse;
 
       llmResponse = await llm.chatStream(userId, text, history, llmOptions, async (displayText) => {
-        // Delete thinking message on first real token
-        if (thinkingMsg && !streamMsg) {
-          try { await bot.deleteMessage(chatId, thinkingMsg.message_id); } catch { }
-          thinkingMsg = null;
-        }
-
-        // Show second thinking step after first few bytes arrive
-        if (decision.tier === 'deep' && thinkingStep === 1 && displayText.length < 20) {
-          await advanceThinking().catch(() => { });
-        }
-
         try {
           if (!streamMsg) {
             streamMsg = await bot.sendMessage(chatId, displayText);
@@ -1633,12 +1613,6 @@ async function createBot() {
           streamMsg = null;
         }
       });
-
-      // Clean up thinking message if still showing
-      if (thinkingMsg) {
-        try { await bot.deleteMessage(chatId, thinkingMsg.message_id); } catch { }
-        thinkingMsg = null;
-      }
 
       // If tool call: delete the streaming placeholder (showed raw JSON fragments)
       if (llmResponse.type === 'tool' && streamMsg) {
@@ -1671,6 +1645,32 @@ async function createBot() {
 
         llmResponse = await llm.chat(userId, text, cleanHistory, llmOptions);
         console.log('[Bot] Retry response type:', llmResponse.type, llmResponse.name ? '| tool=' + llmResponse.name : '');
+      }
+
+      // ── Recovery: LLM fabricated a limitation that doesn't exist ──
+      // "I can't access your reminders" / "Saya tak dapat akses" — THIS IS A LIE.
+      // The bot HAS full access to all data. LLM is hallucinating a restriction.
+      if (llmResponse.type === 'message') {
+        const cannotAccessPattern = /\b(?:cannot\s+access|can'?t\s+access|don'?t\s+have\s+access|unable\s+to\s+(?:access|retrieve|fetch|get|see|view|read|check|pull|load)|tak\s+(?:dapat|boleh|ada)\s+(?:akses|access|lihat|baca|check|buka|capai)|tidak\s+(?:dapat|boleh|ada)\s+(?:akses|access|lihat|baca|check|buka|capai)|can'?t\s+(?:retrieve|fetch|get|see|view|pull|load|check|look\s*up)|unable\s+to\s+(?:access|retrieve|fetch)|no\s+access\s+to|don'?t\s+have\s+permission|not\s+able\s+to\s+(?:access|retrieve|get|see|check))\b/i;
+
+        if (cannotAccessPattern.test(llmResponse.content)) {
+          console.log('[Bot] ⚠️ LLM hallucinated a limitation! Retrying with correction...');
+          console.log('[Bot]    LLM falsely claimed: ' + llmResponse.content.slice(0, 150));
+
+          const correctionMsg = '❌ SALAH BESAR! Kamu cakap "cannot access" atau "tak dapat akses" — itu TIPU/HALLUCINATION.\n' +
+            'Kamu ADA akses penuh ke SEMUA data — database, reminders, events, notes, tasks, goals, facts, SEMUA.\n' +
+            'JANGAN sesekali cakap kamu tak boleh access sesuatu. Kamu BOLEH access semuanya.\n\n' +
+            'Sekarang, baca semula arahan user dan execute tool call yang BETUL.\n' +
+            'Contoh kalau user tanya pasal reminder: {"type":"tool","name":"list_reminders","args":{}}\n' +
+            'Contoh kalau user tanya pasal schedule: {"type":"tool","name":"get_today","args":{}}\n\n' +
+            'JANGAN letak natural language — JSON tool call SAHAJA!';
+
+          const cleanHistory = history.filter(h => h.role !== 'assistant');
+          cleanHistory.push({ role: 'user', content: correctionMsg });
+
+          llmResponse = await llm.chat(userId, text, cleanHistory, llmOptions);
+          console.log('[Bot] Retry (fabricated limitation) response type:', llmResponse.type, llmResponse.name ? '| tool=' + llmResponse.name : '');
+        }
       }
 
       // ── Intercept: LLM fabricated a reminder list instead of calling tool ──
@@ -1757,17 +1757,11 @@ async function createBot() {
           timestamp: new Date().toISOString(),
         });
 
-        // ── Post-processing guided by executive ──────────────────────────
+        // ── Post-processing guided by executive (OFFLOADED TO QUEUE) ──────
         const postActions = executive.decidePostProcessing(decision, llmResponse);
 
-        if (postActions.extractFacts) {
-          memory.extractFactsFromChat(userId, text, llmResponse.content, llm.chatMimo);
-        }
-        if (postActions.extractPeople) {
-          relationships.extractPeopleFromChat(userId, text, llmResponse.content, llm.chatMimo);
-        }
+        // Core working memory update stays sync (needed for context continuity)
         if (postActions.updateWorkingMemory) {
-          // Enhanced working memory update with topic tracking and exchange summary
           const topic = extractMainTopic(text, llmResponse.content);
           const exchangeSummary = buildExchangeSummary(text, llmResponse.content);
           const flowHint = detectConversationFlow(text, llmResponse.content);
@@ -1781,51 +1775,33 @@ async function createBot() {
             executive.workingMemory.update(userId, { addTopic: topic });
           }
         }
+
+        // 🚀 Offload heavy background tasks to queue (non-blocking!) ─────
+        const bgJobs = [];
+        if (postActions.extractFacts) {
+          bgJobs.push({ name: 'extract-facts', data: { userId, userText: text, botResponse: llmResponse.content } });
+        }
+        if (postActions.extractPeople) {
+          bgJobs.push({ name: 'extract-people', data: { userId, userText: text, botResponse: llmResponse.content } });
+        }
         if (postActions.updateDomains) {
-          // Fasa 3: Track domain context
-          const activeDomain = domains.detectActiveDomain(text);
-          executive.worldModel.update(userId, { activeDomain: activeDomain.domain });
+          bgJobs.push({ name: 'update-domains', data: { userId, text } });
         }
         if (postActions.runSelfEval) {
-          // Fasa 5: Evaluate response quality
-          const quality = executive.evaluator.evaluateResponseQuality({
-            userMessage: text,
-            botResponse: llmResponse.content,
-            tier: decision.tier,
-            category: decision.category,
-          });
-          executive.evaluator.recordInteraction(userId, {
-            tier: decision.tier,
-            category: decision.category,
-            quality: quality.score,
-          });
-
-          // ── State machine: response evaluated ──────────────────────────
-          executive.transitionResponseEvaluated(sm, {
-            qualityScore: quality.score,
-            issues: quality.issues,
-          });
-
-          if (quality.score < 60) {
-            console.log('[Evaluator] ⚠️ Low quality response (score=' + quality.score + '): ' + quality.issues.join('; '));
-          }
+          bgJobs.push({ name: 'evaluate-quality', data: { userId, evalData: { userMessage: text, botResponse: llmResponse.content, tier: decision.tier, category: decision.category } } });
         }
-        if (postActions.suggestProactive && decision.proactiveSuggestion) {
-          // Fasa 5: Check if we should send a proactive message later
-          console.log('[Proactive] 💡 Suggestion queued: ' + decision.proactiveSuggestion.reason);
-        }
-
-        // Track for pattern recognition (always)
-        patterns.trackMessage(userId, { role: 'user', content: text });
-        patterns.trackMessage(userId, { role: 'assistant', content: llmResponse.content });
-
-        // 🧠 Trigger smart LLM summarization if history is getting long (async, fire-and-forget)
+        // Pattern tracking always runs
+        bgJobs.push({ name: 'track-patterns', data: { userId, entry: { role: 'user', content: text } } });
+        bgJobs.push({ name: 'track-patterns', data: { userId, entry: { role: 'assistant', content: llmResponse.content } } });
+        // Smart summarization
         const currentHistory = historyModule.getHistory(userId);
         if (currentHistory.length >= historyModule.SUMMARIZE_THRESHOLD - 5) {
-          generateSmartSummary(userId, currentHistory, llm.chatIlmu || llm.chatMimo).catch(() => { });
+          bgJobs.push({ name: 'smart-summarize', data: { userId, history: currentHistory } });
         }
+        // Fire-and-forget: don't await queue enqueue
+        queueSystem.enqueuePostProcessBatch(bgJobs);
 
-        console.log('[Executive] ✅ ' + decision.tier.toUpperCase() + ' path complete | post: facts=' + postActions.extractFacts + ' people=' + postActions.extractPeople + ' wm=' + postActions.updateWorkingMemory + ' domains=' + postActions.updateDomains + ' eval=' + postActions.runSelfEval);
+        console.log('[Executive] ✅ ' + decision.tier.toUpperCase() + ' path complete | post: facts=' + postActions.extractFacts + ' people=' + postActions.extractPeople + ' wm=' + postActions.updateWorkingMemory + ' domains=' + postActions.updateDomains + ' eval=' + postActions.runSelfEval + ' | queued=' + bgJobs.length + ' jobs');
 
       } else if (llmResponse.type === 'tool') {
         // ── 🔌 Run plugin tool call hooks (before execution) ───────────────
@@ -1916,15 +1892,10 @@ async function createBot() {
               },
             });
           }
-          // ── Post-processing guided by executive ──────────────────────────
+          // ── Post-processing guided by executive (OFFLOADED TO QUEUE) ──────
           const postActions = executive.decidePostProcessing(decision, { type: 'message', content: result.message });
 
-          if (postActions.extractFacts) {
-            memory.extractFactsFromChat(userId, text, result.message, llm.chatMimo);
-          }
-          if (postActions.extractPeople) {
-            relationships.extractPeopleFromChat(userId, text, result.message, llm.chatMimo);
-          }
+          // Core working memory stays sync
           if (postActions.updateWorkingMemory) {
             const topic = extractMainTopic(text, result.message);
             const exchangeSummary = buildExchangeSummary(text, result.message);
@@ -1939,26 +1910,16 @@ async function createBot() {
               executive.workingMemory.update(userId, { addTopic: topic });
             }
           }
-          if (postActions.updateDomains) {
-            const activeDomain = domains.detectActiveDomain(text);
-            executive.worldModel.update(userId, { activeDomain: activeDomain.domain });
-          }
-          if (postActions.runSelfEval) {
-            const quality = executive.evaluator.evaluateResponseQuality({
-              userMessage: text,
-              botResponse: result.message,
-              tier: decision.tier,
-              category: decision.category,
-            });
-            executive.evaluator.recordInteraction(userId, {
-              tier: decision.tier,
-              category: decision.category,
-              quality: quality.score,
-            });
-          }
 
-          patterns.trackMessage(userId, { role: 'user', content: text });
-          patterns.trackMessage(userId, { role: 'assistant', content: result.message });
+          // 🚀 Offload to queue
+          const bgJobs = [];
+          if (postActions.extractFacts) bgJobs.push({ name: 'extract-facts', data: { userId, userText: text, botResponse: result.message } });
+          if (postActions.extractPeople) bgJobs.push({ name: 'extract-people', data: { userId, userText: text, botResponse: result.message } });
+          if (postActions.updateDomains) bgJobs.push({ name: 'update-domains', data: { userId, text } });
+          if (postActions.runSelfEval) bgJobs.push({ name: 'evaluate-quality', data: { userId, evalData: { userMessage: text, botResponse: result.message, tier: decision.tier, category: decision.category } } });
+          bgJobs.push({ name: 'track-patterns', data: { userId, entry: { role: 'user', content: text } } });
+          bgJobs.push({ name: 'track-patterns', data: { userId, entry: { role: 'assistant', content: result.message } } });
+          queueSystem.enqueuePostProcessBatch(bgJobs);
 
           // ── 🏁 Finish pipeline (confirm flow exits early) ──────────────
           stopTyping();
@@ -2159,44 +2120,20 @@ async function createBot() {
           }
         }
 
-        // ── Post-processing guided by executive ──────────────────────────
+        // ── Post-processing guided by executive (OFFLOADED TO QUEUE) ──────
         const postActions = executive.decidePostProcessing(decision, llmResponse);
 
-        if (postActions.extractFacts) {
-          memory.extractFactsFromChat(userId, text, finalResult, llm.chatMimo);
-        }
-        if (postActions.extractPeople) {
-          relationships.extractPeopleFromChat(userId, text, finalResult, llm.chatMimo);
-        }
-        if (postActions.updateDomains) {
-          const activeDomain = domains.detectActiveDomain(text);
-          executive.worldModel.update(userId, { activeDomain: activeDomain.domain });
-        }
-        if (postActions.runSelfEval) {
-          const quality = executive.evaluator.evaluateResponseQuality({
-            userMessage: text,
-            botResponse: finalResult,
-            tier: decision.tier,
-            category: decision.category,
-          });
-          executive.evaluator.recordInteraction(userId, {
-            tier: decision.tier,
-            category: decision.category,
-            quality: quality.score,
-            toolName: llmResponse.name,
-            toolSuccess: true,
-          });
-        }
+        // 🚀 Offload to queue
+        const bgJobs = [];
+        if (postActions.extractFacts) bgJobs.push({ name: 'extract-facts', data: { userId, userText: text, botResponse: finalResult } });
+        if (postActions.extractPeople) bgJobs.push({ name: 'extract-people', data: { userId, userText: text, botResponse: finalResult } });
+        if (postActions.updateDomains) bgJobs.push({ name: 'update-domains', data: { userId, text } });
+        if (postActions.runSelfEval) bgJobs.push({ name: 'evaluate-quality', data: { userId, evalData: { userMessage: text, botResponse: finalResult, tier: decision.tier, category: decision.category, toolName: llmResponse.name, toolSuccess: true } } });
+        bgJobs.push({ name: 'track-patterns', data: { userId, entry: { role: 'user', content: text } } });
+        bgJobs.push({ name: 'track-patterns', data: { userId, entry: { role: 'assistant', content: finalResult, toolUsed: llmResponse.name } } });
+        queueSystem.enqueuePostProcessBatch(bgJobs);
 
-        // Track for pattern recognition (always)
-        patterns.trackMessage(userId, { role: 'user', content: text });
-        patterns.trackMessage(userId, {
-          role: 'assistant',
-          content: finalResult,
-          toolUsed: llmResponse.name,
-        });
-
-        console.log('[Executive] ✅ ' + decision.tier.toUpperCase() + ' path complete (tool=' + llmResponse.name + ') | post: facts=' + postActions.extractFacts + ' people=' + postActions.extractPeople + ' wm=' + postActions.updateWorkingMemory + ' domains=' + postActions.updateDomains + ' eval=' + postActions.runSelfEval);
+        console.log('[Executive] ✅ ' + decision.tier.toUpperCase() + ' path complete (tool=' + llmResponse.name + ') | post: facts=' + postActions.extractFacts + ' people=' + postActions.extractPeople + ' wm=' + postActions.updateWorkingMemory + ' domains=' + postActions.updateDomains + ' eval=' + postActions.runSelfEval + ' | queued=' + bgJobs.length + ' jobs');
 
       } else {
         console.log('[Bot] Unknown LLM response type:', llmResponse.type);

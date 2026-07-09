@@ -2,9 +2,17 @@
 
 A self-hosted AI assistant that lives in your Telegram. Talk naturally — reminders, calendar, notes, tasks, goals, web search, voice messages, and **proactive check-ins**. Powered by a **10-phase upgrade architecture** for intelligent, context-aware, observable, and safe responses.
 
-**Stack:** Node.js · PostgreSQL · Redis (optional) · DeepSeek + MiMo · Telegram Bot API
+**Stack:** Node.js · PostgreSQL · Redis · BullMQ · ILMU (YTL) + DeepSeek + MiMo · Telegram Bot API
 
-**Extensible:** 📡 Event Bus · 🤖 Agent Layer · 🔌 Plugin System
+**Extensible:** 📡 Event Bus · 🤖 Agent Layer · 🔌 Plugin System · 📮 Job Queue
+
+## 🆕 v3.2 — What's New
+
+- **📮 Job Queue System** — BullMQ + Redis: background tasks run async, bot responds **279ms faster** per message
+- **🛡️ Fabricated Limitation Guard** — Detects & corrects LLM lies like "cannot access reminders" (retries with tool call)
+- **⚡ Stream-First Response** — Removed "Analyzing…" placeholder; all tiers (fast/medium/deep) stream directly
+- **📊 Queue Metrics** — `/queue` command shows live stats: jobs completed, actual time saved, throughput
+- **🔬 Queue Benchmark** — `test-queue-benchmark.js` measures real before/after performance impact
 
 ## 🆕 v3.1 — What's New
 
@@ -49,7 +57,7 @@ User Message
 │  FASA 1: Executive + Intent Detection                     │
 │  Mood, urgency, language, category detection              │
 │  12 intent categories with confidence score               │
-│  ⚡ TIER ROUTING: fast → MiMo / deep → DeepSeek           │
+│  ⚡ TIER ROUTING: fast → ILMU / medium → MiMo / deep → DeepSeek │
 └────────────────────┬─────────────────────────────────────┘
                      ▼
 ┌──────────────────────────────────────────────────────────┐
@@ -111,7 +119,7 @@ User Message
 └────────────────────┬─────────────────────────────────────┘
                      ▼
          ✅ Safe, Traceable LLM Response
-         (DeepSeek / MiMo with 💰 cost+latency optimizer)
+         (ILMU / MiMo / DeepSeek with 💰 cost+latency optimizer)
 ```
 
 ---
@@ -127,7 +135,7 @@ User Message
 - **📊 Observability Layer** — Execution spans, prompt/tool/memory logs, per-phase latency tracking
 - **🔒 Fact Lock System** — 3-tier fact classification (verified/inferred/uncertain) controls LLM assertion confidence
 - **💾 Memory Write Strategy** — Importance scoring, exponential decay, conflict resolution, old fact compression
-- **💰 LLM Cost Optimizer** — Token estimation, cost prediction, latency-aware routing, timeout budgets per tier
+- **🇲🇾 Multi-LLM Routing** — Tier-based: ILMU (fast BM) → MiMo (medium) → DeepSeek (deep). Auto-fallback with health tracking
 - **📊 5D Proactive Opportunity Scoring** — userState + timing + pastBehavior + goalProximity + **patternSignals**
 - **🔗 Smart Follow-Up Cascade** — Auto-suggests next action: add_note→reminder, complete_task→next task, web_search→save note
 - **💾 State Persistence** — Bot survives restarts! Working memory, world model, plans auto-saved to DB
@@ -200,10 +208,11 @@ User Message
 | `/proactive`                                           | **Fasa 5:** Trigger proactive suggestion                               |
 | `/state`                                               | **All Fasa:** Full bot state report                                    |
 | `/settings`                                            | View bot name, personality, times, location                            |
-| `/status`                                              | API health (DeepSeek, MiMo, Whisper, Redis)                            |
+| `/status`                                              | API health (ILMU, DeepSeek, MiMo, Whisper, Redis)                      |
 | `/why`                                                 | 🧠 **State Machine:** Trace why bot responded that way                 |
 | `/trace [N]`                                           | 📊 **Observability:** Last N execution traces + latency                |
 | `/lifecycle`                                           | 🔄 **Lifecycle:** Conversation phase + engagement                      |
+| `/queue`                                               | 📮 **Queue System:** Jobs completed, actual time saved, throughput     |
 | `/insights`                                            | 📊 **Plugin:** Usage stats, mood distribution, activity summary        |
 | `/mood [mood]`                                         | 🎭 **Plugin:** Track mood, view 7-day mood trend                       |
 | `/weekly`                                              | 📋 **Plugin:** Weekly summary — activity, productivity, mood breakdown |
@@ -268,14 +277,17 @@ User Message
 
 Multi-layer validator runs after every LLM response:
 
-| Layer                    | What it catches                                                                    |
-| ------------------------ | ---------------------------------------------------------------------------------- |
-| **Action Detection**     | "Done! Dah set reminder" without tool call                                         |
-| **Time Verification**    | Wrong times (e.g., "6:36 am" when actual is 8:00 PM)                               |
-| **Reminder Fabrication** | Fake reminder IDs/times — cross-references DB                                      |
-| **Fact Hallucination**   | Made-up user facts not in memory                                                   |
-| **Fact Lock**            | ✅ verified → can assert / ⚠️ inferred → must hedge / ❓ uncertain → must question |
-| **Fallback**             | Auto-replaces bad responses with safe clarifying questions                         |
+| Layer                         | What it catches                                                                    |
+| ----------------------------- | ---------------------------------------------------------------------------------- |
+| **Action Detection**          | "Done! Dah set reminder" without tool call                                         |
+| **Fabricated Limitations** 🆕 | "Cannot access reminders" / "Tak dapat akses" — retries with tool call             |
+| **Reminder List Fabrication** | LLM invents reminder list instead of calling `list_reminders`                      |
+| **Search Acknowledgment**     | "Kejap, aku search dulu" but never calls `web_search`                              |
+| **Time Verification**         | Wrong times (e.g., "6:36 am" when actual is 8:00 PM)                               |
+| **Greeting Correction**       | "Selamat pagi" at 8pm → "Selamat malam"                                            |
+| **Fact Hallucination**        | Made-up user facts not in memory                                                   |
+| **Fact Lock**                 | ✅ verified → can assert / ⚠️ inferred → must hedge / ❓ uncertain → must question |
+| **Fallback**                  | Auto-replaces bad responses with safe clarifying questions                         |
 
 ---
 
@@ -284,8 +296,9 @@ Multi-layer validator runs after every LLM response:
 ```bash
 node test-max-capability.js   # 🔬 125 assertions — ALL features at max depth
 node test-scenarios.js        # 🎭 106 assertions — 12 user journey simulations
-node test-all-features.js     # 🧪 ~80 assertions — full feature coverage
-node test-all-phases.js       # 🧪 ~50 assertions — all 5 Fasa modules
+node test-all-features.js     # 🧪 67 assertions — full feature coverage
+node test-all-phases.js       # 🧪 46 assertions — all 5 Fasa modules
+node test-queue-benchmark.js  # 📮 Queue before/after — measures real time saved
 node test-executive.js        # Executive controller + intent engine
 node test-perf-improvements.js # Performance & anti-hallucination validation
 ```
@@ -327,8 +340,9 @@ jarvis/
 │   ├── llm/
 │   │   ├── index.js            # LLM Router + Phase 5: Cost/latency optimizer
 │   │   ├── shared.js           # System prompt builder + Phase 8: Fact lock rules
-│   │   ├── deepseek.js         # DeepSeek API provider (primary)
-│   │   ├── mimo.js             # Xiaomi MiMo API provider (backup)
+│   │   ├── ilmu.js             # ILMU by YTL AI Labs — Malaysia's sovereign AI (primary BM)
+│   │   ├── deepseek.js         # DeepSeek API provider (primary deep reasoning)
+│   │   ├── mimo.js             # Xiaomi MiMo API provider (backup/medium)
 │   │   ├── intent.js           # Legacy fast keyword-based intent detection
 │   │   ├── validator.js        # Anti-hallucination + Phase 8: Fact lock system
 │   │   └── whisper.js          # OpenAI Whisper voice transcription
@@ -352,7 +366,9 @@ jarvis/
 │   │   ├── index.js            # REST API server (Express)
 │   │   └── status.js           # API health check formatter
 │   ├── redis/
-│   │   └── index.js            # Redis cache layer (optional)
+│   │   └── index.js            # Redis cache layer
+│   ├── queue/
+│   │   └── index.js            # 📮 Job Queue System — BullMQ workers, metrics, async offloading
 │   ├── db/
 │   │   └── index.js            # All PostgreSQL queries
 │   └── utils/
@@ -362,6 +378,7 @@ jarvis/
 │   └── README.md               # Plugin developer documentation
 ├── scripts/
 │   └── setup-db.js             # One-time DB table creation
+├── test-queue-benchmark.js     # 📮 Queue before/after benchmark — real timing data
 ├── test-max-capability.js      # 🔬 125 assertions — ultimate stress test
 ├── test-scenarios.js           # 🎭 106 assertions — 12 user journeys
 ├── test-all-features.js        # 🧪 Full feature coverage
@@ -493,8 +510,9 @@ Extend Jarvis without modifying core code. Drop a folder in `plugins/` with a `p
 - PostgreSQL **v14+**
 - Telegram Bot Token ([@BotFather](https://t.me/botfather))
 - DeepSeek API key ([platform.deepseek.com](https://platform.deepseek.com))
+- ILMU API key ([ilmu.ai](https://ilmu.ai)) — Malaysia's sovereign AI, best for BM
 - Your Telegram user ID ([@userinfobot](https://t.me/userinfobot))
-- _(Optional)_ Redis, MiMo API, OpenAI (Whisper), Tavily (search), OpenWeatherMap
+- _(Optional)_ MiMo API, OpenAI (Whisper), Tavily (search), OpenWeatherMap
 
 ### Quick Start
 
@@ -552,18 +570,18 @@ pm2 save && pm2 startup
 
 ## 🔧 Troubleshooting
 
-| Problem                                  | Solution                                     |
-| ---------------------------------------- | -------------------------------------------- |
-| "Missing required environment variables" | `.env` missing or incomplete                 |
-| "password authentication failed"         | Check `DATABASE_URL` credentials             |
-| Voice not working                        | Set `OPENAI_API_KEY` in `.env`               |
-| Bot not responding                       | Check `TELEGRAM_OWNER_ID` is numeric ID      |
-| Reminders wrong time                     | Check `TIMEZONE` in `.env`                   |
-| DeepSeek API error                       | Check credits at platform.deepseek.com       |
-| "Redis unavailable"                      | Not an error — optional, bot works without   |
-| "⚠️ Hallucination detected"              | **Good!** Validator caught it before sending |
-| "⏰ Fixing hallucinated time"            | Time guard auto-corrected LLM time           |
-| "All LLM providers unavailable"          | Both DeepSeek AND MiMo down — check API keys |
+| Problem                                  | Solution                                          |
+| ---------------------------------------- | ------------------------------------------------- |
+| "Missing required environment variables" | `.env` missing or incomplete                      |
+| "password authentication failed"         | Check `DATABASE_URL` credentials                  |
+| Voice not working                        | Set `OPENAI_API_KEY` in `.env`                    |
+| Bot not responding                       | Check `TELEGRAM_OWNER_ID` is numeric ID           |
+| Reminders wrong time                     | Check `TIMEZONE` in `.env`                        |
+| DeepSeek API error                       | Check credits at platform.deepseek.com            |
+| "Redis unavailable"                      | Not an error — optional, bot works without        |
+| "⚠️ Hallucination detected"              | **Good!** Validator caught it before sending      |
+| "⏰ Fixing hallucinated time"            | Time guard auto-corrected LLM time                |
+| "All LLM providers unavailable"          | ILMU, DeepSeek AND MiMo all down — check API keys |
 
 ---
 

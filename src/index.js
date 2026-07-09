@@ -14,6 +14,7 @@ const { eventBus, EVENTS } = require('./events');
 const { agentRegistry } = require('./agents');
 const { pluginRegistry } = require('./plugins');
 const persistence = require('./executive/persistence');
+const queueSystem = require('./queue');
 
 // ── Global Error Handlers (uncaught exceptions & unhandled rejections) ────────
 process.on('uncaughtException', (err) => {
@@ -78,6 +79,9 @@ async function main() {
   // Connect Redis
   await redis.connect();
 
+  // ── Initialize Job Queue System ─────────────────────────────────────
+  await queueSystem.init();
+
   // ── Initialize Persistence Layer ───────────────────────────────────────
   // Wire up executive modules so the persistence orchestrator can call
   // their serialize/hydrate methods.
@@ -93,6 +97,74 @@ async function main() {
 
   // Start Telegram bot
   const bot = await createBot();
+
+  // ── Start Queue Workers (after all modules are loaded) ──────────────────
+  // Inject handlers so workers can execute background jobs.
+  const qMemory = require('./memory');
+  const qRelationships = require('./memory/relationships');
+  const qDomains = require('./memory/domains');
+  const qPatterns = require('./patterns');
+  const qLlm = require('./llm');
+
+  queueSystem.startWorkers({
+    extractFacts: (userId, userText, botResponse) =>
+      qMemory.extractFactsFromChat(userId, userText, botResponse, qLlm.chatMimo),
+    extractPeople: (userId, userText, botResponse) =>
+      qRelationships.extractPeopleFromChat(userId, userText, botResponse, qLlm.chatMimo),
+    trackPattern: (userId, entry) =>
+      qPatterns.trackMessage(userId, entry),
+    updateDomains: async (userId, text) => {
+      const activeDomain = qDomains.detectActiveDomain(text);
+      worldModel.update(userId, { activeDomain: activeDomain.domain });
+    },
+    evaluateQuality: (userId, evalData) => {
+      const evaluator = require('./executive/evaluator');
+      const quality = evaluator.evaluateResponseQuality(evalData);
+      evaluator.recordInteraction(userId, {
+        tier: evalData.tier,
+        category: evalData.category,
+        quality: quality.score,
+        toolName: evalData.toolName,
+        toolSuccess: evalData.toolSuccess,
+      });
+    },
+    smartSummarize: async (userId, history) => {
+      const { generateSmartSummary } = require('./bot/history');
+      return generateSmartSummary(userId, history, qLlm.chatIlmu || qLlm.chatMimo);
+    },
+    updateWorkingMemory: (userId, wmData) => {
+      workingMemory.update(userId, wmData);
+    },
+    patternAnalysis: (userId, options) =>
+      qPatterns.runFullAnalysis(userId, options),
+    memoryCleanup: (userId) =>
+      qMemory.autoCleanupFacts(userId, 3, 30),
+    chatPrune: (userId, days) =>
+      qMemory.pruneOldHistory(userId, days),
+    lifecycleIdle: (userId) =>
+      lifecycle.evaluateIdle(userId),
+    generateReflection: async (userId) => {
+      const reflection = await qMemory.generateDailyReflection(userId, qLlm.chatMimo);
+      if (reflection && bot) {
+        try {
+          await bot.sendMessage(userId, '*🧘 Daily Reflection*\n\n' + reflection, { parse_mode: 'Markdown' });
+        } catch {
+          await bot.sendMessage(userId, '🧘 Daily Reflection\n\n' + reflection);
+        }
+        return true;
+      }
+      return false;
+    },
+    generateBriefing: async (userId) => {
+      const { buildBriefingMessage } = require('./scheduler');
+      const briefing = await buildBriefingMessage(userId);
+      if (briefing && bot) {
+        await bot.sendMessage(userId, briefing, { parse_mode: 'Markdown' });
+        return true;
+      }
+      return false;
+    },
+  });
 
   // Start reminder scheduler (needs the bot instance to send messages)
   await startScheduler(bot);
@@ -163,6 +235,7 @@ async function main() {
     logger.info('Shutting down Jarvis...', { signal, uptime: process.uptime() });
     console.log('\n👋 Shutting down Jarvis...');
     eventBus.emitSync(EVENTS.SYSTEM_SHUTDOWN, { reason: signal });
+    await queueSystem.shutdown();
     await persistence.stopAutoSave(ownerId); // final checkpoint
     await pluginRegistry.shutdown();
     await agentRegistry.shutdown();

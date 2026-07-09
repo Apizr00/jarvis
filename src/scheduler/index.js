@@ -9,6 +9,7 @@ const { getWeatherSummary } = require('../tools/weather');
 const { getQuote } = require('../tools/quote');
 const patterns = require('../patterns');
 const lifecycle = require('../executive/lifecycle');
+const queueSystem = require('../queue');
 
 let botInstance = null;
 
@@ -63,21 +64,11 @@ async function startScheduler(bot) {
   cleanupTask = cron.schedule('0 3 * * *', async () => {
     try {
       const OWNER = String(process.env.TELEGRAM_OWNER_ID);
-      // Clean up stale memory facts (low importance + old)
-      const deletedFacts = await memory.autoCleanupFacts(OWNER, 3, 30);
-      if (deletedFacts > 0) {
-        console.log('[Scheduler] 🧹 Memory cleanup: removed ' + deletedFacts + ' stale facts');
-      }
-      // Prune chat history older than 90 days
-      const prunedChats = await memory.pruneOldHistory(OWNER, 90);
-      if (prunedChats > 0) {
-        console.log('[Scheduler] 💬 Chat history prune: removed ' + prunedChats + ' old messages');
-      }
-      // Evaluate lifecycle idle transitions
-      const result = lifecycle.evaluateIdle(OWNER);
-      if (result.transitioned) {
-        console.log('[Scheduler] 🔄 Lifecycle phase changed to: ' + result.phase);
-      }
+      // 🚀 Offload heavy cleanup to queue
+      queueSystem.enqueueHeavy('memory-cleanup', { userId: OWNER });
+      queueSystem.enqueueHeavy('chat-prune', { userId: OWNER, days: 90 });
+      queueSystem.enqueueHeavy('lifecycle-idle', { userId: OWNER });
+      console.log('[Scheduler] 🧹 Cleanup jobs queued (memory + chat + lifecycle)');
     } catch (err) {
       console.error('[Scheduler] Cleanup error:', err.message);
     }
@@ -92,7 +83,8 @@ async function startScheduler(bot) {
   patternAnalysisTask = cron.schedule('0 2 * * *', async () => {
     try {
       const OWNER = String(process.env.TELEGRAM_OWNER_ID);
-      const detectedPatterns = await patterns.runFullAnalysis(OWNER, { lookbackDays: 30 });
+      // 🚀 Offload heavy pattern analysis to queue
+      queueSystem.enqueueHeavy('pattern-analysis', { userId: OWNER, options: { lookbackDays: 30 } });
 
       // Prune old tracking data (keep 60 days)
       const db = require('../db');
@@ -100,10 +92,7 @@ async function startScheduler(bot) {
       if (pruned > 0) {
         console.log('[Scheduler] 🧹 Pattern tracking prune: removed ' + pruned + ' old entries');
       }
-
-      if (detectedPatterns.length > 0) {
-        console.log('[Scheduler] 🔍 Pattern analysis: ' + detectedPatterns.length + ' patterns detected');
-      }
+      console.log('[Scheduler] 🔍 Pattern analysis job queued');
     } catch (err) {
       console.error('[Scheduler] Pattern analysis error:', err.message);
     }
