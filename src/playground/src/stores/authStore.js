@@ -9,7 +9,7 @@ export const useAuthStore = create((set, get) => ({
   loginLoading: false,
   loginError: null,
 
-  // Verify Telegram login data with backend
+  // Verify Telegram login data with backend (Telegram Widget OAuth)
   loginWithTelegram: async (telegramData) => {
     set({ loginLoading: true, loginError: null });
     try {
@@ -21,6 +21,28 @@ export const useAuthStore = create((set, get) => ({
 
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Login failed');
+
+      localStorage.setItem('jarvis_token', data.token);
+      set({ user: data.user, token: data.token, isAuthenticated: true, loginLoading: false });
+      return true;
+    } catch (err) {
+      set({ loginLoading: false, loginError: err.message });
+      return false;
+    }
+  },
+
+  // Simple token-based login (compare raw bot token to server)
+  loginWithToken: async (botToken) => {
+    set({ loginLoading: true, loginError: null });
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: botToken }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Invalid token');
 
       localStorage.setItem('jarvis_token', data.token);
       set({ user: data.user, token: data.token, isAuthenticated: true, loginLoading: false });

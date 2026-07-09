@@ -4,23 +4,54 @@ import { useNavigate } from "react-router-dom";
 import "./LoginPage.css";
 
 export default function LoginPage() {
-  const { loginWithTelegram, loginLoading, loginError, isAuthenticated } =
-    useAuthStore();
+  const {
+    loginWithToken,
+    loginWithTelegram,
+    loginLoading,
+    loginError,
+    isAuthenticated,
+  } = useAuthStore();
   const navigate = useNavigate();
-  const [botUsername, setBotUsername] = useState("");
+  const [botToken, setBotToken] = useState("");
 
   useEffect(() => {
     if (isAuthenticated) navigate("/", { replace: true });
   }, [isAuthenticated]);
 
-  // Fetch bot username for Telegram widget
+  // ── Method 1: Token-based login ──────────────────────────────────────
+  const handleTokenLogin = async (e) => {
+    e.preventDefault();
+    if (!botToken.trim()) return;
+    await loginWithToken(botToken.trim());
+  };
+
+  // ── Method 2: Telegram Login Widget ──────────────────────────────────
+  // This loads the official Telegram widget. It will call the
+  // onTelegramAuth callback with user data when login succeeds.
   useEffect(() => {
-    fetch("/api/auth/me")
-      .then((r) => r.json())
-      .then((d) => {
-        // The bot username would be set in env; fallback display
-      })
-      .catch(() => {});
+    // Only load if TELEGRAM_BOT_USERNAME is set in env
+    const botUsername = window._JARVIS_BOT_USERNAME__ || null;
+    if (!botUsername) return;
+
+    const script = document.createElement("script");
+    script.src = "https://telegram.org/js/telegram-widget.js?22";
+    script.async = true;
+    script.setAttribute("data-telegram-login", botUsername);
+    script.setAttribute("data-size", "large");
+    script.setAttribute("data-radius", "10");
+    script.setAttribute("data-onauth", "onTelegramAuth(user)");
+    script.setAttribute("data-request-access", "write");
+    document.getElementById("telegram-widget-container")?.appendChild(script);
+
+    // Define the callback globally
+    window.onTelegramAuth = async (user) => {
+      await loginWithTelegram(user);
+    };
+
+    return () => {
+      if (script.parentNode) script.parentNode.removeChild(script);
+      delete window.onTelegramAuth;
+    };
   }, []);
 
   return (
@@ -35,48 +66,59 @@ export default function LoginPage() {
         {loginError && <div className="login-error">⚠️ {loginError}</div>}
 
         <div className="login-methods">
+          {/* ── Method 1: Token Login ──────────────────────────────── */}
           <div className="login-section">
-            <h3>🔑 Manual Login</h3>
+            <h3>🔑 Login with Bot Token</h3>
             <p className="login-hint">
-              Use the Telegram Login Widget below, or enter your Telegram bot
-              token to verify. Only the configured bot owner can access this
-              playground.
+              Paste your Telegram bot token from @BotFather. Works immediately —
+              no setup needed.
             </p>
 
-            <div className="manual-login">
+            <form className="manual-login" onSubmit={handleTokenLogin}>
               <label>Telegram Bot Token</label>
               <input
                 type="password"
-                placeholder="Paste your bot token to login..."
-                value={botUsername}
-                onChange={(e) => setBotUsername(e.target.value)}
+                placeholder="123456:ABC-DEF1234ghikl..."
+                value={botToken}
+                onChange={(e) => setBotToken(e.target.value)}
                 disabled={loginLoading}
+                autoFocus
               />
+              <button
+                type="submit"
+                className="btn btn-primary"
+                style={{ marginTop: 12, width: "100%" }}
+                disabled={loginLoading || !botToken.trim()}
+              >
+                {loginLoading ? "⟳ Verifying..." : "🔓 Login"}
+              </button>
               <p className="login-note">
-                Your token is only used to verify your identity. It's never
-                stored. Alternatively, deploy the Telegram Login Widget.
+                Your token is verified against the server and never stored in
+                the browser.
               </p>
-            </div>
+            </form>
           </div>
 
           <div className="login-divider">
             <span>or</span>
           </div>
 
+          {/* ── Method 2: Telegram OAuth Widget ────────────────────── */}
           <div className="login-section">
             <h3>📱 Telegram Login Widget</h3>
             <p className="login-hint">
-              Click the button below to log in via Telegram OAuth. Requires the
-              bot to be configured with a domain.
+              One-click login via Telegram OAuth. Requires one-time setup.
             </p>
             <div
-              id="telegram-login-widget"
+              id="telegram-widget-container"
               className="telegram-widget-container"
             >
               <p className="login-note">
-                To enable Telegram Login Widget, set your bot's domain in
-                @BotFather to <code>playground.hafizrodzli.com</code> and set{" "}
-                <code>TELEGRAM_BOT_USERNAME</code> in your .env file.
+                To enable this, set your bot's domain in{" "}
+                <strong>@BotFather</strong> to{" "}
+                <code>playground.hafizrodzli.com</code> and add{" "}
+                <code>TELEGRAM_BOT_USERNAME=your_bot_username</code> to your
+                .env file on the server.
               </p>
             </div>
           </div>

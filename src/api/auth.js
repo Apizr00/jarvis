@@ -231,6 +231,61 @@ async function telegramAuthHandler(req, res) {
 }
 
 /**
+ * POST /api/auth/token
+ * Simple token-based login — accepts the raw bot token, compares to server.
+ * Body: { token }
+ * Returns: { token, user }
+ */
+async function tokenAuthHandler(req, res) {
+  try {
+    const { token: userToken } = req.body;
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+
+    if (!botToken) {
+      return res.status(500).json({ error: 'TELEGRAM_BOT_TOKEN not configured on server' });
+    }
+
+    if (!userToken || typeof userToken !== 'string') {
+      return res.status(400).json({ error: 'Missing or invalid "token" field in request body' });
+    }
+
+    // Compare tokens
+    if (userToken.trim() !== botToken.trim()) {
+      logger.warn('Token auth failed — token mismatch');
+      return res.status(401).json({ error: 'Invalid token. Use the correct Telegram bot token from @BotFather.' });
+    }
+
+    // Get owner info from env
+    const ownerId = String(process.env.TELEGRAM_OWNER_ID);
+    const botName = process.env.BOT_NAME || 'Jarvis';
+
+    // Create JWT for the owner
+    const userData = {
+      id: ownerId,
+      first_name: 'Owner',
+      username: botName,
+      photo_url: '',
+      auth_date: Math.floor(Date.now() / 1000),
+    };
+
+    const jwtToken = createToken(userData);
+    const user = {
+      id: ownerId,
+      firstName: 'Owner',
+      lastName: '',
+      username: botName,
+      photoUrl: '',
+    };
+
+    logger.info('Token auth successful', { userId: ownerId });
+    res.json({ token: jwtToken, user });
+  } catch (err) {
+    logger.error('Token auth handler error', { error: err.message });
+    res.status(500).json({ error: 'Internal auth error' });
+  }
+}
+
+/**
  * GET /api/auth/me
  * Returns the current authenticated user from JWT.
  */
@@ -270,6 +325,7 @@ module.exports = {
   requireAuth,
   optionalAuth,
   telegramAuthHandler,
+  tokenAuthHandler,
   meHandler,
   authenticateWebSocket,
   createToken,
