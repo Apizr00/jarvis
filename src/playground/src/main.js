@@ -124,6 +124,14 @@ function renderRoute() {
   container.classList.add('fade-in');
   setTimeout(() => container.classList.remove('fade-in'), 300);
 
+  // Hide right chat panel when on full chat page (same content, no duplicate)
+  const panel = $('#chat-panel');
+  if (route === '/chat') {
+    if (panel) panel.classList.add('hidden');
+  } else {
+    if (panel) panel.classList.remove('hidden');
+  }
+
   switch (route) {
     case '/': renderDashboard(container); break;
     case '/chat': renderChatPage(container); break;
@@ -349,6 +357,17 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+// Safely convert any value to a displayable string (prevents [object Object])
+function safeContent(val) {
+  if (val === null || val === undefined) return '';
+  if (typeof val === 'string') return val;
+  if (typeof val === 'object') {
+    // Try common fields first
+    return val.message || val.text || val.content || val.error || val.title || JSON.stringify(val);
+  }
+  return String(val);
+}
+
 function renderSkeleton(count, height) {
   return Array(count).fill(null).map(() => `<div class="skeleton" style="height:${height}px"></div>`).join('');
 }
@@ -381,7 +400,8 @@ function renderMessageBubble(msg, isStreaming) {
   // Tool result with action buttons
   if (isToolResult && msg.buttons?.length) {
     const btns = msg.buttons.map(b => `<button class="btn btn-sm tool-btn" data-action="${esc(b.action || '')}">${esc(b.label || b.text || b)}</button>`).join(' ');
-    return `<div class="${cls}"><div class="message-avatar">${avatar}</div><div class="message-body"><div class="message-content">${simpleMarkdown(msg.content || '')}</div><div class="message-actions" style="opacity:1;margin-top:6px">${btns}</div></div></div>`;
+    const c = safeContent(msg.content);
+    return `<div class="${cls}"><div class="message-avatar">${avatar}</div><div class="message-body"><div class="message-content">${simpleMarkdown(c)}</div><div class="message-actions" style="opacity:1;margin-top:6px">${btns}</div></div></div>`;
   }
 
   if (isTool) {
@@ -391,7 +411,7 @@ function renderMessageBubble(msg, isStreaming) {
 
   const time = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
 
-  let content = isUser ? `<p>${esc(msg.content)}</p>` : simpleMarkdown(msg.content || '');
+  let content = isUser ? `<p>${esc(safeContent(msg.content))}</p>` : simpleMarkdown(safeContent(msg.content));
 
   let meta = '';
   if (!isStreaming && msg.timestamp) {
@@ -402,7 +422,7 @@ function renderMessageBubble(msg, isStreaming) {
 
   let actions = '';
   if (!isStreaming && !isUser && !isSystem) {
-    actions = `<div class="message-actions"><button class="btn-icon" title="Copy" data-copy="${esc(msg.content || '')}">📋</button></div>`;
+    actions = `<div class="message-actions"><button class="btn-icon" title="Copy" data-copy="${esc(safeContent(msg.content))}">📋</button></div>`;
   }
 
   let cursor = isStreaming ? '<span class="cursor-blink">▌</span>' : '';
@@ -621,13 +641,6 @@ function renderChatPage(container) {
       state.model = headerModel.value;
       localStorage.setItem('jarvis_chat_model', state.model);
     });
-  }
-
-  // Auto-collapse chat panel sidebar when on full chat page
-  const panel = $('#chat-panel');
-  if (panel && !panel.classList.contains('collapsed')) {
-    panel.classList.add('collapsed');
-    $('#chat-panel-toggle').textContent = '◀';
   }
 }
 
