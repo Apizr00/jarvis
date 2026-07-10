@@ -350,33 +350,17 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
         ws.send(JSON.stringify({ type: 'tool_result', payload: { conversationId: convId, tool: result.name, content: toolMessage, error: toolMessage.startsWith('❌'), buttons, timestamp: new Date().toISOString() } }));
       }
 
-      // Follow-up (skip if client disconnected)
-      let fu = '';
-      if (!disconnected && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'typing', payload: { active: true, conversationId: convId } }));
-      }
-      try {
-        // LLM passes accumulated text, not deltas — so fu = c, not fu += c
-        const fuResult = await llm.chatStream(userId, `Result of ${result.name}: ${toolMessage.slice(0, 300)}. Confirm briefly.`, [], { provider: 'ilmu', tier: 'fast' }, (c) => {
-          fu = c; // chunk is already the full display text
-          if (!disconnected && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'chunk', payload: { text: c, conversationId: convId } }));
-          }
-        });
-        if (!fu && fuResult?.content) fu = fuResult.content;
-        if (fuResult?.type === 'tool' && !fu) fu = '✅ Done!';
-      } catch (e) {
-        if (!fu) fu = '✅ Done!';
-      }
-
-      const finalText = fu || '✅ Done!';
+      // Skip redundant follow-up LLM call — tool_result already confirms success.
+      // Only send a minimal done to close the streaming state on the client.
+      const finalText = toolMessage.startsWith('❌') ? toolMessage : '';
       if (!disconnected && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'typing', payload: { active: false, conversationId: convId } }));
         ws.send(JSON.stringify({ type: 'done', payload: { conversationId: convId, fullText: finalText, metadata: { provider: decision.provider, timestamp: new Date().toISOString() }, buttons } }));
       }
 
       // Persist to DB even if client disconnected
-      try { await require('../db').saveChatMessage(userId, 'assistant', `${result.name}: ${toolMessage}\n\n${finalText}`); } catch (e) { logger.warn('Failed to save assistant tool msg', { error: e.message }); }
+      const dbText = `${result.name}: ${toolMessage}`;
+      try { await require('../db').saveChatMessage(userId, 'assistant', dbText); } catch (e) { logger.warn('Failed to save tool msg', { error: e.message }); }
       return;
     }
 

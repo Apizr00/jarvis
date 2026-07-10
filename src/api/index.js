@@ -7,7 +7,7 @@ const { getHealthStatus, formatHealthMessage } = require('./health');
 const { getApiStatus } = require('./status');
 const prayerTimes = require('./prayertimes');
 const { logger } = require('../utils/logger');
-const { requireAuth, telegramAuthHandler, tokenAuthHandler, meHandler } = require('./auth');
+const { requireAuth, telegramAuthHandler, tokenAuthHandler, meHandler, photosHandler } = require('./auth');
 const pluginsApi = require('./plugins');
 const tasksApi = require('./tasks');
 
@@ -197,6 +197,9 @@ function createApiServer() {
 
   // GET /api/auth/me — returns current user from JWT
   app.get('/api/auth/me', requireAuth, meHandler);
+
+  // GET /api/auth/photos — returns owner and bot profile photo URLs from Telegram
+  app.get('/api/auth/photos', requireAuth, photosHandler);
 
   // GET /api/auth/bot-info — public, returns bot username for Telegram widget
   app.get('/api/auth/bot-info', (req, res) => {

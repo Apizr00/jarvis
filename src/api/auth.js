@@ -293,6 +293,62 @@ function meHandler(req, res) {
   res.json({ user: req.user });
 }
 
+// ── Profile Photos ──────────────────────────────────────────────────────────
+
+/**
+ * GET /api/auth/photos
+ * Returns owner and bot profile photo URLs fetched from Telegram API.
+ */
+async function photosHandler(req, res) {
+  try {
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+    const ownerId = process.env.TELEGRAM_OWNER_ID;
+    if (!botToken || !ownerId) {
+      return res.json({ ownerPhoto: null, botPhoto: null });
+    }
+
+    const https = require('https');
+    const fetchTel = (method, params) => new Promise((resolve) => {
+      const qs = new URLSearchParams(params).toString();
+      https.get(`https://api.telegram.org/bot${botToken}/${method}?${qs}`, (resp) => {
+        let data = '';
+        resp.on('data', (c) => data += c);
+        resp.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve(null); } });
+      }).on('error', () => resolve(null));
+    });
+
+    // Fetch owner photos
+    const ownerPhotos = await fetchTel('getUserProfilePhotos', { user_id: ownerId, limit: 1 });
+    let ownerPhoto = null;
+    if (ownerPhotos?.result?.photos?.length) {
+      const fileId = ownerPhotos.result.photos[0][0]?.file_id;
+      const fileInfo = await fetchTel('getFile', { file_id: fileId });
+      if (fileInfo?.result?.file_path) {
+        ownerPhoto = `https://api.telegram.org/file/bot${botToken}/${fileInfo.result.file_path}`;
+      }
+    }
+
+    // Fetch bot photo
+    const botInfo = await fetchTel('getMe', {});
+    let botPhoto = null;
+    if (botInfo?.result?.id) {
+      const botPhotos = await fetchTel('getUserProfilePhotos', { user_id: botInfo.result.id, limit: 1 });
+      if (botPhotos?.result?.photos?.length) {
+        const fileId = botPhotos.result.photos[0][0]?.file_id;
+        const fileInfo = await fetchTel('getFile', { file_id: fileId });
+        if (fileInfo?.result?.file_path) {
+          botPhoto = `https://api.telegram.org/file/bot${botToken}/${fileInfo.result.file_path}`;
+        }
+      }
+    }
+
+    res.json({ ownerPhoto, botPhoto });
+  } catch (err) {
+    logger.error('Photos fetch error', { error: err.message });
+    res.json({ ownerPhoto: null, botPhoto: null });
+  }
+}
+
 // ── WebSocket Auth ───────────────────────────────────────────────────────────
 
 /**
@@ -327,6 +383,7 @@ module.exports = {
   telegramAuthHandler,
   tokenAuthHandler,
   meHandler,
+  photosHandler,
   authenticateWebSocket,
   createToken,
   verifyToken,

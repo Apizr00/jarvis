@@ -9,7 +9,7 @@ const $$ = (sel, ctx) => [...(ctx || document).querySelectorAll(sel)];
 
 // ── State ───────────────────────────────────────────────────────────────
 // Bump this version when the UI structure changes — invalidates all caches
-const APP_VERSION = 'v2.1';
+const APP_VERSION = 'v2.2';
 
 const state = {
   user: null,
@@ -31,6 +31,9 @@ const state = {
   widgetLayout: [],
   widgetLoading: false,
   widgetError: null,
+
+  ownerPhoto: null,  // Telegram profile photo URL
+  botPhoto: null,     // Bot profile photo URL
 };
 
 // Load persisted data — auto-invalidates if app version changed
@@ -202,6 +205,7 @@ async function loginWithToken(botToken) {
     updateUserUI();
     connectWebSocket();
     loadChatHistory();
+    fetchProfilePhotos();
     navigate('/');
   } catch (err) {
     const errEl = $('#login-error');
@@ -248,12 +252,26 @@ function logout() {
 function updateUserUI() {
   const u = state.user;
   const avatar = $('#user-avatar');
-  if (u?.photoUrl) {
-    avatar.innerHTML = `<img src="${escapeHtml(u.photoUrl)}" alt="" class="avatar-img" />`;
+  const photoUrl = state.ownerPhoto || u?.photoUrl;
+  if (photoUrl) {
+    avatar.innerHTML = `<img src="${escapeHtml(photoUrl)}" alt="" class="avatar-img" />`;
   } else {
     avatar.innerHTML = `<span class="avatar-placeholder">${escapeHtml(u?.firstName?.[0] || '?')}</span>`;
   }
   $('#user-name').textContent = u?.firstName || 'User';
+}
+
+// Fetch Telegram profile photos for owner and bot
+async function fetchProfilePhotos() {
+  if (!state.token) return;
+  try {
+    const res = await api('/api/auth/photos');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.ownerPhoto) state.ownerPhoto = data.ownerPhoto;
+    if (data.botPhoto) state.botPhoto = data.botPhoto;
+    updateUserUI();
+  } catch { /* best-effort */ }
 }
 
 // ── Theme ───────────────────────────────────────────────────────────────
@@ -428,11 +446,13 @@ function renderMessageBubble(msg, isStreaming) {
   else cls += ' assistant';
   if (isStreaming) cls += ' streaming';
 
-  let avatar = '🤖';
+  let avatar = state.botPhoto
+    ? `<img src="${escapeHtml(state.botPhoto)}" class="avatar-img" style="width:30px;height:30px;border-radius:50%" />`
+    : '🤖';
   if (isUser) {
-    // Show user profile picture if available
-    avatar = state.user?.photoUrl
-      ? `<img src="${escapeHtml(state.user.photoUrl)}" class="avatar-img" style="width:30px;height:30px;border-radius:50%" />`
+    const photo = state.ownerPhoto || state.user?.photoUrl;
+    avatar = photo
+      ? `<img src="${escapeHtml(photo)}" class="avatar-img" style="width:30px;height:30px;border-radius:50%" />`
       : '👤';
   }
   else if (isSystem) avatar = '⚠️';
@@ -1381,6 +1401,7 @@ async function loadTelegramWidget() {
         connectWebSocket();
         fetchWidgets();
         loadChatHistory();
+        fetchProfilePhotos();
         setInterval(fetchWidgets, 60000);
         setInterval(loadChatHistory, 30000);
         navigate('/');
@@ -1580,6 +1601,7 @@ function init() {
         connectWebSocket();
         fetchWidgets();
         loadChatHistory();
+        fetchProfilePhotos();
         setInterval(fetchWidgets, 60000);
         setInterval(loadChatHistory, 30000);
       }
