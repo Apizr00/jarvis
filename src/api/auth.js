@@ -259,25 +259,55 @@ async function tokenAuthHandler(req, res) {
     const ownerId = String(process.env.TELEGRAM_OWNER_ID);
     const botName = process.env.BOT_NAME || 'Jarvis';
 
+    // Try to fetch the real owner info from Telegram
+    let ownerFirstName = 'Owner';
+    let ownerLastName = '';
+    let ownerUsername = botName;
+    let ownerPhotoUrl = '';
+    try {
+      const axios = require('axios');
+      const BASE = `https://api.telegram.org/bot${botToken}`;
+      const { data: chatData } = await axios.get(`${BASE}/getChat`, {
+        params: { chat_id: ownerId },
+        timeout: 5000,
+      });
+      if (chatData?.result) {
+        ownerFirstName = chatData.result.first_name || ownerFirstName;
+        ownerLastName = chatData.result.last_name || '';
+        ownerUsername = chatData.result.username || ownerUsername;
+        // Try to get photo from getChat result
+        const fileId = chatData.result.photo?.big_file_id || chatData.result.photo?.small_file_id;
+        if (fileId) {
+          const fileRes = await axios.get(`${BASE}/getFile`, { params: { file_id: fileId }, timeout: 5000 });
+          if (fileRes.data?.result?.file_path) {
+            ownerPhotoUrl = `https://api.telegram.org/file/bot${botToken}/${fileRes.data.result.file_path}`;
+          }
+        }
+      }
+    } catch {
+      // Best-effort — use defaults if Telegram is unavailable
+    }
+
     // Create JWT for the owner
     const userData = {
       id: ownerId,
-      first_name: 'Owner',
-      username: botName,
-      photo_url: '',
+      first_name: ownerFirstName,
+      last_name: ownerLastName,
+      username: ownerUsername,
+      photo_url: ownerPhotoUrl,
       auth_date: Math.floor(Date.now() / 1000),
     };
 
     const jwtToken = createToken(userData);
     const user = {
       id: ownerId,
-      firstName: 'Owner',
-      lastName: '',
-      username: botName,
-      photoUrl: '',
+      firstName: ownerFirstName,
+      lastName: ownerLastName,
+      username: ownerUsername,
+      photoUrl: ownerPhotoUrl,
     };
 
-    logger.info('Token auth successful', { userId: ownerId });
+    logger.info('Token auth successful', { userId: ownerId, firstName: ownerFirstName });
     res.json({ token: jwtToken, user });
   } catch (err) {
     logger.error('Token auth handler error', { error: err.message });
@@ -380,8 +410,11 @@ async function photosHandler(req, res) {
       getBotPhotoUrl().catch(() => null),
     ]);
 
-    logger.info('Profile photos fetched', { hasOwner: !!ownerPhoto, hasBot: !!botPhoto, ownerId });
-    res.json({ ownerPhoto, botPhoto });
+    // Fallback: use photoUrl stored in JWT (set during Telegram Login Widget auth)
+    const ownerPhotoFallback = (!ownerPhoto && req.user?.photoUrl) ? req.user.photoUrl : null;
+
+    logger.info('Profile photos fetched', { hasOwner: !!(ownerPhoto || ownerPhotoFallback), hasBot: !!botPhoto, ownerId });
+    res.json({ ownerPhoto: ownerPhoto || ownerPhotoFallback, botPhoto });
   } catch (err) {
     logger.error('Photos fetch error', { error: err.message });
     res.json({ ownerPhoto: null, botPhoto: null });

@@ -9,7 +9,7 @@ const $$ = (sel, ctx) => [...(ctx || document).querySelectorAll(sel)];
 
 // ── State ───────────────────────────────────────────────────────────────
 // Bump this version when the UI structure changes — invalidates all caches
-const APP_VERSION = 'v2.5';
+const APP_VERSION = 'v2.6';
 
 const state = {
   user: null,
@@ -456,9 +456,12 @@ function renderMessageBubble(msg, isStreaming) {
     : '🤖';
   if (isUser) {
     const photo = state.ownerPhoto || state.user?.photoUrl;
-    avatar = photo
-      ? `<img src="${escapeHtml(photo)}" class="avatar-img" style="width:30px;height:30px;border-radius:50%" />`
-      : '👤';
+    if (photo) {
+      avatar = `<img src="${escapeHtml(photo)}" class="avatar-img" style="width:30px;height:30px;border-radius:50%" />`;
+    } else {
+      const initial = (state.user?.firstName?.[0] || state.user?.username?.[0] || '?').toUpperCase();
+      avatar = `<span class="avatar-placeholder">${esc(initial)}</span>`;
+    }
   }
   else if (isSystem) avatar = '⚠️';
   else if (isTool) avatar = '🔧';
