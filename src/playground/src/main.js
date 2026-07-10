@@ -1150,7 +1150,7 @@ const PRAYER_ICONS = { imsak: '🌙', fajr: '🌅', syuruk: '☀️', dhuha: '�
 const OBLIGATORY = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'];
 
 async function renderWaktuSolatPage(container) {
-  let zone = localStorage.getItem('prayerZone') || 'WLY01';
+  let zone = localStorage.getItem('prayerZone') || 'WLY02';
   container.innerHTML = `<div class="ws-page fade-in"><div class="ws-card card"><div class="skeleton" style="height:200px"></div></div></div>`;
 
   async function draw() {
@@ -1165,13 +1165,14 @@ async function renderWaktuSolatPage(container) {
       const prayerRows = PRAYER_ORDER.map(key => {
         const time = data.timings?.[key];
         if (!time) return '';
+        // API returns HH:MM:SS format — just use directly
         const [h, m] = time.split(':').map(Number);
-        const pd = new Date(`${now.toISOString().split('T')[0]}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00+08:00`);
+        const pd = new Date(`${now.toISOString().split('T')[0]}T${time}+08:00`);
         const isPast = pd < now;
         const isNext = OBLIGATORY.includes(key) && pd > now && !nextPrayer;
         if (isNext) nextPrayer = { key, date: pd };
 
-        const t12 = new Date(`2000-01-01T${time}:00`).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+        const t12 = new Date(`2000-01-01T${time}`).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
         return `<div class="ws-prayer-row ${isPast ? 'past' : ''} ${isNext ? 'next' : ''}">
           <div class="ws-prayer-left"><span class="ws-prayer-icon">${PRAYER_ICONS[key] || '🕐'}</span><span class="ws-prayer-name">${PRAYER_LABELS[key] || key}</span></div>
           <span class="ws-prayer-time">${t12}</span>
@@ -1222,8 +1223,7 @@ async function renderWaktuSolatPage(container) {
         OBLIGATORY.forEach(key => {
           const time2 = data.timings?.[key];
           if (!time2) return;
-          const [h2, m2] = time2.split(':').map(Number);
-          const pd2 = new Date(`${now2.toISOString().split('T')[0]}T${String(h2).padStart(2, '0')}:${String(m2).padStart(2, '0')}:00+08:00`);
+          const pd2 = new Date(`${now2.toISOString().split('T')[0]}T${time2}+08:00`);
           if (pd2 > now2 && !nextP) nextP = { key, date: pd2 };
         });
         const cdEl = container.querySelector('.ws-countdown');
