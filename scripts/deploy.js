@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-// scripts/deploy.js — One-command deploy for Jarvis + Playground
+// scripts/deploy.js — One-command deploy for Jarvis
 // Usage: node scripts/deploy.js              (full deploy)
-//        node scripts/deploy.js --no-build   (skip frontend build)
 //        node scripts/deploy.js --fix-perms  (fix ownership then deploy)
 //        npm run deploy                      (via package.json)
 
@@ -11,8 +10,6 @@ const path = require('path');
 const os = require('os');
 
 const ROOT = path.resolve(__dirname, '..');
-const PLAYGROUND = path.join(ROOT, 'src', 'playground');
-const NO_BUILD = process.argv.includes('--no-build');
 const FORCE = process.argv.includes('--force');
 const FIX_PERMS = process.argv.includes('--fix-perms');
 
@@ -153,24 +150,6 @@ const steps = [
     ignoreError: true,
     run() {
       run('node scripts/setup-db.js', { label: 'DB setup', ignoreError: true });
-    },
-  },
-  {
-    name: 'Install frontend dependencies',
-    skip: NO_BUILD,
-    run() {
-      if (!exists(path.join(PLAYGROUND, 'node_modules'))) {
-        run('npm install --prefer-offline', { cwd: PLAYGROUND, label: 'npm install (playground)' });
-      } else {
-        console.log('    ✅ already installed');
-      }
-    },
-  },
-  {
-    name: 'Build playground frontend',
-    skip: NO_BUILD,
-    run() {
-      run('npm run build', { cwd: PLAYGROUND, label: 'vite build', timeout: 120000 });
     },
   },
   {

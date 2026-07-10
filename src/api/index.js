@@ -481,27 +481,6 @@ function createApiServer() {
     }
   });
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // ── PLAYGROUND SPA — catch-all for client-side routing ────────────────────
-  // ═══════════════════════════════════════════════════════════════════════════
-  // Serve the React SPA for any non-API, non-static route.
-  // This must come LAST after all API routes and static middleware.
-  const playgroundDir = path.join(__dirname, 'public', 'playground');
-  const fs = require('fs');
-  if (fs.existsSync(playgroundDir)) {
-    // Serve playground static files (JS, CSS, assets)
-    app.use('/assets', express.static(path.join(playgroundDir, 'assets')));
-
-    // Serve index.html for all non-matched routes (SPA client-side routing)
-    app.get('*', (req, res) => {
-      // Skip API routes that weren't matched
-      if (req.path.startsWith('/api/')) {
-        return res.status(404).json({ error: 'Not found' });
-      }
-      res.sendFile(path.join(playgroundDir, 'index.html'));
-    });
-  }
-
   return app;
 }
 

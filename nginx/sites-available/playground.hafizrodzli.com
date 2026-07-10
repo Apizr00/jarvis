@@ -36,32 +36,6 @@ server {
     gzip_min_length 1000;
     gzip_comp_level 6;
 
-    # ── Root: serve React SPA build ───────────────────────────────────────
-    root /home/hafiz/jarvis/src/api/public/playground;
-    index index.html;
-
-    # ── Static assets (long cache) ────────────────────────────────────────
-    location /assets/ {
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-        try_files $uri =404;
-    }
-
-    # ── PWA manifest & service worker ─────────────────────────────────────
-    location = /manifest.json {
-        expires 7d;
-        add_header Cache-Control "public";
-        add_header Content-Type "application/manifest+json";
-        try_files $uri =404;
-    }
-
-    location = /sw.js {
-        expires 1d;
-        add_header Cache-Control "public";
-        add_header Service-Worker-Allowed "/";
-        try_files $uri =404;
-    }
-
     # ── API proxy to Express backend ──────────────────────────────────────
     location /api/ {
         proxy_pass http://127.0.0.1:3000;
@@ -104,11 +78,9 @@ server {
         proxy_set_header Host $host;
     }
 
-    # ── SPA fallback: all other routes → index.html ───────────────────────
+    # ── Default: return 404 for unmatched routes ──────────────────────────
     location / {
-        try_files $uri $uri/ /index.html;
-        expires -1;
-        add_header Cache-Control "no-cache, no-store, must-revalidate";
+        return 404;
     }
 
     # ── Deny hidden files ─────────────────────────────────────────────────
