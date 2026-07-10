@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.ico', 'robots.txt', 'icons/*.png'],
+      includeAssets: ['favicon.ico', 'robots.txt', 'icons/*.png', 'icon.svg'],
       manifest: {
         name: 'Jarvis Playground',
         short_name: 'Jarvis',
@@ -17,9 +17,10 @@ export default defineConfig({
         start_url: '/',
         scope: '/',
         icons: [
+          { src: '/icon.svg', sizes: '512x512', type: 'image/svg+xml', purpose: 'any' },
+          { src: '/icon.svg', sizes: '512x512', type: 'image/svg+xml', purpose: 'maskable' },
           { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
-          { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
       },
       workbox: {

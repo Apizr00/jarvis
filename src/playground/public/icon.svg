@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4f46e5"/>
+      <stop offset="100%" style="stop-color:#7c3aed"/>
+    </linearGradient>
+    <linearGradient id="antenna" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#a78bfa"/>
+      <stop offset="100%" style="stop-color:#6366f1"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="256" cy="256" r="248" fill="url(#bg)"/>
+  <circle cx="256" cy="256" r="248" fill="none" stroke="#1e1b4b" stroke-width="8" opacity="0.3"/>
+
+  <!-- Antenna -->
+  <line x1="210" y1="120" x2="210" y2="60" stroke="url(#antenna)" stroke-width="10" stroke-linecap="round"/>
+  <line x1="302" y1="120" x2="302" y2="60" stroke="url(#antenna)" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="210" cy="54" r="14" fill="#a78bfa" filter="url(#glow)"/>
+  <circle cx="302" cy="54" r="14" fill="#a78bfa" filter="url(#glow)"/>
+
+  <!-- Head/face area -->
+  <rect x="128" y="130" width="256" height="200" rx="30" fill="#1e1b4b" opacity="0.35"/>
+
+  <!-- Eyes -->
+  <ellipse cx="200" cy="215" rx="28" ry="32" fill="#f1f5f9"/>
+  <ellipse cx="312" cy="215" rx="28" ry="32" fill="#f1f5f9"/>
+  <!-- Pupils -->
+  <circle cx="205" cy="218" r="12" fill="#1e1b4b"/>
+  <circle cx="317" cy="218" r="12" fill="#1e1b4b"/>
+  <!-- Eye shine -->
+  <circle cx="210" cy="212" r="5" fill="white"/>
+  <circle cx="322" cy="212" r="5" fill="white"/>
+
+  <!-- Mouth (smile) -->
+  <path d="M 200 280 Q 256 330 312 280" fill="none" stroke="#f1f5f9" stroke-width="8" stroke-linecap="round"/>
+
+  <!-- Ears/side panels -->
+  <rect x="102" y="180" width="30" height="80" rx="12" fill="#312e81" opacity="0.5"/>
+  <rect x="380" y="180" width="30" height="80" rx="12" fill="#312e81" opacity="0.5"/>
+
+  <!-- Subtle circuit pattern on body -->
+  <circle cx="180" cy="370" r="6" fill="#a78bfa" opacity="0.5"/>
+  <circle cx="220" cy="370" r="6" fill="#a78bfa" opacity="0.5"/>
+  <circle cx="292" cy="370" r="6" fill="#a78bfa" opacity="0.5"/>
+  <circle cx="332" cy="370" r="6" fill="#a78bfa" opacity="0.5"/>
+  <line x1="180" y1="370" x2="220" y2="370" stroke="#a78bfa" stroke-width="3" opacity="0.4"/>
+  <line x1="292" y1="370" x2="332" y2="370" stroke="#a78bfa" stroke-width="3" opacity="0.4"/>
+
+  <!-- Sparkle accents -->
+  <circle cx="130" cy="130" r="4" fill="#c4b5fd" opacity="0.6"/>
+  <circle cx="380" cy="140" r="3" fill="#c4b5fd" opacity="0.5"/>
+  <circle cx="390" cy="390" r="4" fill="#c4b5fd" opacity="0.5"/>
+</svg>
