@@ -357,9 +357,8 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
         ws.send(JSON.stringify({ type: 'done', payload: { conversationId: convId, fullText: '', metadata: { provider: decision.provider, timestamp: new Date().toISOString() } } }));
       }
 
-      // Persist to DB even if client disconnected
-      const dbText = `${result.name}: ${toolMessage}`;
-      try { await require('../db').saveChatMessage(userId, 'assistant', dbText); } catch (e) { logger.warn('Failed to save tool msg', { error: e.message }); }
+      // Do NOT save tool_result to chat_history — it's shown via WS tool_result message.
+      // Saving it would cause loadChatHistory to show it again as a plain assistant message.
       return;
     }
 

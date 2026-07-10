@@ -314,17 +314,18 @@ async function photosHandler(req, res) {
       try {
         const { data } = await axios.get(`${BASE}/getUserProfilePhotos`, {
           params: { user_id: userId, limit: 1 },
-          timeout: 5000,
+          timeout: 8000,
         });
         if (data?.result?.photos?.length) {
           const fileId = data.result.photos[0][0]?.file_id;
           if (fileId) {
             const fileRes = await axios.get(`${BASE}/getFile`, {
               params: { file_id: fileId },
-              timeout: 5000,
+              timeout: 8000,
             });
             if (fileRes.data?.result?.file_path) {
-              return `${BASE.replace(/bot\d+:/, 'file/bot' + botToken + ':')}/${fileRes.data.result.file_path}`;
+              // Correct Telegram file URL: https://api.telegram.org/file/bot{TOKEN}/{file_path}
+              return `https://api.telegram.org/file/bot${botToken}/${fileRes.data.result.file_path}`;
             }
           }
         }
@@ -334,17 +335,35 @@ async function photosHandler(req, res) {
       return null;
     }
 
+    // Get bot's user ID from getMe, then fetch its profile photo using getChat
+    async function getBotPhotoUrl() {
+      try {
+        const { data: meData } = await axios.get(`${BASE}/getMe`, { timeout: 8000 });
+        const botId = meData?.result?.id;
+        if (!botId) return null;
+        // Use getChat to get the bot's photo (works better than getUserProfilePhotos for bots)
+        const { data: chatData } = await axios.get(`${BASE}/getChat`, {
+          params: { chat_id: botId },
+          timeout: 8000,
+        });
+        const fileId = chatData?.result?.photo?.big_file_id || chatData?.result?.photo?.small_file_id;
+        if (fileId) {
+          const fileRes = await axios.get(`${BASE}/getFile`, { params: { file_id: fileId }, timeout: 8000 });
+          if (fileRes.data?.result?.file_path) {
+            return `https://api.telegram.org/file/bot${botToken}/${fileRes.data.result.file_path}`;
+          }
+        }
+        // Fallback: try getUserProfilePhotos for the bot
+        return getPhotoUrl(botId);
+      } catch (e) {
+        logger.warn('Failed to fetch bot photo', { error: e.message });
+        return null;
+      }
+    }
+
     const [ownerPhoto, botPhoto] = await Promise.all([
       getPhotoUrl(ownerId).catch(() => null),
-      (async () => {
-        try {
-          const { data } = await axios.get(`${BASE}/getMe`, { timeout: 5000 });
-          if (data?.result?.id) {
-            return getPhotoUrl(data.result.id).catch(() => null);
-          }
-        } catch { }
-        return null;
-      })(),
+      getBotPhotoUrl().catch(() => null),
     ]);
 
     logger.info('Profile photos fetched', { hasOwner: !!ownerPhoto, hasBot: !!botPhoto });
