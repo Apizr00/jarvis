@@ -424,7 +424,62 @@ function createApiServer() {
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // ── PLAYGROUND SPA — catch-all for React Router ───────────────────────────
+  // ── CHAT ROUTES (protected) ───────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // GET /api/chat/history — recent chat history
+  app.get('/api/chat/history', requireAuth, async (req, res) => {
+    try {
+      const ownerId = req.user.sub;
+      const limit = parseInt(req.query.limit) || 50;
+      const messages = await db.getRecentChatHistory(ownerId, limit);
+      res.json({ messages: messages || [] });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/chat — send a message via REST (fallback when WS unavailable)
+  app.post('/api/chat', requireAuth, async (req, res) => {
+    try {
+      const ownerId = req.user.sub;
+      const { message } = req.body;
+      if (!message || typeof message !== 'string') {
+        return res.status(400).json({ error: 'message is required' });
+      }
+
+      // Save user message
+      await db.saveChatMessage(ownerId, 'user', message);
+
+      // Process through the same LLM pipeline (without streaming)
+      const llm = require('../llm');
+      let llmOptions = { provider: 'auto', tier: 'medium' };
+
+      try {
+        const executive = require('../executive');
+        const d = await executive.decide(ownerId, message, null, []);
+        llmOptions.provider = d.provider || 'auto';
+        llmOptions.tier = d.tier || 'medium';
+      } catch (e) {
+        const { detectIntent } = require('../llm/intent');
+        llmOptions.tier = detectIntent(message)?.tier === 'deep' ? 'deep' : 'medium';
+      }
+
+      const result = await llm.chat(ownerId, message, [], llmOptions);
+      const responseText = result?.content || 'Maaf, tidak dapat proses mesej anda.';
+
+      // Save assistant response
+      await db.saveChatMessage(ownerId, 'assistant', responseText);
+
+      res.json({ response: responseText, provider: result?._provider || llmOptions.provider });
+    } catch (err) {
+      logger.error('REST chat error', { error: err.message });
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── PLAYGROUND SPA — catch-all for client-side routing ────────────────────
   // ═══════════════════════════════════════════════════════════════════════════
   // Serve the React SPA for any non-API, non-static route.
   // This must come LAST after all API routes and static middleware.

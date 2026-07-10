@@ -254,6 +254,13 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
 
   ws.send(JSON.stringify({ type: 'typing', payload: { active: true, conversationId: convId } }));
 
+  // ── Save user message to DB immediately (persists even if PWA closes) ──
+  let disconnected = false;
+  try {
+    const db = require('../db');
+    await db.saveChatMessage(userId, 'user', message);
+  } catch (e) { logger.warn('Failed to save user chat msg', { error: e.message }); }
+
   let aborted = false;
   const abort = () => { aborted = true; };
   activeStreams.set(convId, { ws, abort });
@@ -282,11 +289,19 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
     }
 
     // ── LLM call ──────────────────────────────────────────────────
+    // NOTE: Don't abort on disconnect — let LLM finish and save to DB.
+    // The client may have closed the PWA, but the response will be stored.
     let result = await llm.chatStream(userId, message, [], llmOptions, (chunk) => {
-      if (aborted) throw new Error('ABORTED');
+      if (aborted) {
+        disconnected = true;
+        // Don't throw — just stop sending to the closed WS
+        return;
+      }
       fullText += chunk;
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'chunk', payload: { text: chunk, conversationId: convId } }));
+      } else {
+        disconnected = true;
       }
     });
 
@@ -313,7 +328,6 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
         if (validation.valid) {
           ws.send(JSON.stringify({ type: 'tool_call', payload: { conversationId: convId, tool: result.name, message: `🔧 ${result.name.replace(/_/g, ' ')}...` } }));
 
-          // Agent dispatch → direct execution
           try {
             const ar = require('../agents').agentRegistry;
             const agentR = await ar.dispatchToolCall(result.name, result.args, userId);
@@ -323,10 +337,8 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
           }
           break;
         }
-
         retry++;
         if (retry > 2) { toolResult = `❌ ${validation.error}`; break; }
-
         logger.warn('Tool retry', { tool: result.name, retry });
         result = await llm.chatStream(userId, `Fix this tool call: ${validation.error}`, [], { provider: 'deepseek', tier: 'deep' }, () => { });
         if (result?.type !== 'tool') { toolResult = result?.content || '❌ Failed to fix.'; break; }
@@ -335,25 +347,61 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
       const toolMessage = typeof toolResult === 'string' ? toolResult : (toolResult?.message || '✅ Done.');
       const buttons = buildToolButtons(result.name, toolResult);
 
-      ws.send(JSON.stringify({ type: 'tool_result', payload: { conversationId: convId, tool: result.name, content: toolMessage, error: toolMessage.startsWith('❌'), buttons, timestamp: new Date().toISOString() } }));
+      if (!disconnected && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'tool_result', payload: { conversationId: convId, tool: result.name, content: toolMessage, error: toolMessage.startsWith('❌'), buttons, timestamp: new Date().toISOString() } }));
+      }
 
-      // Follow-up
-      ws.send(JSON.stringify({ type: 'typing', payload: { active: true, conversationId: convId } }));
+      // Follow-up (skip if client disconnected)
       let fu = '';
-      const fuResult = await llm.chatStream(userId, `Result of ${result.name}: ${toolMessage.slice(0, 300)}. Confirm briefly.`, [], { provider: 'ilmu', tier: 'fast' }, (c) => { if (!aborted) { fu += c; ws.send(JSON.stringify({ type: 'chunk', payload: { text: c, conversationId: convId } })); } });
-      if (!fu && fuResult?.content) fu = fuResult.content;
-      ws.send(JSON.stringify({ type: 'typing', payload: { active: false, conversationId: convId } }));
-      ws.send(JSON.stringify({ type: 'done', payload: { conversationId: convId, fullText: fu || '✅ Done!', metadata: { provider: decision.provider, timestamp: new Date().toISOString() } } }));
+      if (!disconnected && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'typing', payload: { active: true, conversationId: convId } }));
+      }
+      try {
+        const fuResult = await llm.chatStream(userId, `Result of ${result.name}: ${toolMessage.slice(0, 300)}. Confirm briefly.`, [], { provider: 'ilmu', tier: 'fast' }, (c) => {
+          fu += c;
+          if (!disconnected && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'chunk', payload: { text: c, conversationId: convId } }));
+          }
+        });
+        if (!fu && fuResult?.content) fu = fuResult.content;
+        if (fuResult?.type === 'tool' && !fu) fu = '✅ Done!';
+      } catch (e) {
+        if (!fu) fu = '✅ Done!';
+      }
+
+      const finalText = fu || '✅ Done!';
+      if (!disconnected && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'typing', payload: { active: false, conversationId: convId } }));
+        ws.send(JSON.stringify({ type: 'done', payload: { conversationId: convId, fullText: finalText, metadata: { provider: decision.provider, timestamp: new Date().toISOString() } } }));
+      }
+
+      // Persist to DB even if client disconnected
+      try { await require('../db').saveChatMessage(userId, 'assistant', `${result.name}: ${toolMessage}\n\n${finalText}`); } catch (e) { logger.warn('Failed to save assistant tool msg', { error: e.message }); }
       return;
     }
 
     // ── Regular message ────────────────────────────────────────────
     if (!fullText && result?.content) fullText = result.content;
-    ws.send(JSON.stringify({ type: 'typing', payload: { active: false, conversationId: convId } }));
-    ws.send(JSON.stringify({ type: 'done', payload: { conversationId: convId, fullText, metadata: { provider: result?._provider || decision.provider, timestamp: new Date().toISOString() } } }));
+
+    if (!disconnected && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'typing', payload: { active: false, conversationId: convId } }));
+      ws.send(JSON.stringify({ type: 'done', payload: { conversationId: convId, fullText, metadata: { provider: result?._provider || decision.provider, timestamp: new Date().toISOString() } } }));
+    }
+
+    // Persist assistant response to DB — survives PWA close
+    if (fullText) {
+      try { await require('../db').saveChatMessage(userId, 'assistant', fullText); } catch (e) { logger.warn('Failed to save assistant msg', { error: e.message }); }
+    }
 
   } catch (err) {
-    if (err.message === 'ABORTED') { logger.debug('Chat aborted', { userId, convId }); return; }
+    if (err.message === 'ABORTED') {
+      logger.debug('Chat aborted by client', { userId, convId });
+      // Still save whatever we got so far
+      if (fullText) {
+        try { await require('../db').saveChatMessage(userId, 'assistant', fullText); } catch (e) { }
+      }
+      return;
+    }
     logger.error('Chat error', { userId, error: err.message });
     try {
       ws.send(JSON.stringify({ type: 'typing', payload: { active: false, conversationId: convId } }));

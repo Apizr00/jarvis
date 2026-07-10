@@ -163,6 +163,8 @@ async function loginWithToken(botToken) {
     state.token = data.token;
     state.isAuthenticated = true;
     updateUserUI();
+    connectWebSocket();
+    loadChatHistory();
     navigate('/');
   } catch (err) {
     const errEl = $('#login-error');
@@ -1325,7 +1327,9 @@ async function loadTelegramWidget() {
         updateUserUI();
         connectWebSocket();
         fetchWidgets();
+        loadChatHistory();
         setInterval(fetchWidgets, 60000);
+        setInterval(loadChatHistory, 30000);
         navigate('/');
       } catch (err) {
         const errEl = $('#login-error');
@@ -1345,6 +1349,46 @@ async function loadTelegramWidget() {
     container.appendChild(script);
   } catch {
     // Silently ignore — widget is optional
+  }
+}
+
+// ── Chat History Persistence ───────────────────────────────────────────
+// Loads chat history from server DB — restores messages even if PWA was closed
+async function loadChatHistory() {
+  if (!state.token) return;
+  try {
+    const res = await api('/api/chat/history?limit=50');
+    if (!res.ok) return;
+    const data = await res.json();
+    const serverMsgs = data.messages || [];
+    if (serverMsgs.length === 0) return;
+
+    // Merge: only add server messages not already in our local list
+    // Compare by content + role to avoid duplicates
+    const localSet = new Set(state.messages.map(m => `${m.role}::${m.content?.slice(0, 80)}`));
+    let hasNew = false;
+
+    serverMsgs.forEach(sm => {
+      const key = `${sm.role}::${(sm.content || '').slice(0, 80)}`;
+      if (!localSet.has(key)) {
+        state.messages.push({
+          role: sm.role,
+          content: sm.content,
+          timestamp: sm.created_at || new Date().toISOString(),
+        });
+        hasNew = true;
+      }
+    });
+
+    if (hasNew) {
+      // Keep chronological order and deduplicate
+      state.messages = state.messages.filter((m, i, arr) => {
+        return arr.findIndex(x => x.role === m.role && x.content === m.content) === i;
+      });
+      persistMessages();
+    }
+  } catch (e) {
+    // Silent — history loading is best-effort
   }
 }
 
@@ -1461,7 +1505,10 @@ function init() {
       if (valid) {
         connectWebSocket();
         fetchWidgets();
+        loadChatHistory();
         setInterval(fetchWidgets, 60000);
+        // Poll for new chat messages every 30s (catches responses that arrived while PWA closed)
+        setInterval(loadChatHistory, 30000);
       }
       renderRoute();
     });
