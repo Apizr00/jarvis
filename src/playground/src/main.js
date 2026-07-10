@@ -1153,8 +1153,44 @@ const PRAYER_ICONS = { imsak: '🌙', fajr: '🌅', syuruk: '☀️', dhuha: '�
 const OBLIGATORY = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'];
 
 async function renderWaktuSolatPage(container) {
-  let zone = localStorage.getItem('prayerZone') || 'WLY02';
+  let zone = localStorage.getItem('prayerZone') || 'SGR01';
   container.innerHTML = `<div class="ws-page fade-in"><div class="ws-card card"><div class="skeleton" style="height:200px"></div></div></div>`;
+
+  // Fetch available zones once
+  let zones = {};
+  try {
+    const zRes = await fetch('/api/prayertimes/zones');
+    if (zRes.ok) zones = await zRes.json();
+  } catch { }
+
+  // Build zone options grouped by state
+  function buildZoneOptions() {
+    if (!Object.keys(zones).length) {
+      return `<option value="${esc(zone)}">${esc(zone)}</option>`;
+    }
+    const stateNames = {
+      WLY: 'WP', SGR: 'Selangor', JHR: 'Johor', KDH: 'Kedah', KTN: 'Kelantan',
+      MLK: 'Melaka', NGS: 'N. Sembilan', PHG: 'Pahang', PRK: 'Perak',
+      PLS: 'Perlis', PNG: 'P. Pinang', SBH: 'Sabah', SWK: 'Sarawak', TRG: 'Terengganu',
+    };
+    const entries = Object.entries(zones);
+    // Sort by state code
+    entries.sort(([a], [b]) => a.localeCompare(b));
+    let html = '';
+    let currentState = '';
+    entries.forEach(([code, label]) => {
+      const prefix = code.slice(0, 3);
+      const state = stateNames[prefix] || prefix;
+      if (state !== currentState) {
+        if (currentState) html += '</optgroup>';
+        html += `<optgroup label="${esc(state)}">`;
+        currentState = state;
+      }
+      html += `<option value="${esc(code)}" ${zone === code ? 'selected' : ''}>${esc(code)} - ${esc(label)}</option>`;
+    });
+    html += '</optgroup>';
+    return html;
+  }
 
   async function draw() {
     try {
@@ -1199,14 +1235,7 @@ async function renderWaktuSolatPage(container) {
           <div class="ws-day">${data.day || ''}</div>
         </div>
         <div class="ws-zone">
-          <select class="ws-zone-select">
-            <option value="WLY01" ${zone === 'WLY01' ? 'selected' : ''}>WLY01 - Perlis, Kedah, Pulau Pinang, Perak</option>
-            <option value="WLY02" ${zone === 'WLY02' ? 'selected' : ''}>WLY02 - Selangor, KL, Putrajaya, Negeri Sembilan, Melaka</option>
-            <option value="WLY03" ${zone === 'WLY03' ? 'selected' : ''}>WLY03 - Johor</option>
-            <option value="WLY04" ${zone === 'WLY04' ? 'selected' : ''}>WLY04 - Pahang, Terengganu, Kelantan</option>
-            <option value="WLY05" ${zone === 'WLY05' ? 'selected' : ''}>WLY05 - Sabah, WP Labuan</option>
-            <option value="WLY06" ${zone === 'WLY06' ? 'selected' : ''}>WLY06 - Sarawak</option>
-          </select>
+          <select class="ws-zone-select">${buildZoneOptions()}</select>
         </div>
         <div class="ws-prayers">${prayerRows}</div>
         ${countdown}
