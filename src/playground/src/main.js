@@ -8,6 +8,9 @@ const $ = (sel, ctx) => (ctx || document).querySelector(sel);
 const $$ = (sel, ctx) => [...(ctx || document).querySelectorAll(sel)];
 
 // ── State ───────────────────────────────────────────────────────────────
+// Bump this version when the UI structure changes — invalidates all caches
+const APP_VERSION = 'v2';
+
 const state = {
   user: null,
   token: localStorage.getItem('jarvis_token') || null,
@@ -30,8 +33,20 @@ const state = {
   widgetError: null,
 };
 
-// Load persisted data
+// Load persisted data — auto-invalidates if app version changed
 (function loadPersisted() {
+  const storedVer = localStorage.getItem('jarvis-app-version');
+  if (storedVer !== APP_VERSION) {
+    // Version mismatch — clear all UI caches (keep auth token)
+    const keepToken = localStorage.getItem('jarvis_token');
+    const keepTheme = localStorage.getItem('jarvis-theme');
+    const keepZone = localStorage.getItem('prayerZone');
+    localStorage.clear();
+    if (keepToken) localStorage.setItem('jarvis_token', keepToken);
+    if (keepTheme) localStorage.setItem('jarvis-theme', keepTheme);
+    if (keepZone) localStorage.setItem('prayerZone', keepZone);
+    localStorage.setItem('jarvis-app-version', APP_VERSION);
+  }
   try {
     const saved = localStorage.getItem('jarvis_chat_messages');
     if (saved) state.messages = JSON.parse(saved);
@@ -40,6 +55,10 @@ const state = {
     const layout = localStorage.getItem('jarvis-widget-layout');
     if (layout) state.widgetLayout = JSON.parse(layout);
   } catch { }
+  try {
+    const cached = localStorage.getItem('jarvis-widgets-cache');
+    if (cached) state.widgets = JSON.parse(cached);
+  } catch { }
 })();
 
 function persistMessages() {
@@ -47,6 +66,15 @@ function persistMessages() {
 }
 function persistLayout() {
   try { localStorage.setItem('jarvis-widget-layout', JSON.stringify(state.widgetLayout)); } catch { }
+}
+function persistWidgetCache() {
+  try {
+    localStorage.setItem('jarvis-widgets-cache', JSON.stringify(state.widgets));
+    localStorage.setItem('jarvis-app-version', APP_VERSION);
+  } catch { }
+}
+function persistLastRoute(route) {
+  try { localStorage.setItem('jarvis-last-route', route); } catch { }
 }
 
 // ── Router ──────────────────────────────────────────────────────────────
@@ -83,6 +111,7 @@ function getRoute() {
 }
 
 function navigate(to) {
+  persistLastRoute(to);
   location.hash = to;
 }
 
@@ -187,7 +216,11 @@ async function loginWithToken(botToken) {
 async function verifyToken() {
   if (!state.token) return false;
   try {
-    const res = await api('/api/auth/me');
+    // 5-second timeout — don't leave user staring at blank screen
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const res = await api('/api/auth/me', { signal: controller.signal });
+    clearTimeout(timeout);
     if (!res.ok) throw new Error('Invalid');
     const data = await res.json();
     state.user = data.user;
@@ -195,6 +228,7 @@ async function verifyToken() {
     updateUserUI();
     return true;
   } catch {
+    // Token invalid or network error — silently fall through to login
     logout();
     return false;
   }
@@ -400,9 +434,15 @@ function renderMessageBubble(msg, isStreaming) {
 
   // Tool result with action buttons
   if (isToolResult && msg.buttons?.length) {
-    const btns = msg.buttons.map(b => `<button class="btn btn-sm tool-btn" data-action="${esc(b.action || '')}">${esc(b.label || b.text || b)}</button>`).join(' ');
-    const c = safeContent(msg.content);
-    return `<div class="${cls}"><div class="message-avatar">${avatar}</div><div class="message-body"><div class="message-content">${simpleMarkdown(c)}</div><div class="message-actions" style="opacity:1;margin-top:6px">${btns}</div></div></div>`;
+    // Backend sends buttons as array of rows: [[{text,action},...], [{text,action}]]
+    // Flatten to single array for rendering
+    const flatButtons = msg.buttons.flat ? msg.buttons.flat() : msg.buttons.reduce((acc, row) => acc.concat(row), []);
+    const btns = flatButtons.map(b => {
+      const label = b.label || b.text || (typeof b === 'string' ? b : 'Button');
+      const action = b.action || '';
+      return `<button class="btn btn-sm tool-btn" data-action="${esc(action)}">${esc(label)}</button>`;
+    }).join(' ');
+    return `<div class="${cls}"><div class="message-avatar">${avatar}</div><div class="message-body"><div class="message-content">${simpleMarkdown(safeContent(msg.content))}</div><div class="message-actions" style="opacity:1;margin-top:6px">${btns}</div></div></div>`;
   }
 
   if (isTool) {
@@ -556,13 +596,6 @@ function renderChatMessages(container, isPanel) {
 }
 
 function renderChatInput(container, isPanel) {
-  const modelOpts = [
-    { v: 'auto', l: 'Auto' },
-    { v: 'ilmu', l: 'ILMU' },
-    { v: 'deepseek', l: 'DeepSeek' },
-  ];
-  const modelSelect = `<select class="model-selector chat-model-select">${modelOpts.map(m => `<option value="${m.v}" ${state.model === m.v ? 'selected' : ''}>${m.l}</option>`).join('')}</select>`;
-
   container.insertAdjacentHTML('beforeend', `
     <form class="chat-input-bar chat-input-form">
       <textarea class="chat-textarea chat-input-textarea" placeholder="${state.wsConnected ? 'Taip mesej...' : 'Connecting...'}" rows="1" ${!state.wsConnected ? 'disabled' : ''}></textarea>
@@ -573,12 +606,6 @@ function renderChatInput(container, isPanel) {
       </div>
     </form>
   `);
-
-  if (!isPanel) {
-    container.querySelector('.chat-input-bar').insertAdjacentHTML('beforebegin', modelSelect);
-  } else {
-    container.querySelector('.chat-input-actions').insertAdjacentHTML('afterbegin', modelSelect);
-  }
 
   const textarea = container.querySelector('.chat-input-textarea');
   const form = container.querySelector('.chat-input-form');
@@ -601,48 +628,23 @@ function renderChatInput(container, isPanel) {
   const cancelBtn = container.querySelector('.chat-cancel-btn');
   if (cancelBtn) cancelBtn.addEventListener('click', cancelStream);
 
-  const modelSel = container.querySelector('.chat-model-select');
-  if (modelSel) {
-    modelSel.addEventListener('change', () => {
-      state.model = modelSel.value;
-      localStorage.setItem('jarvis_chat_model', state.model);
-    });
-  }
-
   textarea.focus();
 }
 
 // ── Page Renderers ──────────────────────────────────────────────────────
 function renderChatPage(container) {
-  const modelOpts = [
-    { v: 'auto', l: 'Auto' },
-    { v: 'ilmu', l: 'ILMU' },
-    { v: 'deepseek', l: 'DeepSeek' },
-  ];
-  const modelSelect = `<select class="model-selector chat-model-select-header">${modelOpts.map(m => `<option value="${m.v}" ${state.model === m.v ? 'selected' : ''}>${m.l}</option>`).join('')}</select>`;
-
   container.innerHTML = `<div class="chat-page fade-in">
     <div class="chat-page-header">
       <div class="chat-page-status">
         <span class="status-dot chat-status-dot ${state.wsConnected ? 'ok' : 'error'}"></span>
         <span class="chat-status-text">${state.wsConnected ? 'Connected' : 'Reconnecting...'}</span>
       </div>
-      ${modelSelect}
     </div>
     <div class="chat-page-messages chat-msg-container"></div>
   </div>`;
   const msgContainer = container.querySelector('.chat-msg-container');
   renderChatMessages(msgContainer, false);
   renderChatInput(container, false);
-
-  // Bind header model selector
-  const headerModel = container.querySelector('.chat-model-select-header');
-  if (headerModel) {
-    headerModel.addEventListener('change', () => {
-      state.model = headerModel.value;
-      localStorage.setItem('jarvis_chat_model', state.model);
-    });
-  }
 }
 
 function renderDashboard(container) {
@@ -671,6 +673,7 @@ async function fetchWidgets() {
     if (!res.ok) throw new Error('Failed to fetch widgets');
     const data = await res.json();
     state.widgets = data.widgets || [];
+    persistWidgetCache(); // Cache for instant display on next open
 
     // Auto-add new widgets to layout
     const layoutIds = new Set(state.widgetLayout.map(l => l.widgetId));
@@ -1129,7 +1132,7 @@ function renderSettingsPage(container) {
     <div class="settings-section card">
       <h3>📋 About</h3>
       <div class="about-info">
-        <p><strong>Jarvis Playground</strong> v1.0.0</p>
+        <p><strong>Jarvis Playground</strong> ${APP_VERSION}</p>
         <p>Personal AI Assistant Dashboard</p>
         <p class="about-stack">Built with Vanilla JS · Express · PostgreSQL · ILMU · DeepSeek</p>
       </div>
@@ -1519,18 +1522,29 @@ function init() {
   // Hash router
   window.addEventListener('hashchange', renderRoute);
 
+  // Ensure version marker exists for future cache invalidation
+  localStorage.setItem('jarvis-app-version', APP_VERSION);
+
+  // Update version display in login footer and settings
+  const verEl = $('#login-version-text');
+  if (verEl) verEl.textContent = APP_VERSION;
+
   // Load Telegram OAuth widget on login page
   loadTelegramWidget();
 
   // Init
   if (state.token) {
+    // Restore last visited route so user lands where they left off
+    const lastRoute = localStorage.getItem('jarvis-last-route');
+    if (lastRoute && lastRoute !== '/login') {
+      location.hash = '#' + lastRoute;
+    }
     verifyToken().then(valid => {
       if (valid) {
         connectWebSocket();
         fetchWidgets();
         loadChatHistory();
         setInterval(fetchWidgets, 60000);
-        // Poll for new chat messages every 30s (catches responses that arrived while PWA closed)
         setInterval(loadChatHistory, 30000);
       }
       renderRoute();

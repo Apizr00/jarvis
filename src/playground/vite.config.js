@@ -25,9 +25,21 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        skipWaiting: true,
+        clientsClaim: true,
         runtimeCaching: [
           {
-            urlPattern: /^\/api\//,
+            urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
+            handler: 'StaleWhileRevalidate',
+            options: { cacheName: 'google-fonts-css', expiration: { maxEntries: 5, maxAgeSeconds: 604800 } },
+          },
+          {
+            urlPattern: /^https:\/\/fonts\.gstatic\.com\/.*/i,
+            handler: 'CacheFirst',
+            options: { cacheName: 'google-fonts-files', expiration: { maxEntries: 10, maxAgeSeconds: 31536000 } },
+          },
+          {
+            urlPattern: /^\/api\/(?!auth\/)/,
             handler: 'NetworkFirst',
             options: {
               cacheName: 'api-cache',
