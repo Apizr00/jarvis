@@ -1408,6 +1408,15 @@ async function loadChatHistory() {
 
 // ── Init ────────────────────────────────────────────────────────────────
 function init() {
+  // ── Immediately show the right page (no blank flash) ──────────────
+  if (state.token) {
+    $('#page-login').classList.add('hidden');
+    $('#page-app').classList.remove('hidden');
+  } else {
+    $('#page-app').classList.add('hidden');
+    $('#page-login').classList.remove('hidden');
+  }
+
   // Build sidebar nav
   const sidebarNav = $('#sidebar-nav');
   sidebarNav.innerHTML = NAV_ITEMS.map(item => `
