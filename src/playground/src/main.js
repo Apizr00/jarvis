@@ -373,6 +373,17 @@ function connectWebSocket() {
         persistMessages();
         updateChatUI();
         break;
+      case 'event': {
+        // Telegram bot activity — reload history from DB so PWA stays in sync.
+        // Debounced: multiple rapid events collapse into one reload.
+        const evtName = msg.payload?.eventName;
+        const SYNC_EVENTS = new Set(['message:received', 'message:sent', 'tool:executed']);
+        if (SYNC_EVENTS.has(evtName) && !state.streaming) {
+          clearTimeout(state._telegramSyncTimer);
+          state._telegramSyncTimer = setTimeout(() => loadChatHistory(), 600);
+        }
+        break;
+      }
     }
   };
 }
