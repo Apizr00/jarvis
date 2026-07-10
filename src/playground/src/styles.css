@@ -160,6 +160,9 @@ code {
   font-size: 0.8rem;
   border-radius: 8px;
 }
+.tool-btn {
+  margin-right: 4px;
+}
 .btn-icon {
   padding: 8px;
   border: none;
@@ -1034,6 +1037,14 @@ label {
   text-align: right;
   max-width: 60%;
   overflow: hidden;
+}
+.weekly-period {
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
 }
 
 /* List widget */

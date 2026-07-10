@@ -372,6 +372,12 @@ function renderMessageBubble(msg, isStreaming) {
   else if (isTool) avatar = '🔧';
   else if (isToolResult) avatar = '✅';
 
+  // Tool result with action buttons
+  if (isToolResult && msg.buttons?.length) {
+    const btns = msg.buttons.map(b => `<button class="btn btn-sm tool-btn" data-action="${esc(b.action || '')}">${esc(b.label || b.text || b)}</button>`).join(' ');
+    return `<div class="${cls}"><div class="message-avatar">${avatar}</div><div class="message-body"><div class="message-content">${simpleMarkdown(msg.content || '')}</div><div class="message-actions" style="opacity:1;margin-top:6px">${btns}</div></div></div>`;
+  }
+
   if (isTool) {
     const toolName = (msg.tool || '').replace(/_/g, ' ');
     return `<div class="${cls}"><div class="message-avatar">${avatar}</div><div class="message-body"><div class="message-content tool-content"><span class="tool-icon">🔧</span><span class="tool-label">${esc(toolName)}</span></div></div></div>`;
@@ -461,6 +467,15 @@ function renderChatMessages(container, isPanel) {
   const end = container.querySelector('.chat-end-ref');
   if (end) end.scrollIntoView({ behavior: 'smooth' });
 
+  // Update chat input disabled state based on wsConnected
+  const textareaEl = container.parentElement?.querySelector('.chat-input-textarea');
+  const sendBtnEl = container.parentElement?.querySelector('.chat-send-btn');
+  if (textareaEl) {
+    textareaEl.placeholder = state.wsConnected ? 'Taip mesej...' : 'Connecting...';
+    textareaEl.disabled = !state.wsConnected;
+  }
+  if (sendBtnEl) sendBtnEl.disabled = !state.wsConnected;
+
   // Bind suggestion clicks
   container.querySelectorAll('.chat-suggest-btn').forEach(btn => {
     btn.addEventListener('click', () => sendChatMessage(btn.textContent));
@@ -473,6 +488,15 @@ function renderChatMessages(container, isPanel) {
       navigator.clipboard.writeText(btn.dataset.copy);
       btn.textContent = '✅';
       setTimeout(() => { btn.textContent = '📋'; }, 1500);
+    });
+  });
+
+  // Bind tool result buttons
+  container.querySelectorAll('.tool-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const action = btn.dataset.action;
+      const label = btn.textContent.trim();
+      sendChatMessage(`${label} (${action})`);
     });
   });
 }
@@ -536,18 +560,42 @@ function renderChatInput(container, isPanel) {
 
 // ── Page Renderers ──────────────────────────────────────────────────────
 function renderChatPage(container) {
+  const modelOpts = [
+    { v: 'auto', l: 'Auto' },
+    { v: 'ilmu', l: 'ILMU' },
+    { v: 'deepseek', l: 'DeepSeek' },
+  ];
+  const modelSelect = `<select class="model-selector chat-model-select-header">${modelOpts.map(m => `<option value="${m.v}" ${state.model === m.v ? 'selected' : ''}>${m.l}</option>`).join('')}</select>`;
+
   container.innerHTML = `<div class="chat-page fade-in">
     <div class="chat-page-header">
       <div class="chat-page-status">
         <span class="status-dot chat-status-dot ${state.wsConnected ? 'ok' : 'error'}"></span>
         <span class="chat-status-text">${state.wsConnected ? 'Connected' : 'Reconnecting...'}</span>
       </div>
+      ${modelSelect}
     </div>
     <div class="chat-page-messages chat-msg-container"></div>
   </div>`;
   const msgContainer = container.querySelector('.chat-msg-container');
   renderChatMessages(msgContainer, false);
   renderChatInput(container, false);
+
+  // Bind header model selector
+  const headerModel = container.querySelector('.chat-model-select-header');
+  if (headerModel) {
+    headerModel.addEventListener('change', () => {
+      state.model = headerModel.value;
+      localStorage.setItem('jarvis_chat_model', state.model);
+    });
+  }
+
+  // Auto-collapse chat panel sidebar when on full chat page
+  const panel = $('#chat-panel');
+  if (panel && !panel.classList.contains('collapsed')) {
+    panel.classList.add('collapsed');
+    $('#chat-panel-toggle').textContent = '◀';
+  }
 }
 
 function renderDashboard(container) {
@@ -1119,6 +1167,31 @@ async function renderWaktuSolatPage(container) {
         localStorage.setItem('prayerZone', zone);
         draw();
       });
+
+      // Live countdown timer (update every 30s)
+      const countdownInterval = setInterval(() => {
+        const now2 = new Date();
+        let nextP = null;
+        OBLIGATORY.forEach(key => {
+          const time2 = data.timings?.[key];
+          if (!time2) return;
+          const [h2, m2] = time2.split(':').map(Number);
+          const pd2 = new Date(`${now2.toISOString().split('T')[0]}T${String(h2).padStart(2, '0')}:${String(m2).padStart(2, '0')}:00+08:00`);
+          if (pd2 > now2 && !nextP) nextP = { key, date: pd2 };
+        });
+        const cdEl = container.querySelector('.ws-countdown');
+        if (cdEl && nextP) {
+          const diff2 = nextP.date - now2;
+          const hh2 = Math.floor(diff2 / 3600000);
+          const mm2 = Math.floor((diff2 % 3600000) / 60000);
+          cdEl.textContent = `⏳ ${PRAYER_LABELS[nextP.key]} dalam ${hh2}j ${mm2}m`;
+        }
+        const footerEl = container.querySelector('.ws-footer');
+        if (footerEl) {
+          footerEl.textContent = `🟢 Live · ${now2.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`;
+        }
+      }, 30000);
+      container._wsCountdownInterval = countdownInterval;
     } catch (err) {
       container.innerHTML = `<div class="ws-page fade-in"><div class="login-error">⚠️ ${esc(err.message)}</div></div>`;
     }
@@ -1184,6 +1257,64 @@ async function renderRemindersPage(container) {
   }
 
   draw(false);
+}
+
+// ── Telegram OAuth Widget ──────────────────────────────────────────────
+async function loadTelegramWidget() {
+  try {
+    const res = await fetch('/api/auth/bot-info');
+    const info = await res.json();
+    const container = $('#telegram-widget-container');
+    if (!container) return;
+
+    if (!info.configured) {
+      container.innerHTML = `<p class="login-note">
+        <strong>⚠️ Not configured yet.</strong><br>
+        Open <strong>@BotFather</strong> → <code>/setdomain</code> →
+        <code>@ApizrBot</code> → <code>playground.hafizrodzli.com</code><br>
+        Then add <code>TELEGRAM_BOT_USERNAME=@ApizrBot</code> to VPS .env and run <code>npm run deploy</code>.
+      </p>`;
+      return;
+    }
+
+    // Define global callback before script loads
+    window.onTelegramAuth = async (user) => {
+      try {
+        const res = await fetch('/api/auth/telegram', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(user),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Login failed');
+        localStorage.setItem('jarvis_token', data.token);
+        state.user = data.user;
+        state.token = data.token;
+        state.isAuthenticated = true;
+        updateUserUI();
+        connectWebSocket();
+        fetchWidgets();
+        setInterval(fetchWidgets, 60000);
+        navigate('/');
+      } catch (err) {
+        const errEl = $('#login-error');
+        errEl.textContent = '⚠️ ' + err.message;
+        errEl.classList.remove('hidden');
+      }
+    };
+
+    const script = document.createElement('script');
+    script.src = 'https://telegram.org/js/telegram-widget.js?22';
+    script.async = true;
+    script.setAttribute('data-telegram-login', info.botUsername);
+    script.setAttribute('data-size', 'large');
+    script.setAttribute('data-radius', '10');
+    script.setAttribute('data-onauth', 'onTelegramAuth(user)');
+    script.setAttribute('data-request-access', 'write');
+    container.appendChild(script);
+  } catch {
+    // Silently ignore — widget is optional
+  }
 }
 
 // ── Init ────────────────────────────────────────────────────────────────
@@ -1283,6 +1414,9 @@ function init() {
 
   // Hash router
   window.addEventListener('hashchange', renderRoute);
+
+  // Load Telegram OAuth widget on login page
+  loadTelegramWidget();
 
   // Init
   if (state.token) {
