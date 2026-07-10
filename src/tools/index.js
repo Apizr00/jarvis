@@ -313,7 +313,7 @@ function simpleHash(str) {
   return hash;
 }
 
-async function safeSendMessage(bot, chatId, text, fallbackTextOverride = null) {
+async function safeSendMessage(bot, chatId, text, extraOptions = null) {
   // ── Dedup: skip if identical message sent to this chat within 3s ────
   if (isDuplicateMessage(chatId, text)) {
     console.log('[Tools] 🚫 Suppressed duplicate message to chat ' + chatId + ': ' + text.slice(0, 80));
@@ -323,7 +323,7 @@ async function safeSendMessage(bot, chatId, text, fallbackTextOverride = null) {
   // ── Smart splitting for long messages (> 4000 chars) ──────────────────
   const MAX_LEN = 4000;
   if (text.length <= MAX_LEN) {
-    return await sendSingleMessage(bot, chatId, text, fallbackTextOverride);
+    return await sendSingleMessage(bot, chatId, text, extraOptions);
   }
 
   // Split into chunks at paragraph boundaries, then sentence if needed
@@ -344,7 +344,9 @@ async function safeSendMessage(bot, chatId, text, fallbackTextOverride = null) {
       }
     }
 
-    const sent = await sendSingleMessage(bot, chatId, chunk, fallbackTextOverride);
+    // Only attach extraOptions (keyboard) to the LAST chunk
+    const chunkOptions = (i === chunks.length - 1) ? extraOptions : null;
+    const sent = await sendSingleMessage(bot, chatId, chunk, chunkOptions);
     if (!sent) allSent = false;
 
     // Small delay between chunks to avoid rate limiting
@@ -408,27 +410,33 @@ function splitLongMessage(text, maxLen) {
 
 /**
  * Send a single message (no splitting). Tries Markdown first, then plain text.
+ * @param {object} bot - Telegram bot instance
+ * @param {number} chatId
+ * @param {string} text - message text
+ * @param {object} [extraOptions] - extra Telegram options (e.g., reply_markup)
  */
-async function sendSingleMessage(bot, chatId, text, fallbackTextOverride = null) {
+async function sendSingleMessage(bot, chatId, text, extraOptions = null) {
+  const baseOpts = { parse_mode: 'Markdown' };
+  // Merge extra options (like reply_markup) into the send options
+  const mdOpts = extraOptions ? { ...baseOpts, ...extraOptions } : baseOpts;
+
   try {
-    await bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+    await bot.sendMessage(chatId, text, mdOpts);
     return true;
   } catch (mdErr) {
     console.error('[Tools] Markdown send failed (' + mdErr.response?.statusCode + '): ' + mdErr.message + ' | text preview: ' + text.slice(0, 120));
-    // If Markdown fails, send as plain text (no parse_mode)
+    // If Markdown fails, send as plain text (no parse_mode) but KEEP the keyboard
     try {
-      await bot.sendMessage(chatId, text);
+      const plainOpts = extraOptions ? { ...extraOptions } : {};
+      await bot.sendMessage(chatId, text, plainOpts);
       return true;
     } catch (plainErr) {
       console.error('[Tools] Plain text send also failed (' + plainErr.response?.statusCode + '): ' + plainErr.message + ' | text length: ' + text.length);
-      // Only send the fallback if we haven't already sent it recently
-      const fallbackText = fallbackTextOverride || 'Something went wrong displaying the result.';
-      if (!isDuplicateMessage(chatId, fallbackText)) {
-        try {
-          await bot.sendMessage(chatId, fallbackText);
-        } catch (fallbackErr) {
-          console.error('[Tools] Even fallback message failed:', fallbackErr.message);
-        }
+      // Last resort: plain text, no keyboard
+      try {
+        await bot.sendMessage(chatId, 'Something went wrong displaying the result.');
+      } catch (fallbackErr) {
+        console.error('[Tools] Even fallback message failed:', fallbackErr.message);
       }
       return false;
     }

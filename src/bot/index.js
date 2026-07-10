@@ -33,6 +33,7 @@ const queueSystem = require('../queue');
 const vision = require('../llm/vision');
 const tts = require('../llm/tts');
 const streaks = require('../features/streaks');
+const keyboards = require('./keyboards');
 
 const OWNER_ID = String(process.env.TELEGRAM_OWNER_ID);
 
@@ -197,7 +198,7 @@ async function createBot() {
         'Type /help to see all commands.\n\n' +
         'I\'m ready when you are.';
 
-      await safeSendMessage(bot, msg.chat.id, welcome);
+      await safeSendMessage(bot, msg.chat.id, welcome, keyboards.welcomeMenu());
     } catch (err) {
       console.error('/start error:', err.message);
       await bot.sendMessage(msg.chat.id, '❌ Error: ' + err.message);
@@ -255,9 +256,9 @@ async function createBot() {
       '`/revert` — Undo setting change';
 
     try {
-      await bot.sendMessage(msg.chat.id, helpText, { parse_mode: 'Markdown' });
+      await bot.sendMessage(msg.chat.id, helpText, { parse_mode: 'Markdown', ...keyboards.helpMenu() });
     } catch {
-      await bot.sendMessage(msg.chat.id, helpText);
+      await bot.sendMessage(msg.chat.id, helpText, keyboards.helpMenu());
     }
   });
 
@@ -266,7 +267,7 @@ async function createBot() {
     if (!isOwner(msg)) return;
     await db.ensureUser(OWNER_ID, msg.from.first_name || 'Owner');
     const result = await tools.executeTool(OWNER_ID, { name: 'get_today', args: {} });
-    await safeSendMessage(bot, msg.chat.id, result);
+    await safeSendMessage(bot, msg.chat.id, result, keyboards.quickActions());
   });
 
   // ── /notes command shortcut ───────────────────────────────────────────────
@@ -275,14 +276,14 @@ async function createBot() {
     await db.ensureUser(OWNER_ID, msg.from.first_name || 'Owner');
     const notes = await db.getRecentNotes(OWNER_ID, 10);
     if (notes.length === 0) {
-      return bot.sendMessage(msg.chat.id, 'No notes saved yet.');
+      return bot.sendMessage(msg.chat.id, 'No notes saved yet.', keyboards.emptyState('notes'));
     }
     let reply = '*Recent Notes* 📝\n\n';
     notes.forEach((n, i) => {
       const date = new Date(n.created_at).toLocaleDateString();
       reply += (i + 1) + '\. ' + escapeMd(n.content) + ' \_(' + date + ')\_\n\n';
     });
-    await safeSendMessage(bot, msg.chat.id, reply.trim());
+    await safeSendMessage(bot, msg.chat.id, reply.trim(), keyboards.quickActions());
   });
 
   // ── /history command — search past conversations ─────────────────────────
@@ -326,9 +327,9 @@ async function createBot() {
     try {
       const message = await streaks.buildStreakMessage(OWNER_ID);
       try {
-        await bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
+        await bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown', ...keyboards.afterStreak() });
       } catch {
-        await bot.sendMessage(msg.chat.id, message);
+        await bot.sendMessage(msg.chat.id, message, keyboards.afterStreak());
       }
     } catch (err) {
       console.error('/streak error:', err.message);
@@ -827,6 +828,229 @@ async function createBot() {
     const msgId = callbackQuery.message.message_id;
     const userId = String(callbackQuery.from.id);
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // 🎮 INLINE KEYBOARD: cmd:* — Execute slash commands via button
+    // ═══════════════════════════════════════════════════════════════════════
+    if (data.startsWith('cmd:')) {
+      const cmd = data.split(':')[1];
+      await bot.answerCallbackQuery(callbackQuery.id);
+
+      try {
+        switch (cmd) {
+          case 'today': {
+            const result = await tools.executeTool(userId, { name: 'get_today', args: {} });
+            const msg = typeof result === 'object' ? result.message : result;
+            await safeSendMessage(bot, chatId, msg, keyboards.quickActions());
+            break;
+          }
+          case 'briefing': {
+            const message = await buildBriefingMessage();
+            await safeSendMessage(bot, chatId, message, keyboards.quickActions());
+            streaks.recordActivity(userId, 'morning_briefing').catch(() => { });
+            break;
+          }
+          case 'reminders': {
+            const result = await tools.executeTool(userId, { name: 'list_reminders', args: {} });
+            const msg = typeof result === 'object' ? result.message : result;
+            await safeSendMessage(bot, chatId, msg, keyboards.quickActions());
+            break;
+          }
+          case 'tasks': {
+            const result = await tools.executeTool(userId, { name: 'list_tasks', args: {} });
+            const msg = typeof result === 'object' ? result.message : result;
+            await safeSendMessage(bot, chatId, msg, keyboards.quickActions());
+            break;
+          }
+          case 'goals': {
+            const result = await tools.executeTool(userId, { name: 'list_goals', args: {} });
+            const msg = typeof result === 'object' ? result.message : result;
+            await safeSendMessage(bot, chatId, msg, keyboards.quickActions());
+            break;
+          }
+          case 'notes': {
+            const notes = await db.getRecentNotes(userId, 15);
+            if (notes.length === 0) {
+              await bot.sendMessage(chatId, '📝 No notes saved yet.', keyboards.emptyState('notes'));
+            } else {
+              let reply = '*📝 Recent Notes*\n\n';
+              notes.forEach((n, i) => {
+                const date = fmt(n.created_at, 'MMM D, h:mm A');
+                reply += (i + 1) + '\\. ' + escapeMd(n.content) + ' \\_(' + date + ')\\_\n\n';
+              });
+              await safeSendMessage(bot, chatId, reply.trim(), keyboards.quickActions());
+            }
+            break;
+          }
+          case 'memory': {
+            const facts = await db.getAllFacts(userId);
+            if (facts.length === 0) {
+              await bot.sendMessage(chatId, '🧠 No memory facts stored yet.', keyboards.emptyState('memory'));
+            } else {
+              let reply = '*🧠 Memory Facts*\n\n';
+              facts.forEach(f => {
+                reply += '• *' + escapeMd(f.key) + ':* ' + escapeMd(f.value) + '\n';
+              });
+              await safeSendMessage(bot, chatId, reply.trim(), keyboards.quickActions());
+            }
+            break;
+          }
+          case 'people': {
+            const people = await db.getRelationships(userId, 20);
+            const formatted = relationships.formatPeopleMessage(people, '👥 People You Know');
+            try {
+              await bot.sendMessage(chatId, formatted, { parse_mode: 'Markdown', ...keyboards.quickActions() });
+            } catch {
+              await bot.sendMessage(chatId, formatted, keyboards.quickActions());
+            }
+            break;
+          }
+          case 'reflect': {
+            const existing = await db.getTodayReflection(userId);
+            if (existing) {
+              await safeSendMessage(bot, chatId, '*🧘 Today\'s Reflection*\n\n' + existing.summary, keyboards.afterReflection());
+            } else {
+              const reflection = await memory.generateDailyReflection(userId, llm.chatMimo);
+              if (reflection) {
+                await safeSendMessage(bot, chatId, '*🧘 Today\'s Reflection*\n\n' + reflection, keyboards.afterReflection());
+                streaks.recordActivity(userId, 'reflection').catch(() => { });
+              } else {
+                await bot.sendMessage(chatId, '📭 Not enough activity today to reflect on.', keyboards.quickActions());
+              }
+            }
+            break;
+          }
+          case 'streak': {
+            const message = await streaks.buildStreakMessage(userId);
+            try {
+              await bot.sendMessage(chatId, message, { parse_mode: 'Markdown', ...keyboards.afterStreak() });
+            } catch {
+              await bot.sendMessage(chatId, message, keyboards.afterStreak());
+            }
+            break;
+          }
+          case 'status': {
+            const statusMsg = await getApiStatus();
+            const formatted = formatStatusMessage(statusMsg);
+            await safeSendMessage(bot, chatId, formatted, keyboards.quickActions());
+            break;
+          }
+          case 'settings': {
+            const configs = await db.getAllConfigs(userId);
+            if (configs.length === 0) {
+              await bot.sendMessage(chatId, '⚙️ *Settings*\n\nNo custom settings yet. Use /settings to configure.', keyboards.settingsMenu());
+            } else {
+              let reply = '*⚙️ Current Settings*\n\n';
+              configs.forEach(c => {
+                reply += '• *' + escapeMd(c.key) + ':* ' + escapeMd(c.value || '(empty)') + '\n';
+              });
+              reply += '\n_Guna /setname, /setpersonality, /setlocation etc. untuk tukar._';
+              await safeSendMessage(bot, chatId, reply.trim(), keyboards.settingsMenu());
+            }
+            break;
+          }
+          case 'help': {
+            await bot.sendMessage(chatId,
+              'Guna butang di bawah untuk akses pantas ⚡\n\n' +
+              'Atau taip /help untuk senarai penuh command.',
+              keyboards.helpMenu()
+            );
+            break;
+          }
+          case 'start': {
+            await bot.sendMessage(chatId,
+              '🏠 *Main Menu*\n\nApa yang nak buat hari ni?',
+              { parse_mode: 'Markdown', ...keyboards.welcomeMenu() }
+            );
+            break;
+          }
+          default:
+            await bot.answerCallbackQuery(callbackQuery.id, { text: 'Unknown command: ' + cmd });
+        }
+      } catch (err) {
+        console.error('[Keyboard] cmd:' + cmd + ' error:', err.message);
+        await bot.sendMessage(chatId, '❌ Error: ' + err.message);
+      }
+      return;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // 🎮 INLINE KEYBOARD: action:* — Prompt user for input
+    // ═══════════════════════════════════════════════════════════════════════
+    if (data.startsWith('action:')) {
+      const action = data.split(':')[1];
+      await bot.answerCallbackQuery(callbackQuery.id);
+
+      const prompts = {
+        add_reminder: '⏰ *New Reminder*\n\nJust tell me what you want to be reminded about. Contoh:\n• "Remind me to call mom at 3pm"\n• "Ingatkan saya minum air setiap jam 9 pagi"',
+        add_task: '📋 *New Task*\n\nDescribe your task and I\'ll create it. Contoh:\n• "Add task: Finish report by Friday, high priority"\n• "Tambah task: Kemas rumah before weekend"',
+        add_goal: '🎯 *New Goal*\n\nWhat goal do you want to set? Contoh:\n• "Set goal: Learn TypeScript by end of month"\n• "Goal: Kurus 5kg dalam 2 bulan"',
+        add_note: '📝 *New Note*\n\nWhat do you want to note down? Contoh:\n• "Note: Idea untuk side project — AI tutor app"\n• "Nota: Beli barang dapur esok"',
+        add_event: '📅 *New Event*\n\nTell me about the event. Contoh:\n• "Add event: Team meeting tomorrow at 10am for 1 hour"\n• "Event: Dinner with family Friday 7pm"',
+        set_fact: '🧠 *Remember Something*\n\nTell me what to remember. Contoh:\n• "Remember I prefer dark mode"\n• "Remember my car plate is ABC 1234"',
+        add_person: '👤 *Remember Someone*\n\nTell me about them naturally. Contoh:\n• "Sarah is my colleague at work, she\'s a designer"\n• "Ali tu kawan baik saya dari university"',
+        setname: '👤 *Set Bot Name*\n\nWhat should I be called? Taip nama baru:\n• "Jarvis"\n• "Asisten AI"',
+        setpersonality: '🎭 *Set Personality*\n\nDescribe my personality/tone. Contoh:\n• "Friendly and casual, guna Bahasa Malaysia"\n• "Professional and concise in English"',
+        setlocation: '📍 *Set Location*\n\nWhich city are you in? Contoh:\n• "Kuala Lumpur"\n• "Shah Alam"',
+        setbriefing: '🌅 *Set Briefing Time*\n\nWhat time should I send your morning briefing? Contoh:\n• "7:00 AM"\n• "6:30 pagi"',
+        revert: '↩️ *Revert Setting*\n\nGuna /revert untuk undo last setting change.',
+        chat: '💬 *I\'m listening!*\n\nJust talk to me naturally — apa-apa ja.',
+        plan_tomorrow: '📅 *Plan Tomorrow*\n\nTell me what you want to plan for tomorrow. Contoh:\n• "Plan: Prepare for presentation tomorrow morning"\n• "Esok nak workout pagi, then meeting 10am"',
+        plan_week: '📋 *Plan This Week*\n\nTell me what you want to achieve this week. I\'ll help you break it down.',
+      };
+
+      const promptText = prompts[action] || 'Apa yang nak buat?';
+
+      try {
+        await bot.sendMessage(chatId, promptText, { parse_mode: 'Markdown' });
+      } catch {
+        await bot.sendMessage(chatId, promptText);
+      }
+      return;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // 🎮 INLINE KEYBOARD: confirm_delete — Delete items
+    // ═══════════════════════════════════════════════════════════════════════
+    if (data.startsWith('confirm_delete:')) {
+      const [, type, idStr] = data.split(':');
+      const itemId = parseInt(idStr, 10);
+      if (isNaN(itemId)) return;
+
+      try {
+        switch (type) {
+          case 'reminder':
+            await db.cancelReminder(itemId);
+            break;
+          case 'event':
+            await db.cancelEvent(itemId);
+            break;
+          case 'note':
+            await db.deleteNote(itemId);
+            break;
+          case 'task':
+            await tools.executeTool(userId, { name: 'cancel_task', args: { task_id: itemId } });
+            break;
+          default:
+            break;
+        }
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '🗑️ Deleted!' });
+        await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: msgId });
+      } catch (err) {
+        console.error('[Keyboard] confirm_delete error:', err.message);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Failed to delete.' });
+      }
+      return;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // 🎮 INLINE KEYBOARD: cancel_action — Dismiss confirm dialog
+    // ═══════════════════════════════════════════════════════════════════════
+    if (data === 'cancel_action') {
+      await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Cancelled.' });
+      await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: msgId });
+      return;
+    }
+
     // ── Confirm config change ────────────────────────────────────────────
     if (data.startsWith('confirm_config')) {
       try {
@@ -1238,7 +1462,7 @@ async function createBot() {
     await bot.sendChatAction(msg.chat.id, 'typing');
     try {
       const message = await buildBriefingMessage();
-      await safeSendMessage(bot, msg.chat.id, message);
+      await safeSendMessage(bot, msg.chat.id, message, keyboards.quickActions());
 
       // 🔥 Track morning briefing streak on manual briefing too
       streaks.recordActivity(OWNER_ID, 'morning_briefing').catch(() => { });
@@ -1255,7 +1479,7 @@ async function createBot() {
     try {
       const { buildWeeklyReview } = require('../scheduler');
       const message = await buildWeeklyReview();
-      await safeSendMessage(bot, msg.chat.id, message);
+      await safeSendMessage(bot, msg.chat.id, message, keyboards.afterWeekly());
     } catch (err) {
       console.error('/review error:', err.message);
       await bot.sendMessage(msg.chat.id, '❌ Could not generate weekly review.');
@@ -1268,7 +1492,7 @@ async function createBot() {
     await bot.sendChatAction(msg.chat.id, 'typing');
     try {
       const quote = await getQuote();
-      await safeSendMessage(bot, msg.chat.id, quote);
+      await safeSendMessage(bot, msg.chat.id, quote, keyboards.quickActions());
     } catch (err) {
       console.error('/quote error:', err.message);
       await bot.sendMessage(msg.chat.id, '❌ Could not fetch a quote.');
@@ -1315,7 +1539,7 @@ async function createBot() {
       '• "What\'s my day looking like?"\n' +
       '• "Cancel reminder #3"\n\n' +
       '🎤 *You can also send voice messages!*';
-    await safeSendMessage(bot, msg.chat.id, help);
+    await safeSendMessage(bot, msg.chat.id, help, keyboards.helpMenu());
   });
 
   // ── /settings command ─────────────────────────────────────────────────────
@@ -1342,7 +1566,7 @@ async function createBot() {
         '_Use /setname, /setpersonality, /setlocation, /setbriefing, /setreview to change._\n' +
         '_↩️ = can be reverted with /revert_';
 
-      await safeSendMessage(bot, msg.chat.id, reply);
+      await safeSendMessage(bot, msg.chat.id, reply, keyboards.settingsMenu());
     } catch (err) {
       console.error('/settings error:', err.message);
       await bot.sendMessage(msg.chat.id, '❌ Could not fetch settings.');
@@ -1956,7 +2180,7 @@ async function createBot() {
         console.log('[Bot] Message response (no tool executed):', llmResponse.content.slice(0, 150));
         addToHistory(userId, 'assistant', llmResponse.content);
         stopTyping();
-        await safeSendMessage(bot, chatId, llmResponse.content);
+        await safeSendMessage(bot, chatId, llmResponse.content, keyboards.quickActions());
 
         // ── 📡 Emit message:sent event ───────────────────────────────────
         eventBus.emitSync(EVENTS.MESSAGE_SENT, {
@@ -2315,7 +2539,7 @@ async function createBot() {
             await safeSendMessage(bot, chatId, finalResult);
           }
         } else {
-          await safeSendMessage(bot, chatId, finalResult);
+          await safeSendMessage(bot, chatId, finalResult, keyboards.quickActions());
         }
 
         // ── 💬 Conversational follow-up after all tool executions ────────
