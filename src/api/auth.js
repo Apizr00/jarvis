@@ -312,6 +312,24 @@ async function photosHandler(req, res) {
 
     async function getPhotoUrl(userId) {
       try {
+        // Try getChat first — works regardless of user's privacy settings
+        // because the bot is getting info about a user it has interacted with
+        const { data: chatData } = await axios.get(`${BASE}/getChat`, {
+          params: { chat_id: userId },
+          timeout: 8000,
+        });
+        const chatFileId = chatData?.result?.photo?.big_file_id || chatData?.result?.photo?.small_file_id;
+        if (chatFileId) {
+          const fileRes = await axios.get(`${BASE}/getFile`, { params: { file_id: chatFileId }, timeout: 8000 });
+          if (fileRes.data?.result?.file_path) {
+            return `https://api.telegram.org/file/bot${botToken}/${fileRes.data.result.file_path}`;
+          }
+        }
+      } catch (e) {
+        logger.warn('getChat photo failed, trying getUserProfilePhotos', { userId, error: e.message });
+      }
+      try {
+        // Fallback: getUserProfilePhotos
         const { data } = await axios.get(`${BASE}/getUserProfilePhotos`, {
           params: { user_id: userId, limit: 1 },
           timeout: 8000,
@@ -319,18 +337,14 @@ async function photosHandler(req, res) {
         if (data?.result?.photos?.length) {
           const fileId = data.result.photos[0][0]?.file_id;
           if (fileId) {
-            const fileRes = await axios.get(`${BASE}/getFile`, {
-              params: { file_id: fileId },
-              timeout: 8000,
-            });
+            const fileRes = await axios.get(`${BASE}/getFile`, { params: { file_id: fileId }, timeout: 8000 });
             if (fileRes.data?.result?.file_path) {
-              // Correct Telegram file URL: https://api.telegram.org/file/bot{TOKEN}/{file_path}
               return `https://api.telegram.org/file/bot${botToken}/${fileRes.data.result.file_path}`;
             }
           }
         }
       } catch (e) {
-        logger.warn('Failed to fetch photo for user', { userId, error: e.message });
+        logger.warn('getUserProfilePhotos also failed', { userId, error: e.message });
       }
       return null;
     }
@@ -366,7 +380,7 @@ async function photosHandler(req, res) {
       getBotPhotoUrl().catch(() => null),
     ]);
 
-    logger.info('Profile photos fetched', { hasOwner: !!ownerPhoto, hasBot: !!botPhoto });
+    logger.info('Profile photos fetched', { hasOwner: !!ownerPhoto, hasBot: !!botPhoto, ownerId });
     res.json({ ownerPhoto, botPhoto });
   } catch (err) {
     logger.error('Photos fetch error', { error: err.message });
