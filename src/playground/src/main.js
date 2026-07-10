@@ -857,7 +857,7 @@ async function renderTasksPage(container) {
     let activeTab = 'all';
 
     function filter() { return activeTab === 'all' ? tasks : tasks.filter(t => t.status === activeTab); }
-    const tabs = [{ key: 'all', label: 'All' }, { key: 'todo', label: '📋 Todo' }, { key: 'in_progress', label: '🟡 In Progress' }, { key: 'done', label: '✅ Done' }];
+    const tabs = [{ key: 'all', label: 'All' }, { key: 'pending', label: '📋 Todo' }, { key: 'in_progress', label: '🟡 In Progress' }, { key: 'done', label: '✅ Done' }];
 
     function draw() {
       const filtered = filter();
@@ -870,7 +870,7 @@ async function renderTasksPage(container) {
               <div class="task-title">${esc(t.title)}</div>
               <div class="task-meta">
                 <span class="badge ${t.priority === 'high' ? 'badge-red' : t.priority === 'medium' ? 'badge-yellow' : 'badge-green'}">${esc(t.priority || 'medium')}</span>
-                <span class="task-date">${new Date(t.createdAt).toLocaleDateString()}</span>
+                <span class="task-date">${new Date(t.created_at).toLocaleDateString()}</span>
               </div>
             </div>
             <div class="task-actions">
@@ -938,7 +938,7 @@ async function renderNotesPage(container) {
             <div class="note-card-title">${esc(n.title || 'Untitled')}</div>
             <div class="note-card-body">${esc(n.content || '')}</div>
             <div class="note-card-footer">
-              <span class="note-card-date">${new Date(n.createdAt).toLocaleDateString()}</span>
+              <span class="note-card-date">${new Date(n.created_at).toLocaleDateString()}</span>
               <button class="btn btn-sm btn-danger notes-delete-btn" data-id="${esc(n.id)}">🗑</button>
             </div>
           </div>
@@ -1273,7 +1273,7 @@ async function renderRemindersPage(container) {
             <div>
               <div class="reminder-text">${esc(r.text)}</div>
               <div class="reminder-meta">
-                <span>📅 ${new Date(r.remindAt).toLocaleString('en-MY', { dateStyle: 'medium', timeStyle: 'short' })}</span>
+                <span>📅 ${new Date(r.remind_at).toLocaleString('en-MY', { dateStyle: 'medium', timeStyle: 'short' })}</span>
                 ${r.recurrence ? `<span>🔁 ${esc(r.recurrence)}</span>` : ''}
               </div>
             </div>
