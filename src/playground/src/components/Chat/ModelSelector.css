@@ -1,0 +1,10 @@
+.model-selector {
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  cursor: pointer;
+  width: auto;
+}

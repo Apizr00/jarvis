@@ -190,6 +190,14 @@ class Plugin {
     try {
       this._ctx = createPluginContext(this.name, this.manifest.config || {});
 
+      // Enhance context with widget/page registration (from plugins API module)
+      try {
+        const { enhancePluginContext } = require('../api/plugins');
+        this._ctx = enhancePluginContext(this._ctx, this.name);
+      } catch {
+        // plugins API module may not be loaded yet during early boot — that's OK
+      }
+
       // Call onInit if defined
       if (typeof this._module.onInit === 'function') {
         await this._module.onInit(this._ctx);

@@ -1,0 +1,107 @@
+.memory-page {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.memory-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.memory-header h2 {
+  font-size: 1.2rem;
+}
+
+.memory-search {
+  display: flex;
+  gap: 8px;
+}
+
+.memory-search input {
+  width: 240px;
+}
+
+.memory-stats {
+  margin-bottom: 16px;
+}
+
+.memory-table {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  overflow: hidden;
+}
+
+.memory-table-header {
+  display: grid;
+  grid-template-columns: 1.5fr 2.5fr 100px 100px;
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.memory-row {
+  display: grid;
+  grid-template-columns: 1.5fr 2.5fr 100px 100px;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+  align-items: center;
+}
+
+.memory-row:last-child {
+  border-bottom: none;
+}
+.memory-row:hover {
+  background: var(--card-bg-hover);
+}
+
+.mem-col-key {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mem-col-value {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mem-edit-inline {
+  display: flex;
+  gap: 4px;
+}
+.mem-edit-inline input {
+  padding: 4px 8px;
+  font-size: 0.8rem;
+}
+
+.mem-col-actions {
+  display: flex;
+  gap: 2px;
+}
+
+@media (max-width: 700px) {
+  .memory-table-header,
+  .memory-row {
+    grid-template-columns: 1fr 1fr;
+  }
+  .mem-col-confidence,
+  .mem-col-actions {
+    display: none;
+  }
+}

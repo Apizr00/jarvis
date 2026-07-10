@@ -1,0 +1,79 @@
+.card-widget {
+  font-size: 0.85rem;
+}
+.card-widget-empty {
+  color: var(--text-muted);
+  text-align: center;
+  padding: 20px;
+}
+
+.prayer-hijri {
+  text-align: center;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 0.85rem;
+  margin-bottom: 10px;
+}
+
+.prayer-times-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.prayer-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.prayer-label {
+  font-weight: 500;
+}
+.prayer-time {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.card-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.card-row:last-child {
+  border-bottom: none;
+}
+.card-label {
+  color: var(--text-secondary);
+  text-transform: capitalize;
+}
+.card-value {
+  font-weight: 600;
+  text-align: right;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.widget-footer-text {
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.weekly-period {
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--accent);
+  font-weight: 600;
+  margin-bottom: 10px;
+}
