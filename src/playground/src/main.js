@@ -9,7 +9,7 @@ const $$ = (sel, ctx) => [...(ctx || document).querySelectorAll(sel)];
 
 // ── State ───────────────────────────────────────────────────────────────
 // Bump this version when the UI structure changes — invalidates all caches
-const APP_VERSION = 'v2';
+const APP_VERSION = 'v2.1';
 
 const state = {
   user: null,
@@ -314,6 +314,8 @@ function connectWebSocket() {
           role: 'assistant', content: msg.payload.fullText || state.streamingText,
           timestamp: new Date().toISOString(), model: msg.payload.metadata?.model,
           provider: msg.payload.metadata?.provider,
+          toolResult: msg.payload.buttons ? true : false,
+          buttons: msg.payload.buttons || [],
         });
         state.streaming = false;
         state.streamingText = '';
@@ -427,7 +429,12 @@ function renderMessageBubble(msg, isStreaming) {
   if (isStreaming) cls += ' streaming';
 
   let avatar = '🤖';
-  if (isUser) avatar = '👤';
+  if (isUser) {
+    // Show user profile picture if available
+    avatar = state.user?.photoUrl
+      ? `<img src="${escapeHtml(state.user.photoUrl)}" class="avatar-img" style="width:30px;height:30px;border-radius:50%" />`
+      : '👤';
+  }
   else if (isSystem) avatar = '⚠️';
   else if (isTool) avatar = '🔧';
   else if (isToolResult) avatar = '✅';

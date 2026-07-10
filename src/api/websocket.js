@@ -372,7 +372,7 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
       const finalText = fu || '✅ Done!';
       if (!disconnected && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'typing', payload: { active: false, conversationId: convId } }));
-        ws.send(JSON.stringify({ type: 'done', payload: { conversationId: convId, fullText: finalText, metadata: { provider: decision.provider, timestamp: new Date().toISOString() } } }));
+        ws.send(JSON.stringify({ type: 'done', payload: { conversationId: convId, fullText: finalText, metadata: { provider: decision.provider, timestamp: new Date().toISOString() }, buttons } }));
       }
 
       // Persist to DB even if client disconnected
