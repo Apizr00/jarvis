@@ -9,7 +9,7 @@ const $$ = (sel, ctx) => [...(ctx || document).querySelectorAll(sel)];
 
 // ── State ───────────────────────────────────────────────────────────────
 // Bump this version when the UI structure changes — invalidates all caches
-const APP_VERSION = 'v2.2';
+const APP_VERSION = 'v2.3';
 
 const state = {
   user: null,
@@ -271,6 +271,7 @@ async function fetchProfilePhotos() {
     if (data.ownerPhoto) state.ownerPhoto = data.ownerPhoto;
     if (data.botPhoto) state.botPhoto = data.botPhoto;
     updateUserUI();
+    updateChatUI();
   } catch { /* best-effort */ }
 }
 
@@ -328,13 +329,17 @@ function connectWebSocket() {
         updateChatUI();
         break;
       case 'done':
-        state.messages.push({
-          role: 'assistant', content: msg.payload.fullText || state.streamingText,
-          timestamp: new Date().toISOString(), model: msg.payload.metadata?.model,
-          provider: msg.payload.metadata?.provider,
-          toolResult: msg.payload.buttons ? true : false,
-          buttons: msg.payload.buttons || [],
-        });
+        // Skip empty done messages (just close streaming, no content to show)
+        const doneText = msg.payload.fullText || state.streamingText;
+        if (doneText || msg.payload.buttons) {
+          state.messages.push({
+            role: 'assistant', content: doneText,
+            timestamp: new Date().toISOString(), model: msg.payload.metadata?.model,
+            provider: msg.payload.metadata?.provider,
+            toolResult: !!msg.payload.buttons,
+            buttons: msg.payload.buttons || [],
+          });
+        }
         state.streaming = false;
         state.streamingText = '';
         persistMessages();

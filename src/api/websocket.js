@@ -351,11 +351,10 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
       }
 
       // Skip redundant follow-up LLM call — tool_result already confirms success.
-      // Only send a minimal done to close the streaming state on the client.
-      const finalText = toolMessage.startsWith('❌') ? toolMessage : '';
+      // Send minimal done to close streaming, WITHOUT buttons (tool_result has them).
       if (!disconnected && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'typing', payload: { active: false, conversationId: convId } }));
-        ws.send(JSON.stringify({ type: 'done', payload: { conversationId: convId, fullText: finalText, metadata: { provider: decision.provider, timestamp: new Date().toISOString() }, buttons } }));
+        ws.send(JSON.stringify({ type: 'done', payload: { conversationId: convId, fullText: '', metadata: { provider: decision.provider, timestamp: new Date().toISOString() } } }));
       }
 
       // Persist to DB even if client disconnected

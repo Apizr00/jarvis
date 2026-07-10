@@ -307,41 +307,47 @@ async function photosHandler(req, res) {
       return res.json({ ownerPhoto: null, botPhoto: null });
     }
 
-    const https = require('https');
-    const fetchTel = (method, params) => new Promise((resolve) => {
-      const qs = new URLSearchParams(params).toString();
-      https.get(`https://api.telegram.org/bot${botToken}/${method}?${qs}`, (resp) => {
-        let data = '';
-        resp.on('data', (c) => data += c);
-        resp.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve(null); } });
-      }).on('error', () => resolve(null));
-    });
+    const axios = require('axios');
+    const BASE = `https://api.telegram.org/bot${botToken}`;
 
-    // Fetch owner photos
-    const ownerPhotos = await fetchTel('getUserProfilePhotos', { user_id: ownerId, limit: 1 });
-    let ownerPhoto = null;
-    if (ownerPhotos?.result?.photos?.length) {
-      const fileId = ownerPhotos.result.photos[0][0]?.file_id;
-      const fileInfo = await fetchTel('getFile', { file_id: fileId });
-      if (fileInfo?.result?.file_path) {
-        ownerPhoto = `https://api.telegram.org/file/bot${botToken}/${fileInfo.result.file_path}`;
-      }
-    }
-
-    // Fetch bot photo
-    const botInfo = await fetchTel('getMe', {});
-    let botPhoto = null;
-    if (botInfo?.result?.id) {
-      const botPhotos = await fetchTel('getUserProfilePhotos', { user_id: botInfo.result.id, limit: 1 });
-      if (botPhotos?.result?.photos?.length) {
-        const fileId = botPhotos.result.photos[0][0]?.file_id;
-        const fileInfo = await fetchTel('getFile', { file_id: fileId });
-        if (fileInfo?.result?.file_path) {
-          botPhoto = `https://api.telegram.org/file/bot${botToken}/${fileInfo.result.file_path}`;
+    async function getPhotoUrl(userId) {
+      try {
+        const { data } = await axios.get(`${BASE}/getUserProfilePhotos`, {
+          params: { user_id: userId, limit: 1 },
+          timeout: 5000,
+        });
+        if (data?.result?.photos?.length) {
+          const fileId = data.result.photos[0][0]?.file_id;
+          if (fileId) {
+            const fileRes = await axios.get(`${BASE}/getFile`, {
+              params: { file_id: fileId },
+              timeout: 5000,
+            });
+            if (fileRes.data?.result?.file_path) {
+              return `${BASE.replace(/bot\d+:/, 'file/bot' + botToken + ':')}/${fileRes.data.result.file_path}`;
+            }
+          }
         }
+      } catch (e) {
+        logger.warn('Failed to fetch photo for user', { userId, error: e.message });
       }
+      return null;
     }
 
+    const [ownerPhoto, botPhoto] = await Promise.all([
+      getPhotoUrl(ownerId).catch(() => null),
+      (async () => {
+        try {
+          const { data } = await axios.get(`${BASE}/getMe`, { timeout: 5000 });
+          if (data?.result?.id) {
+            return getPhotoUrl(data.result.id).catch(() => null);
+          }
+        } catch { }
+        return null;
+      })(),
+    ]);
+
+    logger.info('Profile photos fetched', { hasOwner: !!ownerPhoto, hasBot: !!botPhoto });
     res.json({ ownerPhoto, botPhoto });
   } catch (err) {
     logger.error('Photos fetch error', { error: err.message });
