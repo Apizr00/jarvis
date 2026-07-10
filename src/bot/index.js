@@ -2318,6 +2318,42 @@ async function createBot() {
           await safeSendMessage(bot, chatId, finalResult);
         }
 
+        // ── 💬 Conversational follow-up after all tool executions ────────
+        // After any structured tool result, continue the conversation naturally.
+        // Uses full history + working memory so the reply is contextually aware.
+        // web_search is already handled above (LLM re-summarisation).
+        if (isStructured) {
+          try {
+            const toolResultText = result.message
+              ? result.message.replace(/[*_`[\]()~>#+=|{}.!]/g, '').slice(0, 200)
+              : '';
+            const followupPrompt =
+              'The "' + result.tool.replace(/_/g, ' ') + '" action just completed: "' + toolResultText + '"\n\n' +
+              'Write a very brief natural follow-up to continue the conversation (1-2 sentences max). ' +
+              'Match the user\'s language exactly (BM/English/rojak). ' +
+              'Do NOT repeat or describe the action result — just continue naturally.\n' +
+              'Respond as JSON: {"type":"message","content":"your reply"}';
+
+            // Pass real conversation history + working memory context
+            const fupResponse = await llm.chat(userId, followupPrompt, history, {
+              provider: 'ilmu',
+              executiveContext: llmOptions.executiveContext,
+              tier: 'fast',
+            });
+            if (fupResponse?.type === 'message' && fupResponse.content) {
+              const trimmed = fupResponse.content.trim();
+              if (!trimmed.startsWith('{') && !trimmed.startsWith('```') && trimmed.length > 2) {
+                await bot.sendChatAction(chatId, 'typing').catch(() => { });
+                await new Promise(r => setTimeout(r, 700));
+                await safeSendMessage(bot, chatId, fupResponse.content);
+                addToHistory(userId, 'assistant', fupResponse.content);
+              }
+            }
+          } catch (fupErr) {
+            console.warn('[Bot] Tool follow-up skipped:', fupErr.message);
+          }
+        }
+
         // ── ✅ Emoji reaction on user's message for tool execution ───────
         if (messageId) {
           try {

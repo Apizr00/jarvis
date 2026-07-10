@@ -9,7 +9,7 @@ const $$ = (sel, ctx) => [...(ctx || document).querySelectorAll(sel)];
 
 // ── State ───────────────────────────────────────────────────────────────
 // Bump this version when the UI structure changes — invalidates all caches
-const APP_VERSION = 'v2.6';
+const APP_VERSION = 'v2.7';
 
 const state = {
   user: null,
