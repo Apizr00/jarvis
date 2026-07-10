@@ -247,7 +247,11 @@ function connectWebSocket() {
   };
   ws.onclose = () => {
     state.wsConnected = false;
+    // Reset streaming state so user isn't stuck
+    state.streaming = false;
+    state.streamingText = '';
     updateConnectionStatus();
+    updateChatUI();
     clearTimeout(state.reconnectTimer);
     state.reconnectTimer = setTimeout(connectWebSocket, 5000);
   };
@@ -421,25 +425,61 @@ function simpleMarkdown(text) {
 
 // ── Chat Panel (sidebar) ────────────────────────────────────────────────
 function updateChatUI() {
-  updateMainChatUI();
-  updatePanelChatUI();
+  // Only refresh message containers — do NOT re-render the entire page
+  refreshMainChatMessages();
+  refreshPanelChatMessages();
+  // Update input bar state (stop/send button toggle, disabled state)
+  refreshChatInputBar();
 }
 
-function updateMainChatUI() {
-  const container = $('#main-content');
-  if (!container || currentRoute !== '/chat') return;
-  renderChatPage(container);
+function refreshMainChatMessages() {
+  const msgContainer = document.querySelector('.chat-msg-container');
+  if (!msgContainer || currentRoute !== '/chat') return;
+  renderChatMessages(msgContainer, false);
 }
 
-function updatePanelChatUI() {
-  const body = $('#chat-panel-body');
-  if (!body) return;
-  renderChatMessages(body, true);
+function refreshPanelChatMessages() {
+  const msgArea = document.querySelector('#chat-panel-body .chat-messages');
+  if (!msgArea) return;
+  renderChatMessages(msgArea, true);
+}
+
+// Update the input bar without destroying/recreating it
+function refreshChatInputBar() {
+  const inputBars = document.querySelectorAll('.chat-input-bar');
+  inputBars.forEach(bar => {
+    const textarea = bar.querySelector('.chat-input-textarea');
+    const sendBtn = bar.querySelector('.chat-send-btn');
+    const cancelBtn = bar.querySelector('.chat-cancel-btn');
+
+    // Update textarea state
+    if (textarea) {
+      textarea.placeholder = state.wsConnected ? 'Taip mesej...' : 'Connecting...';
+      textarea.disabled = !state.wsConnected;
+    }
+
+    // Toggle send/cancel button visibility
+    if (sendBtn) sendBtn.style.display = state.streaming ? 'none' : '';
+    if (cancelBtn) cancelBtn.style.display = state.streaming ? '' : 'none';
+
+    // If streaming but no cancel button exists, create one
+    if (state.streaming && !cancelBtn) {
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'btn btn-danger btn-sm chat-cancel-btn';
+      cancel.textContent = '⏹ Stop';
+      cancel.addEventListener('click', cancelStream);
+      if (sendBtn) sendBtn.style.display = 'none';
+      bar.querySelector('.chat-input-actions')?.appendChild(cancel);
+    }
+
+    // Update send button disabled state
+    if (sendBtn) sendBtn.disabled = !state.wsConnected;
+  });
 }
 
 function renderChatMessages(container, isPanel) {
   const msgs = state.messages;
-  const cls = isPanel ? 'chat-messages' : 'chat-page-messages';
   let html = '';
 
   if (msgs.length === 0 && !state.streaming) {
@@ -466,15 +506,6 @@ function renderChatMessages(container, isPanel) {
   // scroll to bottom
   const end = container.querySelector('.chat-end-ref');
   if (end) end.scrollIntoView({ behavior: 'smooth' });
-
-  // Update chat input disabled state based on wsConnected
-  const textareaEl = container.parentElement?.querySelector('.chat-input-textarea');
-  const sendBtnEl = container.parentElement?.querySelector('.chat-send-btn');
-  if (textareaEl) {
-    textareaEl.placeholder = state.wsConnected ? 'Taip mesej...' : 'Connecting...';
-    textareaEl.disabled = !state.wsConnected;
-  }
-  if (sendBtnEl) sendBtnEl.disabled = !state.wsConnected;
 
   // Bind suggestion clicks
   container.querySelectorAll('.chat-suggest-btn').forEach(btn => {
@@ -1384,7 +1415,13 @@ function init() {
     const btn = $('#chat-panel-toggle');
     btn.textContent = panel.classList.contains('collapsed') ? '◀' : '▶';
     if (!panel.classList.contains('collapsed')) {
-      renderChatMessages(panelBody, true);
+      // Ensure messages wrapper exists (separate from input)
+      let msgArea = panelBody.querySelector('.chat-messages');
+      if (!msgArea) {
+        panelBody.innerHTML = '<div class="chat-messages"></div>';
+        msgArea = panelBody.querySelector('.chat-messages');
+      }
+      renderChatMessages(msgArea, true);
       // Add input if not present
       if (!panelBody.querySelector('.chat-input-bar')) {
         renderChatInput(panelBody, true);
