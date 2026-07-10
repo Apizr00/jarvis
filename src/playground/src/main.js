@@ -271,7 +271,8 @@ function connectWebSocket() {
     const msg = JSON.parse(event.data);
     switch (msg.type) {
       case 'chunk':
-        state.streamingText += msg.payload.text;
+        // LLM sends accumulated full text, not deltas — replace, don't append
+        state.streamingText = msg.payload.text;
         updateChatUI();
         break;
       case 'done':

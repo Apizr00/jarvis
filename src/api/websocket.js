@@ -289,15 +289,14 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
     }
 
     // ── LLM call ──────────────────────────────────────────────────
-    // NOTE: Don't abort on disconnect — let LLM finish and save to DB.
-    // The client may have closed the PWA, but the response will be stored.
+    // NOTE: LLM providers pass accumulated display text (not deltas).
+    // We store the latest full text, not append.
     let result = await llm.chatStream(userId, message, [], llmOptions, (chunk) => {
       if (aborted) {
         disconnected = true;
-        // Don't throw — just stop sending to the closed WS
         return;
       }
-      fullText += chunk;
+      fullText = chunk; // chunk is already the full display text
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'chunk', payload: { text: chunk, conversationId: convId } }));
       } else {
@@ -357,8 +356,9 @@ async function handleChatMessage(ws, userId, payload, activeStreams, deps) {
         ws.send(JSON.stringify({ type: 'typing', payload: { active: true, conversationId: convId } }));
       }
       try {
+        // LLM passes accumulated text, not deltas — so fu = c, not fu += c
         const fuResult = await llm.chatStream(userId, `Result of ${result.name}: ${toolMessage.slice(0, 300)}. Confirm briefly.`, [], { provider: 'ilmu', tier: 'fast' }, (c) => {
-          fu += c;
+          fu = c; // chunk is already the full display text
           if (!disconnected && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'chunk', payload: { text: c, conversationId: convId } }));
           }
